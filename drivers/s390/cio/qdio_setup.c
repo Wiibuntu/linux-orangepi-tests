@@ -179,7 +179,7 @@ static void setup_storage_lists(struct qdio_q *q, struct qdio_irq *irq_ptr,
 
 	/* fill in sl */
 	for (j = 0; j < QDIO_MAX_BUFFERS_PER_Q; j++)
-		q->sl->element[j].sbal = virt_to_phys(q->sbal[j]);
+		q->sl->element[j].sbal = virt_to_dma64(q->sbal[j]);
 }
 
 static void setup_queues(struct qdio_irq *irq_ptr,
@@ -291,9 +291,9 @@ void qdio_setup_ssqd_info(struct qdio_irq *irq_ptr)
 
 static void qdio_fill_qdr_desc(struct qdesfmt0 *desc, struct qdio_q *queue)
 {
-	desc->sliba = virt_to_phys(queue->slib);
-	desc->sla = virt_to_phys(queue->sl);
-	desc->slsba = virt_to_phys(&queue->slsb);
+	desc->sliba = virt_to_dma64(queue->slib);
+	desc->sla = virt_to_dma64(queue->sl);
+	desc->slsba = virt_to_dma64(&queue->slsb);
 
 	desc->akey = PAGE_DEFAULT_KEY >> 4;
 	desc->bkey = PAGE_DEFAULT_KEY >> 4;
@@ -315,7 +315,7 @@ static void setup_qdr(struct qdio_irq *irq_ptr,
 	irq_ptr->qdr->oqdcnt = qdio_init->no_output_qs;
 	irq_ptr->qdr->iqdsz = sizeof(struct qdesfmt0) / 4; /* size in words */
 	irq_ptr->qdr->oqdsz = sizeof(struct qdesfmt0) / 4;
-	irq_ptr->qdr->qiba = virt_to_phys(&irq_ptr->qib);
+	irq_ptr->qdr->qiba = virt_to_dma64(&irq_ptr->qib);
 	irq_ptr->qdr->qkey = PAGE_DEFAULT_KEY >> 4;
 
 	for (i = 0; i < qdio_init->no_input_qs; i++)
@@ -351,19 +351,18 @@ static void setup_qib(struct qdio_irq *irq_ptr,
 		       sizeof(irq_ptr->qib.parm));
 }
 
-int qdio_setup_irq(struct qdio_irq *irq_ptr, struct qdio_initialize *init_data)
+void qdio_setup_irq(struct qdio_irq *irq_ptr, struct qdio_initialize *init_data)
 {
 	struct ccw_device *cdev = irq_ptr->cdev;
-	struct ciw *ciw;
 
 	irq_ptr->qdioac1 = 0;
-	memset(&irq_ptr->ccw, 0, sizeof(irq_ptr->ccw));
 	memset(&irq_ptr->ssqd_desc, 0, sizeof(irq_ptr->ssqd_desc));
 	memset(&irq_ptr->perf_stat, 0, sizeof(irq_ptr->perf_stat));
 
 	irq_ptr->debugfs_dev = NULL;
 	irq_ptr->sch_token = irq_ptr->perf_stat_enabled = 0;
 	irq_ptr->state = QDIO_IRQ_STATE_INACTIVE;
+	irq_ptr->error_handler = init_data->input_handler;
 
 	irq_ptr->int_parm = init_data->int_parm;
 	irq_ptr->nr_input_qs = init_data->no_input_qs;
@@ -386,23 +385,6 @@ int qdio_setup_irq(struct qdio_irq *irq_ptr, struct qdio_initialize *init_data)
 	irq_ptr->orig_handler = cdev->handler;
 	cdev->handler = qdio_int_handler;
 	spin_unlock_irq(get_ccwdev_lock(cdev));
-
-	/* get qdio commands */
-	ciw = ccw_device_get_ciw(cdev, CIW_TYPE_EQUEUE);
-	if (!ciw) {
-		DBF_ERROR("%4x NO EQ", irq_ptr->schid.sch_no);
-		return -EINVAL;
-	}
-	irq_ptr->equeue = *ciw;
-
-	ciw = ccw_device_get_ciw(cdev, CIW_TYPE_AQUEUE);
-	if (!ciw) {
-		DBF_ERROR("%4x NO AQ", irq_ptr->schid.sch_no);
-		return -EINVAL;
-	}
-	irq_ptr->aqueue = *ciw;
-
-	return 0;
 }
 
 void qdio_shutdown_irq(struct qdio_irq *irq)

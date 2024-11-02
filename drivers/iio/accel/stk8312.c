@@ -355,7 +355,7 @@ static int stk8312_read_raw(struct iio_dev *indio_dev,
 			mutex_unlock(&data->lock);
 			return ret;
 		}
-		*val = sign_extend32(ret, 7);
+		*val = sign_extend32(ret, chan->scan_type.realbits - 1);
 		ret = stk8312_set_mode(data,
 				       data->mode & (~STK8312_MODE_ACTIVE));
 		mutex_unlock(&data->lock);
@@ -448,8 +448,7 @@ static irqreturn_t stk8312_trigger_handler(int irq, void *p)
 			goto err;
 		}
 	} else {
-		for_each_set_bit(bit, indio_dev->active_scan_mask,
-				 indio_dev->masklength) {
+		iio_for_each_active_channel(indio_dev, bit) {
 			ret = stk8312_read_accel(data, bit);
 			if (ret < 0) {
 				mutex_unlock(&data->lock);
@@ -498,8 +497,7 @@ static const struct iio_buffer_setup_ops stk8312_buffer_setup_ops = {
 	.postdisable = stk8312_buffer_postdisable,
 };
 
-static int stk8312_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int stk8312_probe(struct i2c_client *client)
 {
 	int ret;
 	struct iio_dev *indio_dev;
@@ -597,7 +595,7 @@ err_power_off:
 	return ret;
 }
 
-static int stk8312_remove(struct i2c_client *client)
+static void stk8312_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct stk8312_data *data = iio_priv(indio_dev);
@@ -608,10 +606,9 @@ static int stk8312_remove(struct i2c_client *client)
 	if (data->dready_trig)
 		iio_trigger_unregister(data->dready_trig);
 
-	return stk8312_set_mode(data, STK8312_MODE_STANDBY);
+	stk8312_set_mode(data, STK8312_MODE_STANDBY);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int stk8312_suspend(struct device *dev)
 {
 	struct stk8312_data *data;
@@ -630,17 +627,13 @@ static int stk8312_resume(struct device *dev)
 	return stk8312_set_mode(data, data->mode | STK8312_MODE_ACTIVE);
 }
 
-static SIMPLE_DEV_PM_OPS(stk8312_pm_ops, stk8312_suspend, stk8312_resume);
-
-#define STK8312_PM_OPS (&stk8312_pm_ops)
-#else
-#define STK8312_PM_OPS NULL
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(stk8312_pm_ops, stk8312_suspend,
+				stk8312_resume);
 
 static const struct i2c_device_id stk8312_i2c_id[] = {
 	/* Deprecated in favour of lowercase form */
-	{ "STK8312", 0 },
-	{ "stk8312", 0 },
+	{ "STK8312" },
+	{ "stk8312" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, stk8312_i2c_id);
@@ -648,9 +641,9 @@ MODULE_DEVICE_TABLE(i2c, stk8312_i2c_id);
 static struct i2c_driver stk8312_driver = {
 	.driver = {
 		.name = STK8312_DRIVER_NAME,
-		.pm = STK8312_PM_OPS,
+		.pm = pm_sleep_ptr(&stk8312_pm_ops),
 	},
-	.probe =            stk8312_probe,
+	.probe =        stk8312_probe,
 	.remove =           stk8312_remove,
 	.id_table =         stk8312_i2c_id,
 };

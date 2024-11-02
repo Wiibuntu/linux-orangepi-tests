@@ -388,7 +388,7 @@ static int cxd2880_start_feed(struct dvb_demux_feed *feed)
 
 	if (dvb_spi->feed_count == 0) {
 		dvb_spi->ts_buf =
-			kmalloc(MAX_TRANS_PKT * 188,
+			kzalloc(MAX_TRANS_PKT * 188,
 				GFP_KERNEL | GFP_DMA);
 		if (!dvb_spi->ts_buf) {
 			pr_err("ts buffer allocate failed\n");
@@ -625,22 +625,11 @@ fail_regulator:
 	return ret;
 }
 
-static int
+static void
 cxd2880_spi_remove(struct spi_device *spi)
 {
-	struct cxd2880_dvb_spi *dvb_spi;
+	struct cxd2880_dvb_spi *dvb_spi = spi_get_drvdata(spi);
 
-	if (!spi) {
-		pr_err("invalid arg\n");
-		return -EINVAL;
-	}
-
-	dvb_spi = spi_get_drvdata(spi);
-
-	if (!dvb_spi) {
-		pr_err("failed\n");
-		return -EINVAL;
-	}
 	dvb_spi->demux.dmx.remove_frontend(&dvb_spi->demux.dmx,
 					   &dvb_spi->dmx_fe);
 	dvb_dmxdev_release(&dvb_spi->dmxdev);
@@ -654,8 +643,6 @@ cxd2880_spi_remove(struct spi_device *spi)
 
 	kfree(dvb_spi);
 	pr_info("cxd2880_spi remove ok.\n");
-
-	return 0;
 }
 
 static const struct spi_device_id cxd2880_spi_id[] = {

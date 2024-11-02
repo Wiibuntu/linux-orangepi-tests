@@ -5,21 +5,23 @@
  */
 
 #include <linux/gpio/consumer.h>
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
+#include <drm/drm_of.h>
 #include <drm/drm_panel.h>
 
 struct lvds_codec {
 	struct device *dev;
 	struct drm_bridge bridge;
 	struct drm_bridge *panel_bridge;
+	struct drm_bridge_timings timings;
 	struct regulator *vcc;
 	struct gpio_desc *powerdown_gpio;
 	u32 connector_type;
@@ -70,12 +72,6 @@ static void lvds_codec_disable(struct drm_bridge *bridge)
 			"Failed to disable regulator \"vcc\": %d\n", ret);
 }
 
-static const struct drm_bridge_funcs funcs = {
-	.attach = lvds_codec_attach,
-	.enable = lvds_codec_enable,
-	.disable = lvds_codec_disable,
-};
-
 #define MAX_INPUT_SEL_FORMATS 1
 static u32 *
 lvds_codec_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
@@ -101,7 +97,7 @@ lvds_codec_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 	return input_fmts;
 }
 
-static const struct drm_bridge_funcs funcs_decoder = {
+static const struct drm_bridge_funcs funcs = {
 	.attach = lvds_codec_attach,
 	.enable = lvds_codec_enable,
 	.disable = lvds_codec_disable,
@@ -118,7 +114,7 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	struct device_node *bus_node;
 	struct drm_panel *panel;
 	struct lvds_codec *lvds_codec;
-	const char *mapping;
+	u32 val;
 	int ret;
 
 	lvds_codec = devm_kzalloc(dev, sizeof(*lvds_codec), GFP_KERNEL);
@@ -174,24 +170,30 @@ static int lvds_codec_probe(struct platform_device *pdev)
 			return -ENXIO;
 		}
 
-		ret = of_property_read_string(bus_node, "data-mapping",
-					      &mapping);
+		ret = drm_of_lvds_get_data_mapping(bus_node);
 		of_node_put(bus_node);
-		if (ret < 0) {
+		if (ret == -ENODEV) {
 			dev_warn(dev, "missing 'data-mapping' DT property\n");
+		} else if (ret < 0) {
+			dev_err(dev, "invalid 'data-mapping' DT property\n");
+			return ret;
 		} else {
-			if (!strcmp(mapping, "jeida-18")) {
-				lvds_codec->bus_format = MEDIA_BUS_FMT_RGB666_1X7X3_SPWG;
-			} else if (!strcmp(mapping, "jeida-24")) {
-				lvds_codec->bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_JEIDA;
-			} else if (!strcmp(mapping, "vesa-24")) {
-				lvds_codec->bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG;
-			} else {
-				dev_err(dev, "invalid 'data-mapping' DT property\n");
-				return -EINVAL;
-			}
-			lvds_codec->bridge.funcs = &funcs_decoder;
+			lvds_codec->bus_format = ret;
 		}
+	} else {
+		lvds_codec->bus_format = MEDIA_BUS_FMT_RGB888_1X24;
+	}
+
+	/*
+	 * Encoder might sample data on different clock edge than the display,
+	 * for example OnSemi FIN3385 has a dedicated strapping pin to select
+	 * the sampling edge.
+	 */
+	if (lvds_codec->connector_type == DRM_MODE_CONNECTOR_LVDS &&
+	    !of_property_read_u32(dev->of_node, "pclk-sample", &val)) {
+		lvds_codec->timings.input_bus_flags = val ?
+			DRM_BUS_FLAG_PIXDATA_SAMPLE_POSEDGE :
+			DRM_BUS_FLAG_PIXDATA_SAMPLE_NEGEDGE;
 	}
 
 	/*
@@ -200,6 +202,7 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	 * to look up.
 	 */
 	lvds_codec->bridge.of_node = dev->of_node;
+	lvds_codec->bridge.timings = &lvds_codec->timings;
 	drm_bridge_add(&lvds_codec->bridge);
 
 	platform_set_drvdata(pdev, lvds_codec);
@@ -207,13 +210,11 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int lvds_codec_remove(struct platform_device *pdev)
+static void lvds_codec_remove(struct platform_device *pdev)
 {
 	struct lvds_codec *lvds_codec = platform_get_drvdata(pdev);
 
 	drm_bridge_remove(&lvds_codec->bridge);
-
-	return 0;
 }
 
 static const struct of_device_id lvds_codec_match[] = {
@@ -235,7 +236,7 @@ MODULE_DEVICE_TABLE(of, lvds_codec_match);
 
 static struct platform_driver lvds_codec_driver = {
 	.probe	= lvds_codec_probe,
-	.remove	= lvds_codec_remove,
+	.remove_new = lvds_codec_remove,
 	.driver		= {
 		.name		= "lvds-codec",
 		.of_match_table	= lvds_codec_match,

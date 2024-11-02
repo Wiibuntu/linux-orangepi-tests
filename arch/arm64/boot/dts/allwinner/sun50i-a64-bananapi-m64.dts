@@ -53,10 +53,10 @@
 		};
 	};
 
-	wifi_pwrseq: wifi_pwrseq {
+	wifi_pwrseq: pwrseq {
 		compatible = "mmc-pwrseq-simple";
 		reset-gpios = <&r_pio 0 2 GPIO_ACTIVE_LOW>; /* PL2 */
-		clocks = <&rtc 1>;
+		clocks = <&rtc CLK_OSC32K_FANOUT>;
 		clock-names = "ext_clock";
 	};
 };
@@ -128,10 +128,6 @@
 
 &i2c1_pins {
 	bias-pull-up;
-};
-
-&i2s2 {
-	status = "okay";
 };
 
 &mdio {
@@ -345,10 +341,6 @@
 			"MIC1", "Onboard Microphone";
 };
 
-&sound_hdmi {
-	status = "okay";
-};
-
 &uart0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart0_pb_pins>;
@@ -363,7 +355,7 @@
 
 	bluetooth {
 		compatible = "brcm,bcm43438-bt";
-		clocks = <&rtc 1>;
+		clocks = <&rtc CLK_OSC32K_FANOUT>;
 		clock-names = "lpo";
 		vbat-supply = <&reg_dldo2>;
 		vddio-supply = <&reg_dldo4>;

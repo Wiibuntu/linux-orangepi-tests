@@ -115,6 +115,10 @@ module_param_named(nopnp, i8042_nopnp, bool, 0);
 MODULE_PARM_DESC(nopnp, "Do not use PNP to detect controller settings");
 #endif
 
+static bool i8042_forcenorestore;
+module_param_named(forcenorestore, i8042_forcenorestore, bool, 0);
+MODULE_PARM_DESC(forcenorestore, "Force no restore on s3 resume, copying s2idle behaviour");
+
 #define DEBUG
 #ifdef DEBUG
 static bool i8042_debug;
@@ -1232,7 +1236,7 @@ static int i8042_pm_suspend(struct device *dev)
 {
 	int i;
 
-	if (pm_suspend_via_firmware())
+	if (!i8042_forcenorestore && pm_suspend_via_firmware())
 		i8042_controller_reset(true);
 
 	/* Set up serio interrupts for system wakeup. */
@@ -1248,7 +1252,7 @@ static int i8042_pm_suspend(struct device *dev)
 
 static int i8042_pm_resume_noirq(struct device *dev)
 {
-	if (!pm_resume_via_firmware())
+	if (i8042_forcenorestore || !pm_resume_via_firmware())
 		i8042_interrupt(0, NULL);
 
 	return 0;
@@ -1271,7 +1275,7 @@ static int i8042_pm_resume(struct device *dev)
 	 * not restore the controller state to whatever it had been at boot
 	 * time, so we do not need to do anything.
 	 */
-	if (!pm_suspend_via_firmware())
+	if (i8042_forcenorestore || !pm_suspend_via_firmware())
 		return 0;
 
 	/*
@@ -1329,7 +1333,7 @@ static int i8042_create_kbd_port(void)
 	struct serio *serio;
 	struct i8042_port *port = &i8042_ports[I8042_KBD_PORT_NO];
 
-	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	serio = kzalloc(sizeof(*serio), GFP_KERNEL);
 	if (!serio)
 		return -ENOMEM;
 
@@ -1341,9 +1345,9 @@ static int i8042_create_kbd_port(void)
 	serio->ps2_cmd_mutex	= &i8042_mutex;
 	serio->port_data	= port;
 	serio->dev.parent	= &i8042_platform_device->dev;
-	strlcpy(serio->name, "i8042 KBD port", sizeof(serio->name));
-	strlcpy(serio->phys, I8042_KBD_PHYS_DESC, sizeof(serio->phys));
-	strlcpy(serio->firmware_id, i8042_kbd_firmware_id,
+	strscpy(serio->name, "i8042 KBD port", sizeof(serio->name));
+	strscpy(serio->phys, I8042_KBD_PHYS_DESC, sizeof(serio->phys));
+	strscpy(serio->firmware_id, i8042_kbd_firmware_id,
 		sizeof(serio->firmware_id));
 	set_primary_fwnode(&serio->dev, i8042_kbd_fwnode);
 
@@ -1359,7 +1363,7 @@ static int i8042_create_aux_port(int idx)
 	int port_no = idx < 0 ? I8042_AUX_PORT_NO : I8042_MUX_PORT_NO + idx;
 	struct i8042_port *port = &i8042_ports[port_no];
 
-	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	serio = kzalloc(sizeof(*serio), GFP_KERNEL);
 	if (!serio)
 		return -ENOMEM;
 
@@ -1371,15 +1375,15 @@ static int i8042_create_aux_port(int idx)
 	serio->port_data	= port;
 	serio->dev.parent	= &i8042_platform_device->dev;
 	if (idx < 0) {
-		strlcpy(serio->name, "i8042 AUX port", sizeof(serio->name));
-		strlcpy(serio->phys, I8042_AUX_PHYS_DESC, sizeof(serio->phys));
-		strlcpy(serio->firmware_id, i8042_aux_firmware_id,
+		strscpy(serio->name, "i8042 AUX port", sizeof(serio->name));
+		strscpy(serio->phys, I8042_AUX_PHYS_DESC, sizeof(serio->phys));
+		strscpy(serio->firmware_id, i8042_aux_firmware_id,
 			sizeof(serio->firmware_id));
 		serio->close = i8042_port_close;
 	} else {
 		snprintf(serio->name, sizeof(serio->name), "i8042 AUX%d port", idx);
 		snprintf(serio->phys, sizeof(serio->phys), I8042_MUX_PHYS_DESC, idx + 1);
-		strlcpy(serio->firmware_id, i8042_aux_firmware_id,
+		strscpy(serio->firmware_id, i8042_aux_firmware_id,
 			sizeof(serio->firmware_id));
 	}
 
@@ -1543,8 +1547,6 @@ static int i8042_probe(struct platform_device *dev)
 {
 	int error;
 
-	i8042_platform_device = dev;
-
 	if (i8042_reset == I8042_RESET_ALWAYS) {
 		error = i8042_controller_selftest();
 		if (error)
@@ -1582,19 +1584,15 @@ static int i8042_probe(struct platform_device *dev)
 	i8042_free_aux_ports();	/* in case KBD failed but AUX not */
 	i8042_free_irqs();
 	i8042_controller_reset(false);
-	i8042_platform_device = NULL;
 
 	return error;
 }
 
-static int i8042_remove(struct platform_device *dev)
+static void i8042_remove(struct platform_device *dev)
 {
 	i8042_unregister_ports();
 	i8042_free_irqs();
 	i8042_controller_reset(false);
-	i8042_platform_device = NULL;
-
-	return 0;
 }
 
 static struct platform_driver i8042_driver = {
@@ -1605,7 +1603,7 @@ static struct platform_driver i8042_driver = {
 #endif
 	},
 	.probe		= i8042_probe,
-	.remove		= i8042_remove,
+	.remove_new	= i8042_remove,
 	.shutdown	= i8042_shutdown,
 };
 

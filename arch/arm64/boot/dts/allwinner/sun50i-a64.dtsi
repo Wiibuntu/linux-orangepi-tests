@@ -4,6 +4,7 @@
 //    Copyright (C) 2015 Jens Kuske <jenskuske@gmail.com>
 
 #include <dt-bindings/clock/sun50i-a64-ccu.h>
+#include <dt-bindings/clock/sun6i-rtc.h>
 #include <dt-bindings/clock/sun8i-de2.h>
 #include <dt-bindings/clock/sun8i-r-ccu.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
@@ -16,12 +17,6 @@
 	interrupt-parent = <&gic>;
 	#address-cells = <1>;
 	#size-cells = <1>;
-
-	aliases {
-		mmc0 = &mmc0;
-		mmc1 = &mmc1;
-		mmc2 = &mmc2;
-	};
 
 	chosen {
 		#address-cells = <1>;
@@ -56,11 +51,16 @@
 			device_type = "cpu";
 			reg = <0>;
 			enable-method = "psci";
-			next-level-cache = <&L2>;
 			clocks = <&ccu CLK_CPUX>;
 			clock-names = "cpu";
 			#cooling-cells = <2>;
-			cpu-idle-states = <&cpu_sleep>, <&cluster_sleep>;
+			i-cache-size = <0x8000>;
+			i-cache-line-size = <64>;
+			i-cache-sets = <256>;
+			d-cache-size = <0x8000>;
+			d-cache-line-size = <64>;
+			d-cache-sets = <128>;
+			next-level-cache = <&l2_cache>;
 		};
 
 		cpu1: cpu@1 {
@@ -68,11 +68,16 @@
 			device_type = "cpu";
 			reg = <1>;
 			enable-method = "psci";
-			next-level-cache = <&L2>;
 			clocks = <&ccu CLK_CPUX>;
 			clock-names = "cpu";
 			#cooling-cells = <2>;
-			cpu-idle-states = <&cpu_sleep>, <&cluster_sleep>;
+			i-cache-size = <0x8000>;
+			i-cache-line-size = <64>;
+			i-cache-sets = <256>;
+			d-cache-size = <0x8000>;
+			d-cache-line-size = <64>;
+			d-cache-sets = <128>;
+			next-level-cache = <&l2_cache>;
 		};
 
 		cpu2: cpu@2 {
@@ -80,11 +85,16 @@
 			device_type = "cpu";
 			reg = <2>;
 			enable-method = "psci";
-			next-level-cache = <&L2>;
 			clocks = <&ccu CLK_CPUX>;
 			clock-names = "cpu";
 			#cooling-cells = <2>;
-			cpu-idle-states = <&cpu_sleep>, <&cluster_sleep>;
+			i-cache-size = <0x8000>;
+			i-cache-line-size = <64>;
+			i-cache-sets = <256>;
+			d-cache-size = <0x8000>;
+			d-cache-line-size = <64>;
+			d-cache-sets = <128>;
+			next-level-cache = <&l2_cache>;
 		};
 
 		cpu3: cpu@3 {
@@ -92,38 +102,25 @@
 			device_type = "cpu";
 			reg = <3>;
 			enable-method = "psci";
-			next-level-cache = <&L2>;
 			clocks = <&ccu CLK_CPUX>;
 			clock-names = "cpu";
 			#cooling-cells = <2>;
-			cpu-idle-states = <&cpu_sleep>, <&cluster_sleep>;
+			i-cache-size = <0x8000>;
+			i-cache-line-size = <64>;
+			i-cache-sets = <256>;
+			d-cache-size = <0x8000>;
+			d-cache-line-size = <64>;
+			d-cache-sets = <128>;
+			next-level-cache = <&l2_cache>;
 		};
 
-		idle-states {
-			entry-method = "psci";
-
-			cpu_sleep: cpu-sleep {
-				compatible = "arm,idle-state";
-				local-timer-stop;
-				entry-latency-us = <800>;
-				exit-latency-us = <1500>;
-				min-residency-us = <25000>;
-				arm,psci-suspend-param = <0x00010003>;
-			};
-
-			cluster_sleep: cluster-sleep {
-				compatible = "arm,idle-state";
-				local-timer-stop;
-				entry-latency-us = <850>;
-				exit-latency-us = <1500>;
-				min-residency-us = <50000>;
-				arm,psci-suspend-param = <0x01010013>;
-			};
-		};
-
-		L2: l2-cache {
+		l2_cache: l2-cache {
 			compatible = "cache";
 			cache-level = <2>;
+			cache-unified;
+			cache-size = <0x80000>;
+			cache-line-size = <64>;
+			cache-sets = <512>;
 		};
 	};
 
@@ -137,27 +134,19 @@
 	gpu_opp_table: opp-table-gpu {
 		compatible = "operating-points-v2";
 
-		opp-120000000 {
-			opp-hz = /bits/ 64 <120000000>;
-		};
-
-		opp-312000000 {
-			opp-hz = /bits/ 64 <312000000>;
-		};
-
 		opp-432000000 {
 			opp-hz = /bits/ 64 <432000000>;
 		};
 	};
 
-	osc24M: osc24M_clk {
+	osc24M: osc24M-clk {
 		#clock-cells = <0>;
 		compatible = "fixed-clock";
 		clock-frequency = <24000000>;
 		clock-output-names = "osc24M";
 	};
 
-	osc32k: osc32k_clk {
+	osc32k: osc32k-clk {
 		#clock-cells = <0>;
 		compatible = "fixed-clock";
 		clock-frequency = <32768>;
@@ -176,13 +165,6 @@
 	psci {
 		compatible = "arm,psci-0.2";
 		method = "smc";
-	};
-
-	scpi_protocol: scpi {
-		compatible = "arm,scpi";
-		mboxes = <&msgbox 2>, <&msgbox 3>;
-		mbox-names = "tx", "rx";
-		shmem = <&scpi_sram>;
 	};
 
 	sound: sound {
@@ -211,20 +193,6 @@
 			link0_codec: codec {
 				sound-dai = <&codec 0>;
 			};
-		};
-	};
-
-	sound_hdmi: sound_hdmi {
-		compatible = "allwinner,sun9i-a80-hdmi-audio",
-			     "allwinner,sun50i-a64-hdmi-audio";
-		status = "disabled";
-
-		codec {
-			sound-dai = <&hdmi>;
-		};
-
-		cpu {
-			sound-dai = <&i2s2>;
 		};
 	};
 
@@ -267,23 +235,23 @@
 			};
 
 			trips {
-				cpu_alert0: cpu_alert0 {
+				cpu_alert0: cpu-alert0 {
 					/* milliCelsius */
-					temperature = <70000>;
+					temperature = <75000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 
-				cpu_alert1: cpu_alert1 {
+				cpu_alert1: cpu-alert1 {
 					/* milliCelsius */
-					temperature = <80000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "hot";
 				};
 
-				cpu_crit: cpu_crit {
+				cpu_crit: cpu-crit {
 					/* milliCelsius */
-					temperature = <90000>;
+					temperature = <110000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
@@ -295,6 +263,14 @@
 			polling-delay-passive = <0>;
 			polling-delay = <0>;
 			thermal-sensors = <&ths 1>;
+
+			trips {
+				gpu0_crit: gpu0-crit {
+					temperature = <110000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
 		};
 
 		gpu1_thermal: gpu1-thermal {
@@ -302,6 +278,14 @@
 			polling-delay-passive = <0>;
 			polling-delay = <0>;
 			thermal-sensors = <&ths 2>;
+
+			trips {
+				gpu1_crit: gpu1-crit {
+					temperature = <110000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
 		};
 	};
 
@@ -413,19 +397,6 @@
 			#size-cells = <1>;
 			ranges;
 
-			sram_a2: sram@40000 {
-				compatible = "mmio-sram";
-				reg = <0x00040000 0x14000>;
-				#address-cells = <1>;
-				#size-cells = <1>;
-				ranges = <0 0x00040000 0x14000>;
-
-				scpi_sram: scp-shmem@13c00 {
-					compatible = "arm,scp-shmem";
-					reg = <0x13c00 0x200>;
-				};
-			};
-
 			sram_c: sram@18000 {
 				compatible = "mmio-sram";
 				reg = <0x00018000 0x28000>;
@@ -472,7 +443,7 @@
 			interrupts = <GIC_SPI 86 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_BUS_TCON0>, <&ccu CLK_TCON0>;
 			clock-names = "ahb", "tcon-ch0";
-			clock-output-names = "tcon-pixel-clock";
+			clock-output-names = "tcon-data-clock";
 			#clock-cells = <0>;
 			resets = <&ccu RST_BUS_TCON0>, <&ccu RST_BUS_LVDS>;
 			reset-names = "lcd", "lvds";
@@ -575,7 +546,6 @@
 			interrupts = <GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH>;
 			max-frequency = <150000000>;
 			status = "disabled";
-			bus-width = <0x4>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 		};
@@ -727,9 +697,8 @@
 		ccu: clock@1c20000 {
 			compatible = "allwinner,sun50i-a64-ccu";
 			reg = <0x01c20000 0x400>;
-			clocks = <&osc24M>, <&rtc 0>;
+			clocks = <&osc24M>, <&rtc CLK_OSC32K>;
 			clock-names = "hosc", "losc";
-			protected-clocks = <CLK_BUS_MSGBOX>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
 		};
@@ -741,7 +710,8 @@
 			interrupts = <GIC_SPI 11 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&ccu CLK_BUS_PIO>, <&osc24M>, <&rtc 0>;
+			clocks = <&ccu CLK_BUS_PIO>, <&osc24M>,
+				 <&rtc CLK_OSC32K>;
 			clock-names = "apb", "hosc", "losc";
 			gpio-controller;
 			#gpio-cells = <3>;
@@ -935,7 +905,7 @@
 
 		lradc: lradc@1c21800 {
 			compatible = "allwinner,sun50i-a64-lradc",
-				     "allwinner,sun4i-a10-lradc-keys";
+				     "allwinner,sun8i-a83t-r-lradc";
 			reg = <0x01c21800 0x400>;
 			interrupt-parent = <&r_intc>;
 			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
@@ -1026,7 +996,6 @@
 			interrupts = <GIC_SPI 0 IRQ_TYPE_LEVEL_HIGH>;
 			reg-shift = <2>;
 			reg-io-width = <4>;
-			fifo-size = <64>;
 			clocks = <&ccu CLK_BUS_UART0>;
 			resets = <&ccu RST_BUS_UART0>;
 			status = "disabled";
@@ -1038,7 +1007,6 @@
 			interrupts = <GIC_SPI 1 IRQ_TYPE_LEVEL_HIGH>;
 			reg-shift = <2>;
 			reg-io-width = <4>;
-			fifo-size = <64>;
 			clocks = <&ccu CLK_BUS_UART1>;
 			resets = <&ccu RST_BUS_UART1>;
 			status = "disabled";
@@ -1050,7 +1018,6 @@
 			interrupts = <GIC_SPI 2 IRQ_TYPE_LEVEL_HIGH>;
 			reg-shift = <2>;
 			reg-io-width = <4>;
-			fifo-size = <64>;
 			clocks = <&ccu CLK_BUS_UART2>;
 			resets = <&ccu RST_BUS_UART2>;
 			status = "disabled";
@@ -1062,7 +1029,6 @@
 			interrupts = <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>;
 			reg-shift = <2>;
 			reg-io-width = <4>;
-			fifo-size = <64>;
 			clocks = <&ccu CLK_BUS_UART3>;
 			resets = <&ccu RST_BUS_UART3>;
 			status = "disabled";
@@ -1074,7 +1040,6 @@
 			interrupts = <GIC_SPI 4 IRQ_TYPE_LEVEL_HIGH>;
 			reg-shift = <2>;
 			reg-io-width = <4>;
-			fifo-size = <64>;
 			clocks = <&ccu CLK_BUS_UART4>;
 			resets = <&ccu RST_BUS_UART4>;
 			status = "disabled";
@@ -1207,7 +1172,8 @@
 		};
 
 		pwm: pwm@1c21400 {
-			compatible = "allwinner,sun50i-a64-pwm";
+			compatible = "allwinner,sun50i-a64-pwm",
+				     "allwinner,sun5i-a13-pwm";
 			reg = <0x01c21400 0x400>;
 			clocks = <&osc24M>;
 			pinctrl-names = "default";
@@ -1221,10 +1187,10 @@
 			reg = <0x01c62000 0x1000>,
 			      <0x01c63000 0x1000>;
 			reg-names = "mbus", "dram";
-			clocks = <&ccu CLK_BUS_DRAM>,
+			clocks = <&ccu CLK_MBUS>,
 				 <&ccu CLK_DRAM>,
-				 <&ccu CLK_MBUS>;
-			clock-names = "apb", "dram", "mbus";
+				 <&ccu CLK_BUS_DRAM>;
+			clock-names = "mbus", "dram", "bus";
 			interrupts = <GIC_SPI 69 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
 			#size-cells = <1>;
@@ -1269,6 +1235,7 @@
 			compatible = "allwinner,sun50i-a64-mipi-dphy",
 				     "allwinner,sun6i-a31-mipi-dphy";
 			reg = <0x01ca1000 0x1000>;
+			interrupts = <GIC_SPI 89 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_BUS_MIPI_DSI>,
 				 <&ccu CLK_DSI_DPHY>;
 			clock-names = "bus", "mod";
@@ -1292,15 +1259,14 @@
 		};
 
 		hdmi: hdmi@1ee0000 {
-			#sound-dai-cells = <0>;
 			compatible = "allwinner,sun50i-a64-dw-hdmi",
 				     "allwinner,sun8i-a83t-dw-hdmi";
 			reg = <0x01ee0000 0x10000>;
 			reg-io-width = <1>;
 			interrupts = <GIC_SPI 88 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_BUS_HDMI>, <&ccu CLK_HDMI_DDC>,
-				 <&ccu CLK_HDMI>;
-			clock-names = "iahb", "isfr", "tmds";
+				 <&ccu CLK_HDMI>, <&rtc CLK_OSC32K>;
+			clock-names = "iahb", "isfr", "tmds", "cec";
 			resets = <&ccu RST_BUS_HDMI1>;
 			reset-names = "ctrl";
 			phys = <&hdmi_phy>;
@@ -1360,10 +1326,9 @@
 		r_ccu: clock@1f01400 {
 			compatible = "allwinner,sun50i-a64-r-ccu";
 			reg = <0x01f01400 0x100>;
-			clocks = <&osc24M>, <&rtc 0>, <&rtc 2>,
+			clocks = <&osc24M>, <&rtc CLK_OSC32K>, <&rtc CLK_IOSC>,
 				 <&ccu CLK_PLL_PERIPH0>;
 			clock-names = "hosc", "losc", "iosc", "pll-periph";
-			protected-clocks = <CLK_APB0_TWD>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
 		};
@@ -1400,7 +1365,8 @@
 		};
 
 		r_pwm: pwm@1f03800 {
-			compatible = "allwinner,sun50i-a64-pwm";
+			compatible = "allwinner,sun50i-a64-pwm",
+				     "allwinner,sun5i-a13-pwm";
 			reg = <0x01f03800 0x400>;
 			clocks = <&osc24M>;
 			pinctrl-names = "default";

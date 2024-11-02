@@ -716,7 +716,6 @@ struct qeth_card_info {
 	u16 chid;
 	u8 ids_valid:1; /* cssid,iid,chid */
 	u8 dev_addr_is_registered:1;
-	u8 open_when_online:1;
 	u8 promisc_mode:1;
 	u8 use_v1_blkt:1;
 	u8 is_vm_nic:1;
@@ -800,8 +799,6 @@ struct qeth_priv {
 	u32 brport_hw_features;
 	u32 brport_features;
 };
-
-#define QETH_NAPI_WEIGHT NAPI_POLL_WEIGHT
 
 struct qeth_card {
 	enum qeth_card_states state;
@@ -959,7 +956,7 @@ static inline struct dst_entry *qeth_dst_check_rcu(struct sk_buff *skb,
 	struct dst_entry *dst = skb_dst(skb);
 	struct rt6_info *rt;
 
-	rt = (struct rt6_info *) dst;
+	rt = dst_rt6_info(dst);
 	if (dst) {
 		if (proto == htons(ETH_P_IPV6))
 			dst = dst_check(dst, rt6_get_cookie(rt));
@@ -973,15 +970,14 @@ static inline struct dst_entry *qeth_dst_check_rcu(struct sk_buff *skb,
 static inline __be32 qeth_next_hop_v4_rcu(struct sk_buff *skb,
 					  struct dst_entry *dst)
 {
-	struct rtable *rt = (struct rtable *) dst;
-
-	return (rt) ? rt_nexthop(rt, ip_hdr(skb)->daddr) : ip_hdr(skb)->daddr;
+	return (dst) ? rt_nexthop(dst_rtable(dst), ip_hdr(skb)->daddr) :
+		       ip_hdr(skb)->daddr;
 }
 
 static inline struct in6_addr *qeth_next_hop_v6_rcu(struct sk_buff *skb,
 						    struct dst_entry *dst)
 {
-	struct rt6_info *rt = (struct rt6_info *) dst;
+	struct rt6_info *rt = dst_rt6_info(dst);
 
 	if (rt && !ipv6_addr_any(&rt->rt6i_gateway))
 		return &rt->rt6i_gateway;
@@ -1029,8 +1025,6 @@ static inline int qeth_send_simple_setassparms_v6(struct qeth_card *card,
 	return qeth_send_simple_setassparms_prot(card, ipa_func, cmd_code,
 						 data, QETH_PROT_IPV6);
 }
-
-int qeth_get_priority_queue(struct qeth_card *card, struct sk_buff *skb);
 
 extern const struct qeth_discipline qeth_l2_discipline;
 extern const struct qeth_discipline qeth_l3_discipline;
@@ -1099,6 +1093,8 @@ void qeth_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats);
 int qeth_set_real_num_tx_queues(struct qeth_card *card, unsigned int count);
 u16 qeth_iqd_select_queue(struct net_device *dev, struct sk_buff *skb,
 			  u8 cast_type, struct net_device *sb_dev);
+u16 qeth_osa_select_queue(struct net_device *dev, struct sk_buff *skb,
+			  struct net_device *sb_dev);
 int qeth_open(struct net_device *dev);
 int qeth_stop(struct net_device *dev);
 

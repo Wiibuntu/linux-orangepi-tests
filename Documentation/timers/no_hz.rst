@@ -129,11 +129,8 @@ adaptive-tick CPUs:  At least one non-adaptive-tick CPU must remain
 online to handle timekeeping tasks in order to ensure that system
 calls like gettimeofday() returns accurate values on adaptive-tick CPUs.
 (This is not an issue for CONFIG_NO_HZ_IDLE=y because there are no running
-user processes to observe slight drifts in clock rate.)  Therefore, the
-boot CPU is prohibited from entering adaptive-ticks mode.  Specifying a
-"nohz_full=" mask that includes the boot CPU will result in a boot-time
-error message, and the boot CPU will be removed from the mask.  Note that
-this means that your system must have at least two CPUs in order for
+user processes to observe slight drifts in clock rate.) Note that this
+means that your system must have at least two CPUs in order for
 CONFIG_NO_HZ_FULL=y to do anything for you.
 
 Finally, adaptive-ticks CPUs must have their RCU callbacks offloaded.
@@ -184,16 +181,12 @@ There are situations in which idle CPUs cannot be permitted to
 enter either dyntick-idle mode or adaptive-tick mode, the most
 common being when that CPU has RCU callbacks pending.
 
-The CONFIG_RCU_FAST_NO_HZ=y Kconfig option may be used to cause such CPUs
-to enter dyntick-idle mode or adaptive-tick mode anyway.  In this case,
-a timer will awaken these CPUs every four jiffies in order to ensure
-that the RCU callbacks are processed in a timely fashion.
-
-Another approach is to offload RCU callback processing to "rcuo" kthreads
+Avoid this by offloading RCU callback processing to "rcuo" kthreads
 using the CONFIG_RCU_NOCB_CPU=y Kconfig option.  The specific CPUs to
 offload may be selected using The "rcu_nocbs=" kernel boot parameter,
 which takes a comma-separated list of CPUs and CPU ranges, for example,
-"1,3-5" selects CPUs 1, 3, 4, and 5.
+"1,3-5" selects CPUs 1, 3, 4, and 5.  Note that CPUs specified by
+the "nohz_full" kernel boot parameter are also offloaded.
 
 The offloaded CPUs will never queue RCU callbacks, and therefore RCU
 never prevents offloaded CPUs from entering either dyntick-idle mode

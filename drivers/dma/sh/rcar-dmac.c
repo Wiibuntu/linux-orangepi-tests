@@ -103,8 +103,8 @@ struct rcar_dmac_desc_page {
 	struct list_head node;
 
 	union {
-		struct rcar_dmac_desc descs[0];
-		struct rcar_dmac_xfer_chunk chunks[0];
+		DECLARE_FLEX_ARRAY(struct rcar_dmac_desc, descs);
+		DECLARE_FLEX_ARRAY(struct rcar_dmac_xfer_chunk, chunks);
 	};
 };
 
@@ -236,7 +236,7 @@ struct rcar_dmac_of_data {
 #define RCAR_DMAOR_PRI_ROUND_ROBIN	(3 << 8)
 #define RCAR_DMAOR_AE			(1 << 2)
 #define RCAR_DMAOR_DME			(1 << 0)
-#define RCAR_DMACHCLR			0x0080	/* Not on R-Car V3U */
+#define RCAR_DMACHCLR			0x0080	/* Not on R-Car Gen4 */
 #define RCAR_DMADPSEC			0x00a0
 
 #define RCAR_DMASAR			0x0000
@@ -299,8 +299,8 @@ struct rcar_dmac_of_data {
 #define RCAR_DMAFIXDAR			0x0014
 #define RCAR_DMAFIXDPBASE		0x0060
 
-/* For R-Car V3U */
-#define RCAR_V3U_DMACHCLR		0x0100
+/* For R-Car Gen4 */
+#define RCAR_GEN4_DMACHCLR		0x0100
 
 /* Hardcode the MEMCPY transfer size to 4 bytes. */
 #define RCAR_DMAC_MEMCPY_XFER_SIZE	4
@@ -345,7 +345,7 @@ static void rcar_dmac_chan_clear(struct rcar_dmac *dmac,
 				 struct rcar_dmac_chan *chan)
 {
 	if (dmac->chan_base)
-		rcar_dmac_chan_write(chan, RCAR_V3U_DMACHCLR, 1);
+		rcar_dmac_chan_write(chan, RCAR_GEN4_DMACHCLR, 1);
 	else
 		rcar_dmac_write(dmac, RCAR_DMACHCLR, BIT(chan->index));
 }
@@ -357,7 +357,7 @@ static void rcar_dmac_chan_clear_all(struct rcar_dmac *dmac)
 
 	if (dmac->chan_base) {
 		for_each_rcar_dmac_chan(i, dmac, chan)
-			rcar_dmac_chan_write(chan, RCAR_V3U_DMACHCLR, 1);
+			rcar_dmac_chan_write(chan, RCAR_GEN4_DMACHCLR, 1);
 	} else {
 		rcar_dmac_write(dmac, RCAR_DMACHCLR, dmac->channels_mask);
 	}
@@ -1868,9 +1868,7 @@ static int rcar_dmac_probe(struct platform_device *pdev)
 
 	dmac->dev = &pdev->dev;
 	platform_set_drvdata(pdev, dmac);
-	ret = dma_set_max_seg_size(dmac->dev, RCAR_DMATCR_MASK);
-	if (ret)
-		return ret;
+	dma_set_max_seg_size(dmac->dev, RCAR_DMATCR_MASK);
 
 	ret = dma_set_mask_and_coherent(dmac->dev, DMA_BIT_MASK(40));
 	if (ret)
@@ -1990,7 +1988,7 @@ err_pm_disable:
 	return ret;
 }
 
-static int rcar_dmac_remove(struct platform_device *pdev)
+static void rcar_dmac_remove(struct platform_device *pdev)
 {
 	struct rcar_dmac *dmac = platform_get_drvdata(pdev);
 
@@ -1998,8 +1996,6 @@ static int rcar_dmac_remove(struct platform_device *pdev)
 	dma_async_device_unregister(&dmac->engine);
 
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static void rcar_dmac_shutdown(struct platform_device *pdev)
@@ -2014,7 +2010,7 @@ static const struct rcar_dmac_of_data rcar_dmac_data = {
 	.chan_offset_stride	= 0x80,
 };
 
-static const struct rcar_dmac_of_data rcar_v3u_dmac_data = {
+static const struct rcar_dmac_of_data rcar_gen4_dmac_data = {
 	.chan_offset_base	= 0x0,
 	.chan_offset_stride	= 0x1000,
 };
@@ -2024,8 +2020,11 @@ static const struct of_device_id rcar_dmac_of_ids[] = {
 		.compatible = "renesas,rcar-dmac",
 		.data = &rcar_dmac_data,
 	}, {
+		.compatible = "renesas,rcar-gen4-dmac",
+		.data = &rcar_gen4_dmac_data,
+	}, {
 		.compatible = "renesas,dmac-r8a779a0",
-		.data = &rcar_v3u_dmac_data,
+		.data = &rcar_gen4_dmac_data,
 	},
 	{ /* Sentinel */ }
 };
@@ -2038,7 +2037,7 @@ static struct platform_driver rcar_dmac_driver = {
 		.of_match_table = rcar_dmac_of_ids,
 	},
 	.probe		= rcar_dmac_probe,
-	.remove		= rcar_dmac_remove,
+	.remove_new	= rcar_dmac_remove,
 	.shutdown	= rcar_dmac_shutdown,
 };
 

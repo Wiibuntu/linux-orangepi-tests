@@ -8,7 +8,8 @@
 #include <sys/types.h>
 #include <test_progs.h>
 
-#define TDIR "/sys/kernel/debug"
+/* TDIR must be in a location we can create a directory in. */
+#define TDIR "/tmp/test_bpffs_testdir"
 
 static int read_iter(char *file)
 {
@@ -19,11 +20,13 @@ static int read_iter(char *file)
 	fd = open(file, 0);
 	if (fd < 0)
 		return -1;
-	while ((len = read(fd, buf, sizeof(buf))) > 0)
+	while ((len = read(fd, buf, sizeof(buf))) > 0) {
+		buf[sizeof(buf) - 1] = '\0';
 		if (strstr(buf, "iter")) {
 			close(fd);
 			return 0;
 		}
+	}
 	close(fd);
 	return -1;
 }
@@ -41,8 +44,11 @@ static int fn(void)
 	if (!ASSERT_OK(err, "mount /"))
 		goto out;
 
-	err = umount(TDIR);
-	if (!ASSERT_OK(err, "umount " TDIR))
+	err =  mkdir(TDIR, 0777);
+	/* If the directory already exists we can carry on. It may be left over
+	 * from a previous run.
+	 */
+	if ((err && errno != EEXIST) && !ASSERT_OK(err, "mkdir " TDIR))
 		goto out;
 
 	err = mount("none", TDIR, "tmpfs", 0, NULL);
@@ -80,7 +86,7 @@ static int fn(void)
 	if (!ASSERT_OK(err, "creating " TDIR "/fs1/b"))
 		goto out;
 
-	map = bpf_create_map(BPF_MAP_TYPE_ARRAY, 4, 4, 1, 0);
+	map = bpf_map_create(BPF_MAP_TYPE_ARRAY, NULL, 4, 4, 1, NULL);
 	if (!ASSERT_GT(map, 0, "create_map(ARRAY)"))
 		goto out;
 	err = bpf_obj_pin(map, TDIR "/fs1/c");
@@ -136,6 +142,7 @@ out:
 	rmdir(TDIR "/fs1");
 	rmdir(TDIR "/fs2");
 	umount(TDIR);
+	rmdir(TDIR);
 	exit(err);
 }
 

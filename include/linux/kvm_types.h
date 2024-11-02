@@ -6,6 +6,7 @@
 struct kvm;
 struct kvm_async_pf;
 struct kvm_device_ops;
+struct kvm_gfn_range;
 struct kvm_interrupt;
 struct kvm_irq_routing_table;
 struct kvm_memory_slot;
@@ -18,7 +19,10 @@ struct kvm_memslots;
 
 enum kvm_mr_change;
 
+#include <linux/bits.h>
+#include <linux/mutex.h>
 #include <linux/types.h>
+#include <linux/spinlock_types.h>
 
 #include <asm/kvm_types.h>
 
@@ -37,7 +41,7 @@ typedef unsigned long  gva_t;
 typedef u64            gpa_t;
 typedef u64            gfn_t;
 
-#define GPA_INVALID	(~(gpa_t)0)
+#define INVALID_GPA	(~(gpa_t)0)
 
 typedef unsigned long  hva_t;
 typedef u64            hpa_t;
@@ -53,6 +57,21 @@ struct gfn_to_hva_cache {
 	struct kvm_memory_slot *memslot;
 };
 
+struct gfn_to_pfn_cache {
+	u64 generation;
+	gpa_t gpa;
+	unsigned long uhva;
+	struct kvm_memory_slot *memslot;
+	struct kvm *kvm;
+	struct list_head list;
+	rwlock_t lock;
+	struct mutex refresh_lock;
+	void *khva;
+	kvm_pfn_t pfn;
+	bool active;
+	bool valid;
+};
+
 #ifdef KVM_ARCH_NR_OBJS_PER_MEMORY_CACHE
 /*
  * Memory caches are used to preallocate memory ahead of various MMU flows,
@@ -60,12 +79,18 @@ struct gfn_to_hva_cache {
  * MMU flows is problematic, as is triggering reclaim, I/O, etc... while
  * holding MMU locks.  Note, these caches act more like prefetch buffers than
  * classical caches, i.e. objects are not returned to the cache on being freed.
+ *
+ * The @capacity field and @objects array are lazily initialized when the cache
+ * is topped up (__kvm_mmu_topup_memory_cache()).
  */
 struct kvm_mmu_memory_cache {
-	int nobjs;
 	gfp_t gfp_zero;
+	gfp_t gfp_custom;
+	u64 init_value;
 	struct kmem_cache *kmem_cache;
-	void *objects[KVM_ARCH_NR_OBJS_PER_MEMORY_CACHE];
+	int capacity;
+	int nobjs;
+	void **objects;
 };
 #endif
 
@@ -87,6 +112,7 @@ struct kvm_vcpu_stat_generic {
 	u64 halt_poll_success_hist[HALT_POLL_HIST_COUNT];
 	u64 halt_poll_fail_hist[HALT_POLL_HIST_COUNT];
 	u64 halt_wait_hist[HALT_POLL_HIST_COUNT];
+	u64 blocking;
 };
 
 #define KVM_STATS_NAME_SIZE	48

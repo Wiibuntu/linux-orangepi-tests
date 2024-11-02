@@ -17,7 +17,6 @@
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -42,6 +41,7 @@ static const struct exynos_soc_id {
 	unsigned int id;
 } soc_ids[] = {
 	/* List ordered by SoC name */
+	/* Compatible with: samsung,exynos4210-chipid */
 	{ "EXYNOS3250", 0xE3472000 },
 	{ "EXYNOS4210", 0x43200000 },	/* EVT0 revision */
 	{ "EXYNOS4210", 0x43210000 },
@@ -55,8 +55,11 @@ static const struct exynos_soc_id {
 	{ "EXYNOS5440", 0xE5440000 },
 	{ "EXYNOS5800", 0xE5422000 },
 	{ "EXYNOS7420", 0xE7420000 },
+	/* Compatible with: samsung,exynos850-chipid */
+	{ "EXYNOS7885", 0xE7885000 },
 	{ "EXYNOS850", 0xE3830000 },
 	{ "EXYNOSAUTOV9", 0xAAA80000 },
+	{ "EXYNOSAUTOV920", 0x0A920000 },
 };
 
 static const char *product_id_to_soc_id(unsigned int product_id)
@@ -156,13 +159,11 @@ err:
 	return ret;
 }
 
-static int exynos_chipid_remove(struct platform_device *pdev)
+static void exynos_chipid_remove(struct platform_device *pdev)
 {
 	struct soc_device *soc_dev = platform_get_drvdata(pdev);
 
 	soc_device_unregister(soc_dev);
-
-	return 0;
 }
 
 static const struct exynos_chipid_variant exynos4210_chipid_drv_data = {
@@ -195,13 +196,13 @@ static struct platform_driver exynos_chipid_driver = {
 		.of_match_table = exynos_chipid_of_device_ids,
 	},
 	.probe	= exynos_chipid_probe,
-	.remove	= exynos_chipid_remove,
+	.remove_new = exynos_chipid_remove,
 };
 module_platform_driver(exynos_chipid_driver);
 
 MODULE_DESCRIPTION("Samsung Exynos ChipID controller and ASV driver");
 MODULE_AUTHOR("Bartlomiej Zolnierkiewicz <b.zolnierkie@samsung.com>");
-MODULE_AUTHOR("Krzysztof Kozlowski <krzysztof.kozlowski@canonical.com>");
+MODULE_AUTHOR("Krzysztof Kozlowski <krzk@kernel.org>");
 MODULE_AUTHOR("Pankaj Dubey <pankaj.dubey@samsung.com>");
 MODULE_AUTHOR("Sylwester Nawrocki <s.nawrocki@samsung.com>");
 MODULE_LICENSE("GPL");

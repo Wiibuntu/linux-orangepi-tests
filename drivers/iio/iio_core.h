@@ -16,7 +16,7 @@ struct iio_buffer;
 struct iio_chan_spec;
 struct iio_dev;
 
-extern struct device_type iio_device_type;
+extern const struct device_type iio_device_type;
 
 struct iio_dev_buffer_pair {
 	struct iio_dev		*indio_dev;
@@ -30,12 +30,13 @@ struct iio_ioctl_handler {
 		      unsigned int cmd, unsigned long arg);
 };
 
-long iio_device_ioctl(struct iio_dev *indio_dev, struct file *filp,
-		      unsigned int cmd, unsigned long arg);
-
 void iio_device_ioctl_handler_register(struct iio_dev *indio_dev,
 				       struct iio_ioctl_handler *h);
 void iio_device_ioctl_handler_unregister(struct iio_ioctl_handler *h);
+
+ssize_t do_iio_read_channel_label(struct iio_dev *indio_dev,
+				  const struct iio_chan_spec *c,
+				  char *buf);
 
 int __iio_add_chan_devattr(const char *postfix,
 			   struct iio_chan_spec const *chan,

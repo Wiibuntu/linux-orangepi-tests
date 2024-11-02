@@ -21,7 +21,6 @@
 #include <linux/seq_file.h>
 #include <linux/hugetlb.h>
 #include <linux/vmalloc.h>
-#include <linux/uaccess.h>
 #include <asm/tlb.h>
 #include <asm/div64.h>
 #include "internal.h"
@@ -40,10 +39,7 @@ static int nommu_region_show(struct seq_file *m, struct vm_region *region)
 	file = region->vm_file;
 
 	if (file) {
-		struct inode *inode;
-
-		file = vmr_pr_or_file(region);
-		inode = file_inode(file);
+		struct inode *inode = file_inode(region->vm_file);
 		dev = inode->i_sb->s_dev;
 		ino = inode->i_ino;
 	}
@@ -62,7 +58,7 @@ static int nommu_region_show(struct seq_file *m, struct vm_region *region)
 
 	if (file) {
 		seq_pad(m, ' ');
-		seq_file_path(m, file, "");
+		seq_path(m, file_user_path(file), "");
 	}
 
 	seq_putc(m, '\n');

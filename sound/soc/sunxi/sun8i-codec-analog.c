@@ -10,7 +10,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
@@ -729,12 +728,8 @@ static int sun8i_codec_analog_add_mixer(struct snd_soc_component *cmpnt,
 }
 
 static const struct sun8i_codec_analog_quirks sun8i_v3s_quirks = {
-	.has_headphone  = true,
-	.has_hmic       = true,
-	.has_linein     = true,
-	.has_lineout    = true,
-	.has_mbias      = true,
-	.has_mic2       = true,
+	.has_headphone	= true,
+	.has_hmic	= true,
 };
 
 static int sun8i_codec_analog_cmpnt_probe(struct snd_soc_component *cmpnt)

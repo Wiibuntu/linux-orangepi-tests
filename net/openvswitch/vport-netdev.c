@@ -82,7 +82,14 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
 		err = -ENODEV;
 		goto error_free_vport;
 	}
-
+	/* Ensure that the device exists and that the provided
+	 * name is not one of its aliases.
+	 */
+	if (strcmp(name, ovs_vport_name(vport))) {
+		err = -ENODEV;
+		goto error_put;
+	}
+	netdev_tracker_alloc(vport->dev, &vport->dev_tracker, GFP_KERNEL);
 	if (vport->dev->flags & IFF_LOOPBACK ||
 	    (vport->dev->type != ARPHRD_ETHER &&
 	     vport->dev->type != ARPHRD_NONE) ||
@@ -115,7 +122,7 @@ error_master_upper_dev_unlink:
 error_unlock:
 	rtnl_unlock();
 error_put:
-	dev_put(vport->dev);
+	netdev_put(vport->dev, &vport->dev_tracker);
 error_free_vport:
 	ovs_vport_free(vport);
 	return ERR_PTR(err);
@@ -137,8 +144,7 @@ static void vport_netdev_free(struct rcu_head *rcu)
 {
 	struct vport *vport = container_of(rcu, struct vport, rcu);
 
-	if (vport->dev)
-		dev_put(vport->dev);
+	netdev_put(vport->dev, &vport->dev_tracker);
 	ovs_vport_free(vport);
 }
 
@@ -173,8 +179,8 @@ void ovs_netdev_tunnel_destroy(struct vport *vport)
 	 * if it's not already shutting down.
 	 */
 	if (vport->dev->reg_state == NETREG_REGISTERED)
-		rtnl_delete_link(vport->dev);
-	dev_put(vport->dev);
+		rtnl_delete_link(vport->dev, 0, NULL);
+	netdev_put(vport->dev, &vport->dev_tracker);
 	vport->dev = NULL;
 	rtnl_unlock();
 

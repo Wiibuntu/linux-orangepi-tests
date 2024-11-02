@@ -16,9 +16,8 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 
@@ -166,7 +165,7 @@ dis_reg:
 	return ret;
 }
 
-static int lpc18xx_dac_remove(struct platform_device *pdev)
+static void lpc18xx_dac_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct lpc18xx_dac *dac = iio_priv(indio_dev);
@@ -176,8 +175,6 @@ static int lpc18xx_dac_remove(struct platform_device *pdev)
 	writel(0, dac->base + LPC18XX_DAC_CTRL);
 	clk_disable_unprepare(dac->clk);
 	regulator_disable(dac->vref);
-
-	return 0;
 }
 
 static const struct of_device_id lpc18xx_dac_match[] = {
@@ -188,7 +185,7 @@ MODULE_DEVICE_TABLE(of, lpc18xx_dac_match);
 
 static struct platform_driver lpc18xx_dac_driver = {
 	.probe	= lpc18xx_dac_probe,
-	.remove	= lpc18xx_dac_remove,
+	.remove_new = lpc18xx_dac_remove,
 	.driver	= {
 		.name = "lpc18xx-dac",
 		.of_match_table = lpc18xx_dac_match,

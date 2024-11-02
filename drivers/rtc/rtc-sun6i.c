@@ -13,6 +13,7 @@
 
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/clk/sunxi-ng.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/fs.h>
@@ -23,7 +24,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 #include <linux/slab.h>
@@ -72,7 +72,7 @@
 
 /* General-purpose data */
 #define SUN6I_GP_DATA				0x0100
-#define SUN6I_GP_DATA_SIZE			0x40
+#define SUN6I_GP_DATA_SIZE			0x20
 
 /*
  * Get date values
@@ -135,10 +135,8 @@ struct sun6i_rtc_clk_data {
 	unsigned int fixed_prescaler : 16;
 	unsigned int has_prescaler : 1;
 	unsigned int has_out_clk : 1;
-	unsigned int export_iosc : 1;
 	unsigned int has_losc_en : 1;
 	unsigned int has_auto_swt : 1;
-	unsigned int no_ext_losc : 1;
 };
 
 #define RTC_LINEAR_DAY	BIT(0)
@@ -215,6 +213,7 @@ static int sun6i_rtc_osc_set_parent(struct clk_hw *hw, u8 index)
 
 static const struct clk_ops sun6i_rtc_osc_ops = {
 	.recalc_rate	= sun6i_rtc_osc_recalc_rate,
+	.determine_rate	= clk_hw_determine_rate_no_reparent,
 
 	.get_parent	= sun6i_rtc_osc_get_parent,
 	.set_parent	= sun6i_rtc_osc_set_parent,
@@ -261,7 +260,7 @@ static void __init sun6i_rtc_clk_init(struct device_node *node,
 	}
 
 	/* Switch to the external, more precise, oscillator, if present */
-	if (!rtc->data->no_ext_losc && of_get_property(node, "clocks", NULL)) {
+	if (of_property_present(node, "clocks")) {
 		reg |= SUN6I_LOSC_CTRL_EXT_OSC;
 		if (rtc->data->has_losc_en)
 			reg |= SUN6I_LOSC_CTRL_EXT_LOSC_EN;
@@ -271,10 +270,8 @@ static void __init sun6i_rtc_clk_init(struct device_node *node,
 	/* Yes, I know, this is ugly. */
 	sun6i_rtc = rtc;
 
-	/* Only read IOSC name from device tree if it is exported */
-	if (rtc->data->export_iosc)
-		of_property_read_string_index(node, "clock-output-names", 2,
-					      &iosc_name);
+	of_property_read_string_index(node, "clock-output-names", 2,
+				      &iosc_name);
 
 	rtc->int_osc = clk_hw_register_fixed_rate_with_accuracy(NULL,
 								iosc_name,
@@ -287,19 +284,14 @@ static void __init sun6i_rtc_clk_init(struct device_node *node,
 	}
 
 	parents[0] = clk_hw_get_name(rtc->int_osc);
-	if (rtc->data->no_ext_losc) {
-		parents[1] = NULL;
-		init.num_parents = 1;
-	} else {
-		/* If there is no external oscillator, this will be NULL and */
-		parents[1] = of_clk_get_parent_name(node, 0);
-		/* ... number of clock parents will be 1. */
-		init.num_parents = of_clk_get_parent_count(node) + 1;
-	}
+	/* If there is no external oscillator, this will be NULL and ... */
+	parents[1] = of_clk_get_parent_name(node, 0);
 
 	rtc->hw.init = &init;
 
 	init.parent_names = parents;
+	/* ... number of clock parents will be 1. */
+	init.num_parents = of_clk_get_parent_count(node) + 1;
 	of_property_read_string_index(node, "clock-output-names", 0,
 				      &init.name);
 
@@ -320,13 +312,10 @@ static void __init sun6i_rtc_clk_init(struct device_node *node,
 		goto err_register;
 	}
 
-	clk_data->num = 2;
+	clk_data->num = 3;
 	clk_data->hws[0] = &rtc->hw;
 	clk_data->hws[1] = __clk_get_hw(rtc->ext_losc);
-	if (rtc->data->export_iosc) {
-		clk_data->hws[2] = rtc->int_osc;
-		clk_data->num = 3;
-	}
+	clk_data->hws[2] = rtc->int_osc;
 	of_clk_add_hw_provider(node, of_clk_hw_onecell_get, clk_data);
 	return;
 
@@ -366,7 +355,6 @@ static const struct sun6i_rtc_clk_data sun8i_h3_rtc_data = {
 	.fixed_prescaler = 32,
 	.has_prescaler = 1,
 	.has_out_clk = 1,
-	.export_iosc = 1,
 };
 
 static void __init sun8i_h3_rtc_clk_init(struct device_node *node)
@@ -384,7 +372,6 @@ static const struct sun6i_rtc_clk_data sun50i_h6_rtc_data = {
 	.fixed_prescaler = 32,
 	.has_prescaler = 1,
 	.has_out_clk = 1,
-	.export_iosc = 1,
 	.has_losc_en = 1,
 	.has_auto_swt = 1,
 };
@@ -395,23 +382,6 @@ static void __init sun50i_h6_rtc_clk_init(struct device_node *node)
 }
 CLK_OF_DECLARE_DRIVER(sun50i_h6_rtc_clk, "allwinner,sun50i-h6-rtc",
 		      sun50i_h6_rtc_clk_init);
-
-static const struct sun6i_rtc_clk_data sun50i_h616_rtc_data = {
-	.rc_osc_rate = 16000000,
-	.fixed_prescaler = 32,
-	.has_prescaler = 1,
-	.has_out_clk = 1,
-	.export_iosc = 1,
-	.no_ext_losc = 1,
-};
-
-static void __init sun50i_h616_rtc_clk_init(struct device_node *node)
-{
-	sun6i_rtc_clk_init(node, &sun50i_h616_rtc_data);
-}
-
-CLK_OF_DECLARE_DRIVER(sun50i_h616_rtc_clk, "allwinner,sun50i-h616-rtc",
-		      sun50i_h616_rtc_clk_init);
 
 /*
  * The R40 user manual is self-conflicting on whether the prescaler is
@@ -432,6 +402,7 @@ CLK_OF_DECLARE_DRIVER(sun8i_r40_rtc_clk, "allwinner,sun8i-r40-rtc",
 static const struct sun6i_rtc_clk_data sun8i_v3_rtc_data = {
 	.rc_osc_rate = 32000,
 	.has_out_clk = 1,
+	.has_auto_swt = 1,
 };
 
 static void __init sun8i_v3_rtc_clk_init(struct device_node *node)
@@ -738,6 +709,7 @@ static struct nvmem_config sun6i_rtc_nvmem_cfg = {
 	.stride		= 4,
 };
 
+#ifdef CONFIG_PM_SLEEP
 /* Enable IRQ wake on suspend, to wake up from RTC. */
 static int sun6i_rtc_suspend(struct device *dev)
 {
@@ -750,7 +722,7 @@ static int sun6i_rtc_suspend(struct device *dev)
 }
 
 /* Disable IRQ wake on resume. */
-static int __maybe_unused sun6i_rtc_resume(struct device *dev)
+static int sun6i_rtc_resume(struct device *dev)
 {
 	struct sun6i_rtc_dev *chip = dev_get_drvdata(dev);
 
@@ -759,14 +731,39 @@ static int __maybe_unused sun6i_rtc_resume(struct device *dev)
 
 	return 0;
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(sun6i_rtc_pm_ops,
 	sun6i_rtc_suspend, sun6i_rtc_resume);
 
+static void sun6i_rtc_bus_clk_cleanup(void *data)
+{
+	struct clk *bus_clk = data;
+
+	clk_disable_unprepare(bus_clk);
+}
+
 static int sun6i_rtc_probe(struct platform_device *pdev)
 {
 	struct sun6i_rtc_dev *chip = sun6i_rtc;
+	struct device *dev = &pdev->dev;
+	struct clk *bus_clk;
 	int ret;
+
+	bus_clk = devm_clk_get_optional(dev, "bus");
+	if (IS_ERR(bus_clk))
+		return PTR_ERR(bus_clk);
+
+	if (bus_clk) {
+		ret = clk_prepare_enable(bus_clk);
+		if (ret)
+			return ret;
+
+		ret = devm_add_action_or_reset(dev, sun6i_rtc_bus_clk_cleanup,
+					       bus_clk);
+		if (ret)
+			return ret;
+	}
 
 	if (!chip) {
 		chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
@@ -778,6 +775,12 @@ static int sun6i_rtc_probe(struct platform_device *pdev)
 		chip->base = devm_platform_ioremap_resource(pdev, 0);
 		if (IS_ERR(chip->base))
 			return PTR_ERR(chip->base);
+
+		if (IS_REACHABLE(CONFIG_SUN6I_RTC_CCU)) {
+			ret = sun6i_rtc_ccu_probe(dev, chip->base);
+			if (ret)
+				return ret;
+		}
 	}
 
 	platform_set_drvdata(pdev, chip);
@@ -844,14 +847,7 @@ static int sun6i_rtc_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	dev_info(&pdev->dev, "RTC enabled\n");
-
 	return 0;
-}
-
-static void sun6i_rtc_shutdown(struct platform_device *pdev)
-{
-	sun6i_rtc_suspend(&pdev->dev);
 }
 
 /*
@@ -870,13 +866,14 @@ static const struct of_device_id sun6i_rtc_dt_ids[] = {
 	{ .compatible = "allwinner,sun50i-h6-rtc" },
 	{ .compatible = "allwinner,sun50i-h616-rtc",
 		.data = (void *)RTC_LINEAR_DAY },
+	{ .compatible = "allwinner,sun50i-r329-rtc",
+		.data = (void *)RTC_LINEAR_DAY },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, sun6i_rtc_dt_ids);
 
 static struct platform_driver sun6i_rtc_driver = {
 	.probe		= sun6i_rtc_probe,
-	.shutdown	= sun6i_rtc_shutdown,
 	.driver		= {
 		.name		= "sun6i-rtc",
 		.of_match_table = sun6i_rtc_dt_ids,

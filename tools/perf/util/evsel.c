@@ -10,9 +10,9 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <linux/bitops.h>
+#include <api/io.h>
 #include <api/fs/fs.h>
 #include <api/fs/tracing_path.h>
-#include <traceevent/event-parse.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/perf_event.h>
 #include <linux/compiler.h>
@@ -31,6 +31,7 @@
 #include "counts.h"
 #include "event.h"
 #include "evsel.h"
+#include "time-utils.h"
 #include "util/env.h"
 #include "util/evsel_config.h"
 #include "util/evsel_fprintf.h"
@@ -46,18 +47,56 @@
 #include "string2.h"
 #include "memswap.h"
 #include "util.h"
-#include "hashmap.h"
-#include "pmu-hybrid.h"
+#include "util/hashmap.h"
+#include "off_cpu.h"
+#include "pmu.h"
+#include "pmus.h"
+#include "rlimit.h"
 #include "../perf-sys.h"
 #include "util/parse-branch-options.h"
+#include "util/bpf-filter.h"
+#include "util/hist.h"
 #include <internal/xyarray.h>
 #include <internal/lib.h>
+#include <internal/threadmap.h>
+#include "util/intel-tpebs.h"
 
 #include <linux/ctype.h>
+
+#ifdef HAVE_LIBTRACEEVENT
+#include <traceevent/event-parse.h>
+#endif
 
 struct perf_missing_features perf_missing_features;
 
 static clockid_t clockid;
+
+static const char *const perf_tool_event__tool_names[PERF_TOOL_MAX] = {
+	NULL,
+	"duration_time",
+	"user_time",
+	"system_time",
+};
+
+const char *perf_tool_event__to_str(enum perf_tool_event ev)
+{
+	if (ev > PERF_TOOL_NONE && ev < PERF_TOOL_MAX)
+		return perf_tool_event__tool_names[ev];
+
+	return NULL;
+}
+
+enum perf_tool_event perf_tool_event__from_str(const char *str)
+{
+	int i;
+
+	perf_tool_event__for_each_event(i) {
+		if (!strcmp(str, perf_tool_event__tool_names[i]))
+			return i;
+	}
+	return PERF_TOOL_NONE;
+}
+
 
 static int evsel__no_extra_init(struct evsel *evsel __maybe_unused)
 {
@@ -249,16 +288,17 @@ void evsel__init(struct evsel *evsel,
 	evsel->bpf_fd	   = -1;
 	INIT_LIST_HEAD(&evsel->config_terms);
 	INIT_LIST_HEAD(&evsel->bpf_counter_list);
+	INIT_LIST_HEAD(&evsel->bpf_filters);
 	perf_evsel__object.init(evsel);
 	evsel->sample_size = __evsel__sample_size(attr->sample_type);
 	evsel__calc_id_pos(evsel);
 	evsel->cmdline_group_boundary = false;
-	evsel->metric_expr   = NULL;
-	evsel->metric_name   = NULL;
 	evsel->metric_events = NULL;
 	evsel->per_pkg_mask  = NULL;
 	evsel->collect_stat  = false;
 	evsel->pmu_name      = NULL;
+	evsel->group_pmu_name = NULL;
+	evsel->skippable     = false;
 }
 
 struct evsel *evsel__new_idx(struct perf_event_attr *attr, int idx)
@@ -269,8 +309,8 @@ struct evsel *evsel__new_idx(struct perf_event_attr *attr, int idx)
 		return NULL;
 	evsel__init(evsel, attr, idx);
 
-	if (evsel__is_bpf_output(evsel)) {
-		evsel->core.attr.sample_type |= (PERF_SAMPLE_RAW | PERF_SAMPLE_TIME |
+	if (evsel__is_bpf_output(evsel) && !attr->sample_type) {
+		evsel->core.attr.sample_type = (PERF_SAMPLE_RAW | PERF_SAMPLE_TIME |
 					    PERF_SAMPLE_CPU | PERF_SAMPLE_PERIOD),
 		evsel->core.attr.sample_period = 1;
 	}
@@ -282,48 +322,6 @@ struct evsel *evsel__new_idx(struct perf_event_attr *attr, int idx)
 	}
 
 	return evsel;
-}
-
-static bool perf_event_can_profile_kernel(void)
-{
-	return perf_event_paranoid_check(1);
-}
-
-struct evsel *evsel__new_cycles(bool precise __maybe_unused, __u32 type, __u64 config)
-{
-	struct perf_event_attr attr = {
-		.type	= type,
-		.config	= config,
-		.exclude_kernel	= !perf_event_can_profile_kernel(),
-	};
-	struct evsel *evsel;
-
-	event_attr_init(&attr);
-
-	/*
-	 * Now let the usual logic to set up the perf_event_attr defaults
-	 * to kick in when we return and before perf_evsel__open() is called.
-	 */
-	evsel = evsel__new(&attr);
-	if (evsel == NULL)
-		goto out;
-
-	arch_evsel__fixup_new_cycles(&evsel->core.attr);
-
-	evsel->precise_max = true;
-
-	/* use asprintf() because free(evsel) assumes name is allocated */
-	if (asprintf(&evsel->name, "cycles%s%s%.*s",
-		     (attr.precise_ip || attr.exclude_kernel) ? ":" : "",
-		     attr.exclude_kernel ? "u" : "",
-		     attr.precise_ip ? attr.precise_ip + 1 : 0, "ppp") < 0)
-		goto error_free;
-out:
-	return evsel;
-error_free:
-	evsel__delete(evsel);
-	evsel = NULL;
-	goto out;
 }
 
 int copy_config_terms(struct list_head *dst, struct list_head *src)
@@ -382,6 +380,8 @@ struct evsel *evsel__clone(struct evsel *orig)
 	evsel->core.threads = perf_thread_map__get(orig->core.threads);
 	evsel->core.nr_members = orig->core.nr_members;
 	evsel->core.system_wide = orig->core.system_wide;
+	evsel->core.requires_cpu = orig->core.requires_cpu;
+	evsel->core.is_pmu_core = orig->core.is_pmu_core;
 
 	if (orig->name) {
 		evsel->name = strdup(orig->name);
@@ -398,6 +398,11 @@ struct evsel *evsel__clone(struct evsel *orig)
 		if (evsel->pmu_name == NULL)
 			goto out_err;
 	}
+	if (orig->group_pmu_name) {
+		evsel->group_pmu_name = strdup(orig->group_pmu_name);
+		if (evsel->group_pmu_name == NULL)
+			goto out_err;
+	}
 	if (orig->filter) {
 		evsel->filter = strdup(orig->filter);
 		if (evsel->filter == NULL)
@@ -409,7 +414,9 @@ struct evsel *evsel__clone(struct evsel *orig)
 			goto out_err;
 	}
 	evsel->cgrp = cgroup__get(orig->cgrp);
+#ifdef HAVE_LIBTRACEEVENT
 	evsel->tp_format = orig->tp_format;
+#endif
 	evsel->handler = orig->handler;
 	evsel->core.leader = orig->core.leader;
 
@@ -425,7 +432,6 @@ struct evsel *evsel__clone(struct evsel *orig)
 	evsel->per_pkg = orig->per_pkg;
 	evsel->percore = orig->percore;
 	evsel->precise_max = orig->precise_max;
-	evsel->use_uncore_alias = orig->use_uncore_alias;
 	evsel->is_libpfm_event = orig->is_libpfm_event;
 
 	evsel->exclude_GH = orig->exclude_GH;
@@ -434,6 +440,7 @@ struct evsel *evsel__clone(struct evsel *orig)
 	evsel->collect_stat = orig->collect_stat;
 	evsel->weak_group = orig->weak_group;
 	evsel->use_config_name = orig->use_config_name;
+	evsel->pmu = orig->pmu;
 
 	if (evsel__copy_config_terms(evsel, orig) < 0)
 		goto out_err;
@@ -448,7 +455,8 @@ out_err:
 /*
  * Returns pointer with encoded error via <linux/err.h> interface.
  */
-struct evsel *evsel__newtp_idx(const char *sys, const char *name, int idx)
+#ifdef HAVE_LIBTRACEEVENT
+struct evsel *evsel__newtp_idx(const char *sys, const char *name, int idx, bool format)
 {
 	struct evsel *evsel = zalloc(perf_evsel__object.size);
 	int err = -ENOMEM;
@@ -465,14 +473,20 @@ struct evsel *evsel__newtp_idx(const char *sys, const char *name, int idx)
 		if (asprintf(&evsel->name, "%s:%s", sys, name) < 0)
 			goto out_free;
 
-		evsel->tp_format = trace_event__tp_format(sys, name);
-		if (IS_ERR(evsel->tp_format)) {
-			err = PTR_ERR(evsel->tp_format);
-			goto out_free;
+		event_attr_init(&attr);
+
+		if (format) {
+			evsel->tp_format = trace_event__tp_format(sys, name);
+			if (IS_ERR(evsel->tp_format)) {
+				err = PTR_ERR(evsel->tp_format);
+				goto out_free;
+			}
+			attr.config = evsel->tp_format->id;
+		} else {
+			attr.config = (__u64) -1;
 		}
 
-		event_attr_init(&attr);
-		attr.config = evsel->tp_format->id;
+
 		attr.sample_period = 1;
 		evsel__init(evsel, &attr, idx);
 	}
@@ -485,8 +499,9 @@ out_free:
 out_err:
 	return ERR_PTR(err);
 }
+#endif
 
-const char *evsel__hw_names[PERF_COUNT_HW_MAX] = {
+const char *const evsel__hw_names[PERF_COUNT_HW_MAX] = {
 	"cycles",
 	"instructions",
 	"cache-references",
@@ -565,13 +580,18 @@ static int evsel__add_modifiers(struct evsel *evsel, char *bf, size_t size)
 	return r;
 }
 
+int __weak arch_evsel__hw_name(struct evsel *evsel, char *bf, size_t size)
+{
+	return scnprintf(bf, size, "%s", __evsel__hw_name(evsel->core.attr.config));
+}
+
 static int evsel__hw_name(struct evsel *evsel, char *bf, size_t size)
 {
-	int r = scnprintf(bf, size, "%s", __evsel__hw_name(evsel->core.attr.config));
+	int r = arch_evsel__hw_name(evsel, bf, size);
 	return r + evsel__add_modifiers(evsel, bf + r, size - r);
 }
 
-const char *evsel__sw_names[PERF_COUNT_SW_MAX] = {
+const char *const evsel__sw_names[PERF_COUNT_SW_MAX] = {
 	"cpu-clock",
 	"task-clock",
 	"page-faults",
@@ -595,6 +615,11 @@ static int evsel__sw_name(struct evsel *evsel, char *bf, size_t size)
 {
 	int r = scnprintf(bf, size, "%s", __evsel__sw_name(evsel->core.attr.config));
 	return r + evsel__add_modifiers(evsel, bf + r, size - r);
+}
+
+static int evsel__tool_name(enum perf_tool_event ev, char *bf, size_t size)
+{
+	return scnprintf(bf, size, "%s", perf_tool_event__to_str(ev));
 }
 
 static int __evsel__bp_name(char *bf, size_t size, u64 addr, u64 type)
@@ -622,7 +647,7 @@ static int evsel__bp_name(struct evsel *evsel, char *bf, size_t size)
 	return r + evsel__add_modifiers(evsel, bf + r, size - r);
 }
 
-const char *evsel__hw_cache[PERF_COUNT_HW_CACHE_MAX][EVSEL__MAX_ALIASES] = {
+const char *const evsel__hw_cache[PERF_COUNT_HW_CACHE_MAX][EVSEL__MAX_ALIASES] = {
  { "L1-dcache",	"l1-d",		"l1d",		"L1-data",		},
  { "L1-icache",	"l1-i",		"l1i",		"L1-instruction",	},
  { "LLC",	"L2",							},
@@ -632,13 +657,13 @@ const char *evsel__hw_cache[PERF_COUNT_HW_CACHE_MAX][EVSEL__MAX_ALIASES] = {
  { "node",								},
 };
 
-const char *evsel__hw_cache_op[PERF_COUNT_HW_CACHE_OP_MAX][EVSEL__MAX_ALIASES] = {
+const char *const evsel__hw_cache_op[PERF_COUNT_HW_CACHE_OP_MAX][EVSEL__MAX_ALIASES] = {
  { "load",	"loads",	"read",					},
  { "store",	"stores",	"write",				},
  { "prefetch",	"prefetches",	"speculative-read", "speculative-load",	},
 };
 
-const char *evsel__hw_cache_result[PERF_COUNT_HW_CACHE_RESULT_MAX][EVSEL__MAX_ALIASES] = {
+const char *const evsel__hw_cache_result[PERF_COUNT_HW_CACHE_RESULT_MAX][EVSEL__MAX_ALIASES] = {
  { "refs",	"Reference",	"ops",		"access",		},
  { "misses",	"miss",							},
 };
@@ -654,7 +679,7 @@ const char *evsel__hw_cache_result[PERF_COUNT_HW_CACHE_RESULT_MAX][EVSEL__MAX_AL
  * L1I : Read and prefetch only
  * ITLB and BPU : Read-only
  */
-static unsigned long evsel__hw_cache_stat[C(MAX)] = {
+static const unsigned long evsel__hw_cache_stat[C(MAX)] = {
  [C(L1D)]	= (CACHE_READ | CACHE_WRITE | CACHE_PREFETCH),
  [C(L1I)]	= (CACHE_READ | CACHE_PREFETCH),
  [C(LL)]	= (CACHE_READ | CACHE_WRITE | CACHE_PREFETCH),
@@ -723,12 +748,6 @@ static int evsel__raw_name(struct evsel *evsel, char *bf, size_t size)
 	return ret + evsel__add_modifiers(evsel, bf + ret, size - ret);
 }
 
-static int evsel__tool_name(char *bf, size_t size)
-{
-	int ret = scnprintf(bf, size, "duration_time");
-	return ret;
-}
-
 const char *evsel__name(struct evsel *evsel)
 {
 	char bf[128];
@@ -753,8 +772,8 @@ const char *evsel__name(struct evsel *evsel)
 		break;
 
 	case PERF_TYPE_SOFTWARE:
-		if (evsel->tool_event)
-			evsel__tool_name(bf, sizeof(bf));
+		if (evsel__is_tool(evsel))
+			evsel__tool_name(evsel__tool_event(evsel), bf, sizeof(bf));
 		else
 			evsel__sw_name(evsel, bf, sizeof(bf));
 		break;
@@ -781,13 +800,18 @@ out_unknown:
 	return "unknown";
 }
 
+bool evsel__name_is(struct evsel *evsel, const char *name)
+{
+	return !strcmp(evsel__name(evsel), name);
+}
+
 const char *evsel__metric_id(const struct evsel *evsel)
 {
 	if (evsel->metric_id)
 		return evsel->metric_id;
 
-	if (evsel->core.attr.type == PERF_TYPE_SOFTWARE && evsel->tool_event)
-		return "duration_time";
+	if (evsel__is_tool(evsel))
+		return perf_tool_event__to_str(evsel__tool_event(evsel));
 
 	return "unknown";
 }
@@ -810,16 +834,22 @@ const char *evsel__group_name(struct evsel *evsel)
 int evsel__group_desc(struct evsel *evsel, char *buf, size_t size)
 {
 	int ret = 0;
+	bool first = true;
 	struct evsel *pos;
 	const char *group_name = evsel__group_name(evsel);
 
 	if (!evsel->forced_leader)
 		ret = scnprintf(buf, size, "%s { ", group_name);
 
-	ret += scnprintf(buf + ret, size - ret, "%s", evsel__name(evsel));
+	for_each_group_evsel(pos, evsel) {
+		if (symbol_conf.skip_empty &&
+		    evsel__hists(pos)->stats.nr_samples == 0)
+			continue;
 
-	for_each_group_member(pos, evsel)
-		ret += scnprintf(buf + ret, size - ret, ", %s", evsel__name(pos));
+		ret += scnprintf(buf + ret, size - ret, "%s%s",
+				 first ? "" : ", ", evsel__name(pos));
+		first = false;
+	}
 
 	if (!evsel->forced_leader)
 		ret += scnprintf(buf + ret, size - ret, " }");
@@ -832,6 +862,7 @@ static void __evsel__config_callchain(struct evsel *evsel, struct record_opts *o
 {
 	bool function = evsel__is_function_event(evsel);
 	struct perf_event_attr *attr = &evsel->core.attr;
+	const char *arch = perf_env__arch(evsel__env(evsel));
 
 	evsel__set_sample_bit(evsel, CALLCHAIN);
 
@@ -864,13 +895,14 @@ static void __evsel__config_callchain(struct evsel *evsel, struct record_opts *o
 		if (!function) {
 			evsel__set_sample_bit(evsel, REGS_USER);
 			evsel__set_sample_bit(evsel, STACK_USER);
-			if (opts->sample_user_regs && DWARF_MINIMAL_REGS != PERF_REGS_MASK) {
-				attr->sample_regs_user |= DWARF_MINIMAL_REGS;
+			if (opts->sample_user_regs &&
+			    DWARF_MINIMAL_REGS(arch) != arch__user_reg_mask()) {
+				attr->sample_regs_user |= DWARF_MINIMAL_REGS(arch);
 				pr_warning("WARNING: The use of --call-graph=dwarf may require all the user registers, "
 					   "specifying a subset with --user-regs may render DWARF unwinding unreliable, "
 					   "so the minimal registers set (IP, SP) is explicitly forced.\n");
 			} else {
-				attr->sample_regs_user |= PERF_REGS_MASK;
+				attr->sample_regs_user |= arch__user_reg_mask();
 			}
 			attr->sample_stack_user = param->dump_size;
 			attr->exclude_callchain_user = 1;
@@ -1060,7 +1092,8 @@ void __weak arch_evsel__set_sample_weight(struct evsel *evsel)
 	evsel__set_sample_bit(evsel, WEIGHT);
 }
 
-void __weak arch_evsel__fixup_new_cycles(struct perf_event_attr *attr __maybe_unused)
+void __weak arch__post_evsel_config(struct evsel *evsel __maybe_unused,
+				    struct perf_event_attr *attr __maybe_unused)
 {
 }
 
@@ -1073,6 +1106,11 @@ static void evsel__set_default_freq_period(struct record_opts *opts,
 	} else {
 		attr->sample_period = opts->default_interval;
 	}
+}
+
+static bool evsel__is_offcpu_event(struct evsel *evsel)
+{
+	return evsel__is_bpf_output(evsel) && evsel__name_is(evsel, OFFCPU_EVENT);
 }
 
 /*
@@ -1114,6 +1152,7 @@ void evsel__config(struct evsel *evsel, struct record_opts *opts,
 	attr->sample_id_all = perf_missing_features.sample_id_all ? 0 : 1;
 	attr->inherit	    = !opts->no_inherit;
 	attr->write_backward = opts->overwrite ? 1 : 0;
+	attr->read_format   = PERF_FORMAT_LOST;
 
 	evsel__set_sample_bit(evsel, IP);
 	evsel__set_sample_bit(evsel, TID);
@@ -1283,7 +1322,7 @@ void evsel__config(struct evsel *evsel, struct record_opts *opts,
 	 * group leaders for traced executed by perf.
 	 */
 	if (target__none(&opts->target) && evsel__is_group_leader(evsel) &&
-	    !opts->initial_delay)
+	    !opts->target.initial_delay)
 		attr->enable_on_exec = 1;
 
 	if (evsel->immediate) {
@@ -1339,6 +1378,11 @@ void evsel__config(struct evsel *evsel, struct record_opts *opts,
 	 */
 	if (evsel__is_dummy_event(evsel))
 		evsel__reset_sample_bit(evsel, BRANCH_STACK);
+
+	if (evsel__is_offcpu_event(evsel))
+		evsel->core.attr.sample_type &= OFFCPU_SAMPLE_TYPES;
+
+	arch__post_evsel_config(evsel, attr);
 }
 
 int evsel__set_filter(struct evsel *evsel, const char *filter)
@@ -1381,9 +1425,9 @@ int evsel__append_addr_filter(struct evsel *evsel, const char *filter)
 }
 
 /* Caller has to clear disabled after going through all CPUs. */
-int evsel__enable_cpu(struct evsel *evsel, int cpu)
+int evsel__enable_cpu(struct evsel *evsel, int cpu_map_idx)
 {
-	return perf_evsel__enable_cpu(&evsel->core, cpu);
+	return perf_evsel__enable_cpu(&evsel->core, cpu_map_idx);
 }
 
 int evsel__enable(struct evsel *evsel)
@@ -1396,9 +1440,9 @@ int evsel__enable(struct evsel *evsel)
 }
 
 /* Caller has to set disabled after going through all CPUs. */
-int evsel__disable_cpu(struct evsel *evsel, int cpu)
+int evsel__disable_cpu(struct evsel *evsel, int cpu_map_idx)
 {
-	return perf_evsel__disable_cpu(&evsel->core, cpu);
+	return perf_evsel__disable_cpu(&evsel->core, cpu_map_idx);
 }
 
 int evsel__disable(struct evsel *evsel)
@@ -1438,6 +1482,7 @@ void evsel__exit(struct evsel *evsel)
 	assert(list_empty(&evsel->core.node));
 	assert(evsel->evlist == NULL);
 	bpf_counter__destroy(evsel);
+	perf_bpf_filter__destroy(evsel);
 	evsel__free_counts(evsel);
 	perf_evsel__free_fd(&evsel->core);
 	perf_evsel__free_id(&evsel->core);
@@ -1448,7 +1493,9 @@ void evsel__exit(struct evsel *evsel)
 	perf_thread_map__put(evsel->core.threads);
 	zfree(&evsel->group_name);
 	zfree(&evsel->name);
+	zfree(&evsel->filter);
 	zfree(&evsel->pmu_name);
+	zfree(&evsel->group_pmu_name);
 	zfree(&evsel->unit);
 	zfree(&evsel->metric_id);
 	evsel__zero_per_pkg(evsel);
@@ -1456,15 +1503,21 @@ void evsel__exit(struct evsel *evsel)
 	evsel->per_pkg_mask = NULL;
 	zfree(&evsel->metric_events);
 	perf_evsel__object.fini(evsel);
+	if (evsel__tool_event(evsel) == PERF_TOOL_SYSTEM_TIME ||
+	    evsel__tool_event(evsel) == PERF_TOOL_USER_TIME)
+		xyarray__delete(evsel->start_times);
 }
 
 void evsel__delete(struct evsel *evsel)
 {
+	if (!evsel)
+		return;
+
 	evsel__exit(evsel);
 	free(evsel);
 }
 
-void evsel__compute_deltas(struct evsel *evsel, int cpu, int thread,
+void evsel__compute_deltas(struct evsel *evsel, int cpu_map_idx, int thread,
 			   struct perf_counts_values *count)
 {
 	struct perf_counts_values tmp;
@@ -1472,67 +1525,110 @@ void evsel__compute_deltas(struct evsel *evsel, int cpu, int thread,
 	if (!evsel->prev_raw_counts)
 		return;
 
-	if (cpu == -1) {
-		tmp = evsel->prev_raw_counts->aggr;
-		evsel->prev_raw_counts->aggr = *count;
-	} else {
-		tmp = *perf_counts(evsel->prev_raw_counts, cpu, thread);
-		*perf_counts(evsel->prev_raw_counts, cpu, thread) = *count;
-	}
+	tmp = *perf_counts(evsel->prev_raw_counts, cpu_map_idx, thread);
+	*perf_counts(evsel->prev_raw_counts, cpu_map_idx, thread) = *count;
 
 	count->val = count->val - tmp.val;
 	count->ena = count->ena - tmp.ena;
 	count->run = count->run - tmp.run;
 }
 
-void perf_counts_values__scale(struct perf_counts_values *count,
-			       bool scale, s8 *pscaled)
+static int evsel__read_one(struct evsel *evsel, int cpu_map_idx, int thread)
 {
-	s8 scaled = 0;
+	struct perf_counts_values *count = perf_counts(evsel->counts, cpu_map_idx, thread);
 
-	if (scale) {
-		if (count->run == 0) {
-			scaled = -1;
-			count->val = 0;
-		} else if (count->run < count->ena) {
-			scaled = 1;
-			count->val = (u64)((double) count->val * count->ena / count->run);
-		}
-	}
-
-	if (pscaled)
-		*pscaled = scaled;
+	return perf_evsel__read(&evsel->core, cpu_map_idx, thread, count);
 }
 
-static int evsel__read_one(struct evsel *evsel, int cpu, int thread)
+static int evsel__read_retire_lat(struct evsel *evsel, int cpu_map_idx, int thread)
 {
-	struct perf_counts_values *count = perf_counts(evsel->counts, cpu, thread);
-
-	return perf_evsel__read(&evsel->core, cpu, thread, count);
+	return tpebs_set_evsel(evsel, cpu_map_idx, thread);
 }
 
-static void evsel__set_count(struct evsel *counter, int cpu, int thread, u64 val, u64 ena, u64 run)
+static void evsel__set_count(struct evsel *counter, int cpu_map_idx, int thread,
+			     u64 val, u64 ena, u64 run, u64 lost)
 {
 	struct perf_counts_values *count;
 
-	count = perf_counts(counter->counts, cpu, thread);
+	count = perf_counts(counter->counts, cpu_map_idx, thread);
+
+	if (counter->retire_lat) {
+		evsel__read_retire_lat(counter, cpu_map_idx, thread);
+		perf_counts__set_loaded(counter->counts, cpu_map_idx, thread, true);
+		return;
+	}
 
 	count->val    = val;
 	count->ena    = ena;
 	count->run    = run;
+	count->lost   = lost;
 
-	perf_counts__set_loaded(counter->counts, cpu, thread, true);
+	perf_counts__set_loaded(counter->counts, cpu_map_idx, thread, true);
 }
 
-static int evsel__process_group_data(struct evsel *leader, int cpu, int thread, u64 *data)
+static bool evsel__group_has_tpebs(struct evsel *leader)
+{
+	struct evsel *evsel;
+
+	for_each_group_evsel(evsel, leader) {
+		if (evsel__is_retire_lat(evsel))
+			return true;
+	}
+	return false;
+}
+
+static u64 evsel__group_read_nr_members(struct evsel *leader)
+{
+	u64 nr = leader->core.nr_members;
+	struct evsel *evsel;
+
+	for_each_group_evsel(evsel, leader) {
+		if (evsel__is_retire_lat(evsel))
+			nr--;
+	}
+	return nr;
+}
+
+static u64 evsel__group_read_size(struct evsel *leader)
+{
+	u64 read_format = leader->core.attr.read_format;
+	int entry = sizeof(u64); /* value */
+	int size = 0;
+	int nr = 1;
+
+	if (!evsel__group_has_tpebs(leader))
+		return perf_evsel__read_size(&leader->core);
+
+	if (read_format & PERF_FORMAT_TOTAL_TIME_ENABLED)
+		size += sizeof(u64);
+
+	if (read_format & PERF_FORMAT_TOTAL_TIME_RUNNING)
+		size += sizeof(u64);
+
+	if (read_format & PERF_FORMAT_ID)
+		entry += sizeof(u64);
+
+	if (read_format & PERF_FORMAT_LOST)
+		entry += sizeof(u64);
+
+	if (read_format & PERF_FORMAT_GROUP) {
+		nr = evsel__group_read_nr_members(leader);
+		size += sizeof(u64);
+	}
+
+	size += entry * nr;
+	return size;
+}
+
+static int evsel__process_group_data(struct evsel *leader, int cpu_map_idx, int thread, u64 *data)
 {
 	u64 read_format = leader->core.attr.read_format;
 	struct sample_read_value *v;
-	u64 nr, ena = 0, run = 0, i;
+	u64 nr, ena = 0, run = 0, lost = 0;
 
 	nr = *data++;
 
-	if (nr != (u64) leader->core.nr_members)
+	if (nr != evsel__group_read_nr_members(leader))
 		return -EINVAL;
 
 	if (read_format & PERF_FORMAT_TOTAL_TIME_ENABLED)
@@ -1541,28 +1637,28 @@ static int evsel__process_group_data(struct evsel *leader, int cpu, int thread, 
 	if (read_format & PERF_FORMAT_TOTAL_TIME_RUNNING)
 		run = *data++;
 
-	v = (struct sample_read_value *) data;
-
-	evsel__set_count(leader, cpu, thread, v[0].value, ena, run);
-
-	for (i = 1; i < nr; i++) {
+	v = (void *)data;
+	sample_read_group__for_each(v, nr, read_format) {
 		struct evsel *counter;
 
-		counter = evlist__id2evsel(leader->evlist, v[i].id);
+		counter = evlist__id2evsel(leader->evlist, v->id);
 		if (!counter)
 			return -EINVAL;
 
-		evsel__set_count(counter, cpu, thread, v[i].value, ena, run);
+		if (read_format & PERF_FORMAT_LOST)
+			lost = v->lost;
+
+		evsel__set_count(counter, cpu_map_idx, thread, v->value, ena, run, lost);
 	}
 
 	return 0;
 }
 
-static int evsel__read_group(struct evsel *leader, int cpu, int thread)
+static int evsel__read_group(struct evsel *leader, int cpu_map_idx, int thread)
 {
 	struct perf_stat_evsel *ps = leader->stats;
 	u64 read_format = leader->core.attr.read_format;
-	int size = perf_evsel__read_size(&leader->core);
+	int size = evsel__group_read_size(leader);
 	u64 *data = ps->group_data;
 
 	if (!(read_format & PERF_FORMAT_ID))
@@ -1579,67 +1675,232 @@ static int evsel__read_group(struct evsel *leader, int cpu, int thread)
 		ps->group_data = data;
 	}
 
-	if (FD(leader, cpu, thread) < 0)
+	if (FD(leader, cpu_map_idx, thread) < 0)
 		return -EINVAL;
 
-	if (readn(FD(leader, cpu, thread), data, size) <= 0)
+	if (readn(FD(leader, cpu_map_idx, thread), data, size) <= 0)
 		return -errno;
 
-	return evsel__process_group_data(leader, cpu, thread, data);
+	return evsel__process_group_data(leader, cpu_map_idx, thread, data);
 }
 
-int evsel__read_counter(struct evsel *evsel, int cpu, int thread)
+static bool read_until_char(struct io *io, char e)
 {
-	u64 read_format = evsel->core.attr.read_format;
+	int c;
 
-	if (read_format & PERF_FORMAT_GROUP)
-		return evsel__read_group(evsel, cpu, thread);
-
-	return evsel__read_one(evsel, cpu, thread);
+	do {
+		c = io__get_char(io);
+		if (c == -1)
+			return false;
+	} while (c != e);
+	return true;
 }
 
-int __evsel__read_on_cpu(struct evsel *evsel, int cpu, int thread, bool scale)
+static int read_stat_field(int fd, struct perf_cpu cpu, int field, __u64 *val)
+{
+	char buf[256];
+	struct io io;
+	int i;
+
+	io__init(&io, fd, buf, sizeof(buf));
+
+	/* Skip lines to relevant CPU. */
+	for (i = -1; i < cpu.cpu; i++) {
+		if (!read_until_char(&io, '\n'))
+			return -EINVAL;
+	}
+	/* Skip to "cpu". */
+	if (io__get_char(&io) != 'c') return -EINVAL;
+	if (io__get_char(&io) != 'p') return -EINVAL;
+	if (io__get_char(&io) != 'u') return -EINVAL;
+
+	/* Skip N of cpuN. */
+	if (!read_until_char(&io, ' '))
+		return -EINVAL;
+
+	i = 1;
+	while (true) {
+		if (io__get_dec(&io, val) != ' ')
+			break;
+		if (field == i)
+			return 0;
+		i++;
+	}
+	return -EINVAL;
+}
+
+static int read_pid_stat_field(int fd, int field, __u64 *val)
+{
+	char buf[256];
+	struct io io;
+	int c, i;
+
+	io__init(&io, fd, buf, sizeof(buf));
+	if (io__get_dec(&io, val) != ' ')
+		return -EINVAL;
+	if (field == 1)
+		return 0;
+
+	/* Skip comm. */
+	if (io__get_char(&io) != '(' || !read_until_char(&io, ')'))
+		return -EINVAL;
+	if (field == 2)
+		return -EINVAL; /* String can't be returned. */
+
+	/* Skip state */
+	if (io__get_char(&io) != ' ' || io__get_char(&io) == -1)
+		return -EINVAL;
+	if (field == 3)
+		return -EINVAL; /* String can't be returned. */
+
+	/* Loop over numeric fields*/
+	if (io__get_char(&io) != ' ')
+		return -EINVAL;
+
+	i = 4;
+	while (true) {
+		c = io__get_dec(&io, val);
+		if (c == -1)
+			return -EINVAL;
+		if (c == -2) {
+			/* Assume a -ve was read */
+			c = io__get_dec(&io, val);
+			*val *= -1;
+		}
+		if (c != ' ')
+			return -EINVAL;
+		if (field == i)
+			return 0;
+		i++;
+	}
+	return -EINVAL;
+}
+
+static int evsel__read_tool(struct evsel *evsel, int cpu_map_idx, int thread)
+{
+	__u64 *start_time, cur_time, delta_start;
+	int fd, err = 0;
+	struct perf_counts_values *count;
+	bool adjust = false;
+
+	count = perf_counts(evsel->counts, cpu_map_idx, thread);
+
+	switch (evsel__tool_event(evsel)) {
+	case PERF_TOOL_DURATION_TIME:
+		/*
+		 * Pretend duration_time is only on the first CPU and thread, or
+		 * else aggregation will scale duration_time by the number of
+		 * CPUs/threads.
+		 */
+		start_time = &evsel->start_time;
+		if (cpu_map_idx == 0 && thread == 0)
+			cur_time = rdclock();
+		else
+			cur_time = *start_time;
+		break;
+	case PERF_TOOL_USER_TIME:
+	case PERF_TOOL_SYSTEM_TIME: {
+		bool system = evsel__tool_event(evsel) == PERF_TOOL_SYSTEM_TIME;
+
+		start_time = xyarray__entry(evsel->start_times, cpu_map_idx, thread);
+		fd = FD(evsel, cpu_map_idx, thread);
+		lseek(fd, SEEK_SET, 0);
+		if (evsel->pid_stat) {
+			/* The event exists solely on 1 CPU. */
+			if (cpu_map_idx == 0)
+				err = read_pid_stat_field(fd, system ? 15 : 14, &cur_time);
+			else
+				cur_time = 0;
+		} else {
+			/* The event is for all threads. */
+			if (thread == 0) {
+				struct perf_cpu cpu = perf_cpu_map__cpu(evsel->core.cpus,
+									cpu_map_idx);
+
+				err = read_stat_field(fd, cpu, system ? 3 : 1, &cur_time);
+			} else {
+				cur_time = 0;
+			}
+		}
+		adjust = true;
+		break;
+	}
+	case PERF_TOOL_NONE:
+	case PERF_TOOL_MAX:
+	default:
+		err = -EINVAL;
+	}
+	if (err)
+		return err;
+
+	delta_start = cur_time - *start_time;
+	if (adjust) {
+		__u64 ticks_per_sec = sysconf(_SC_CLK_TCK);
+
+		delta_start *= 1000000000 / ticks_per_sec;
+	}
+	count->val    = delta_start;
+	count->ena    = count->run = delta_start;
+	count->lost   = 0;
+	return 0;
+}
+
+int evsel__read_counter(struct evsel *evsel, int cpu_map_idx, int thread)
+{
+	if (evsel__is_tool(evsel))
+		return evsel__read_tool(evsel, cpu_map_idx, thread);
+
+	if (evsel__is_retire_lat(evsel))
+		return evsel__read_retire_lat(evsel, cpu_map_idx, thread);
+
+	if (evsel->core.attr.read_format & PERF_FORMAT_GROUP)
+		return evsel__read_group(evsel, cpu_map_idx, thread);
+
+	return evsel__read_one(evsel, cpu_map_idx, thread);
+}
+
+int __evsel__read_on_cpu(struct evsel *evsel, int cpu_map_idx, int thread, bool scale)
 {
 	struct perf_counts_values count;
 	size_t nv = scale ? 3 : 1;
 
-	if (FD(evsel, cpu, thread) < 0)
+	if (FD(evsel, cpu_map_idx, thread) < 0)
 		return -EINVAL;
 
-	if (evsel->counts == NULL && evsel__alloc_counts(evsel, cpu + 1, thread + 1) < 0)
+	if (evsel->counts == NULL && evsel__alloc_counts(evsel) < 0)
 		return -ENOMEM;
 
-	if (readn(FD(evsel, cpu, thread), &count, nv * sizeof(u64)) <= 0)
+	if (readn(FD(evsel, cpu_map_idx, thread), &count, nv * sizeof(u64)) <= 0)
 		return -errno;
 
-	evsel__compute_deltas(evsel, cpu, thread, &count);
+	evsel__compute_deltas(evsel, cpu_map_idx, thread, &count);
 	perf_counts_values__scale(&count, scale, NULL);
-	*perf_counts(evsel->counts, cpu, thread) = count;
+	*perf_counts(evsel->counts, cpu_map_idx, thread) = count;
 	return 0;
 }
 
 static int evsel__match_other_cpu(struct evsel *evsel, struct evsel *other,
-				  int cpu)
+				  int cpu_map_idx)
 {
-	int cpuid;
+	struct perf_cpu cpu;
 
-	cpuid = perf_cpu_map__cpu(evsel->core.cpus, cpu);
-	return perf_cpu_map__idx(other->core.cpus, cpuid);
+	cpu = perf_cpu_map__cpu(evsel->core.cpus, cpu_map_idx);
+	return perf_cpu_map__idx(other->core.cpus, cpu);
 }
 
-static int evsel__hybrid_group_cpu(struct evsel *evsel, int cpu)
+static int evsel__hybrid_group_cpu_map_idx(struct evsel *evsel, int cpu_map_idx)
 {
 	struct evsel *leader = evsel__leader(evsel);
 
 	if ((evsel__is_hybrid(evsel) && !evsel__is_hybrid(leader)) ||
 	    (!evsel__is_hybrid(evsel) && evsel__is_hybrid(leader))) {
-		return evsel__match_other_cpu(evsel, leader, cpu);
+		return evsel__match_other_cpu(evsel, leader, cpu_map_idx);
 	}
 
-	return cpu;
+	return cpu_map_idx;
 }
 
-static int get_group_fd(struct evsel *evsel, int cpu, int thread)
+static int get_group_fd(struct evsel *evsel, int cpu_map_idx, int thread)
 {
 	struct evsel *leader = evsel__leader(evsel);
 	int fd;
@@ -1653,14 +1914,18 @@ static int get_group_fd(struct evsel *evsel, int cpu, int thread)
 	 */
 	BUG_ON(!leader->core.fd);
 
-	cpu = evsel__hybrid_group_cpu(evsel, cpu);
-	if (cpu == -1)
+	cpu_map_idx = evsel__hybrid_group_cpu_map_idx(evsel, cpu_map_idx);
+	if (cpu_map_idx == -1)
 		return -1;
 
-	fd = FD(leader, cpu, thread);
-	BUG_ON(fd == -1);
+	fd = FD(leader, cpu_map_idx, thread);
+	BUG_ON(fd == -1 && !leader->skippable);
 
-	return fd;
+	/*
+	 * When the leader has been skipped, return -2 to distinguish from no
+	 * group leader case.
+	 */
+	return fd == -1 ? -2 : fd;
 }
 
 static void evsel__remove_fd(struct evsel *pos, int nr_cpus, int nr_threads, int thread_idx)
@@ -1671,16 +1936,16 @@ static void evsel__remove_fd(struct evsel *pos, int nr_cpus, int nr_threads, int
 }
 
 static int update_fds(struct evsel *evsel,
-		      int nr_cpus, int cpu_idx,
+		      int nr_cpus, int cpu_map_idx,
 		      int nr_threads, int thread_idx)
 {
 	struct evsel *pos;
 
-	if (cpu_idx >= nr_cpus || thread_idx >= nr_threads)
+	if (cpu_map_idx >= nr_cpus || thread_idx >= nr_threads)
 		return -EINVAL;
 
 	evlist__for_each_entry(evsel->evlist, pos) {
-		nr_cpus = pos != evsel ? nr_cpus : cpu_idx;
+		nr_cpus = pos != evsel ? nr_cpus : cpu_map_idx;
 
 		evsel__remove_fd(pos, nr_cpus, nr_threads, thread_idx);
 
@@ -1694,10 +1959,10 @@ static int update_fds(struct evsel *evsel,
 	return 0;
 }
 
-bool evsel__ignore_missing_thread(struct evsel *evsel,
-				  int nr_cpus, int cpu,
-				  struct perf_thread_map *threads,
-				  int thread, int err)
+static bool evsel__ignore_missing_thread(struct evsel *evsel,
+					 int nr_cpus, int cpu_map_idx,
+					 struct perf_thread_map *threads,
+					 int thread, int err)
 {
 	pid_t ignore_pid = perf_thread_map__pid(threads, thread);
 
@@ -1720,7 +1985,7 @@ bool evsel__ignore_missing_thread(struct evsel *evsel,
 	 * We should remove fd for missing_thread first
 	 * because thread_map__remove() will decrease threads->nr.
 	 */
-	if (update_fds(evsel, nr_cpus, cpu, threads->nr, thread))
+	if (update_fds(evsel, nr_cpus, cpu_map_idx, threads->nr, thread))
 		return false;
 
 	if (thread_map__remove(threads, thread))
@@ -1777,7 +2042,7 @@ static struct perf_thread_map *empty_thread_map;
 static int __evsel__prepare_open(struct evsel *evsel, struct perf_cpu_map *cpus,
 		struct perf_thread_map *threads)
 {
-	int nthreads;
+	int nthreads = perf_thread_map__nr(threads);
 
 	if ((perf_missing_features.write_backward && evsel->core.attr.write_backward) ||
 	    (perf_missing_features.aux_output     && evsel->core.attr.aux_output))
@@ -1785,7 +2050,7 @@ static int __evsel__prepare_open(struct evsel *evsel, struct perf_cpu_map *cpus,
 
 	if (cpus == NULL) {
 		if (empty_cpu_map == NULL) {
-			empty_cpu_map = perf_cpu_map__dummy_new();
+			empty_cpu_map = perf_cpu_map__new_any_cpu();
 			if (empty_cpu_map == NULL)
 				return -ENOMEM;
 		}
@@ -1803,14 +2068,17 @@ static int __evsel__prepare_open(struct evsel *evsel, struct perf_cpu_map *cpus,
 		threads = empty_thread_map;
 	}
 
-	if (evsel->core.system_wide)
-		nthreads = 1;
-	else
-		nthreads = threads->nr;
-
 	if (evsel->core.fd == NULL &&
-	    perf_evsel__alloc_fd(&evsel->core, cpus->nr, nthreads) < 0)
+	    perf_evsel__alloc_fd(&evsel->core, perf_cpu_map__nr(cpus), nthreads) < 0)
 		return -ENOMEM;
+
+	if ((evsel__tool_event(evsel) == PERF_TOOL_SYSTEM_TIME ||
+	     evsel__tool_event(evsel) == PERF_TOOL_USER_TIME) &&
+	    !evsel->start_times) {
+		evsel->start_times = xyarray__new(perf_cpu_map__nr(cpus), nthreads, sizeof(__u64));
+		if (!evsel->start_times)
+			return -ENOMEM;
+	}
 
 	evsel->open_flags = PERF_FLAG_FD_CLOEXEC;
 	if (evsel->cgrp)
@@ -1821,6 +2089,10 @@ static int __evsel__prepare_open(struct evsel *evsel, struct perf_cpu_map *cpus,
 
 static void evsel__disable_missing_features(struct evsel *evsel)
 {
+	if (perf_missing_features.branch_counters)
+		evsel->core.attr.branch_sample_type &= ~PERF_SAMPLE_BRANCH_COUNTERS;
+	if (perf_missing_features.read_lost)
+		evsel->core.attr.read_format &= ~PERF_FORMAT_LOST;
 	if (perf_missing_features.weight_struct) {
 		evsel__set_sample_bit(evsel, WEIGHT);
 		evsel__reset_sample_bit(evsel, WEIGHT_STRUCT);
@@ -1872,7 +2144,17 @@ bool evsel__detect_missing_features(struct evsel *evsel)
 	 * Must probe features in the order they were added to the
 	 * perf_event_attr interface.
 	 */
-	if (!perf_missing_features.weight_struct &&
+	if (!perf_missing_features.branch_counters &&
+	    (evsel->core.attr.branch_sample_type & PERF_SAMPLE_BRANCH_COUNTERS)) {
+		perf_missing_features.branch_counters = true;
+		pr_debug2("switching off branch counters support\n");
+		return true;
+	} else if (!perf_missing_features.read_lost &&
+	    (evsel->core.attr.read_format & PERF_FORMAT_LOST)) {
+		perf_missing_features.read_lost = true;
+		pr_debug2("switching off PERF_FORMAT_LOST support\n");
+		return true;
+	} else if (!perf_missing_features.weight_struct &&
 	    (evsel->core.attr.sample_type & PERF_SAMPLE_WEIGHT_STRUCT)) {
 		perf_missing_features.weight_struct = true;
 		pr_debug2("switching off weight struct support\n");
@@ -1928,17 +2210,16 @@ bool evsel__detect_missing_features(struct evsel *evsel)
 		perf_missing_features.mmap2 = true;
 		pr_debug2_peo("switching off mmap2\n");
 		return true;
-	} else if ((evsel->core.attr.exclude_guest || evsel->core.attr.exclude_host) &&
-		   (evsel->pmu == NULL || evsel->pmu->missing_features.exclude_guest)) {
-		if (evsel->pmu == NULL) {
+	} else if (evsel->core.attr.exclude_guest || evsel->core.attr.exclude_host) {
+		if (evsel->pmu == NULL)
 			evsel->pmu = evsel__find_pmu(evsel);
-			if (evsel->pmu)
-				evsel->pmu->missing_features.exclude_guest = true;
-			else {
-				/* we cannot find PMU, disable attrs now */
-				evsel->core.attr.exclude_host = false;
-				evsel->core.attr.exclude_guest = false;
-			}
+
+		if (evsel->pmu)
+			evsel->pmu->missing_features.exclude_guest = true;
+		else {
+			/* we cannot find PMU, disable attrs now */
+			evsel->core.attr.exclude_host = false;
+			evsel->core.attr.exclude_guest = false;
 		}
 
 		if (evsel->exclude_GH) {
@@ -1973,40 +2254,23 @@ bool evsel__detect_missing_features(struct evsel *evsel)
 	}
 }
 
-bool evsel__increase_rlimit(enum rlimit_action *set_rlimit)
-{
-	int old_errno;
-	struct rlimit l;
-
-	if (*set_rlimit < INCREASED_MAX) {
-		old_errno = errno;
-
-		if (getrlimit(RLIMIT_NOFILE, &l) == 0) {
-			if (*set_rlimit == NO_CHANGE) {
-				l.rlim_cur = l.rlim_max;
-			} else {
-				l.rlim_cur = l.rlim_max + 1000;
-				l.rlim_max = l.rlim_cur;
-			}
-			if (setrlimit(RLIMIT_NOFILE, &l) == 0) {
-				(*set_rlimit) += 1;
-				errno = old_errno;
-				return true;
-			}
-		}
-		errno = old_errno;
-	}
-
-	return false;
-}
-
 static int evsel__open_cpu(struct evsel *evsel, struct perf_cpu_map *cpus,
 		struct perf_thread_map *threads,
-		int start_cpu, int end_cpu)
+		int start_cpu_map_idx, int end_cpu_map_idx)
 {
-	int cpu, thread, nthreads;
+	int idx, thread, nthreads;
 	int pid = -1, err, old_errno;
 	enum rlimit_action set_rlimit = NO_CHANGE;
+
+	if (evsel__tool_event(evsel) == PERF_TOOL_DURATION_TIME) {
+		if (evsel->core.attr.sample_period) /* no sampling */
+			return -EINVAL;
+		evsel->start_time = rdclock();
+		return 0;
+	}
+
+	if (evsel__is_retire_lat(evsel))
+		return tpebs_start(evsel->evlist);
 
 	err = __evsel__prepare_open(evsel, cpus, threads);
 	if (err)
@@ -2018,10 +2282,7 @@ static int evsel__open_cpu(struct evsel *evsel, struct perf_cpu_map *cpus,
 	if (threads == NULL)
 		threads = empty_thread_map;
 
-	if (evsel->core.system_wide)
-		nthreads = 1;
-	else
-		nthreads = threads->nr;
+	nthreads = perf_thread_map__nr(threads);
 
 	if (evsel->cgrp)
 		pid = evsel->cgrp->fd;
@@ -2029,9 +2290,10 @@ static int evsel__open_cpu(struct evsel *evsel, struct perf_cpu_map *cpus,
 fallback_missing_features:
 	evsel__disable_missing_features(evsel);
 
+	pr_debug3("Opening: %s\n", evsel__name(evsel));
 	display_attr(&evsel->core.attr);
 
-	for (cpu = start_cpu; cpu < end_cpu; cpu++) {
+	for (idx = start_cpu_map_idx; idx < end_cpu_map_idx; idx++) {
 
 		for (thread = 0; thread < nthreads; thread++) {
 			int fd, group_fd;
@@ -2042,17 +2304,65 @@ retry_open:
 			if (!evsel->cgrp && !evsel->core.system_wide)
 				pid = perf_thread_map__pid(threads, thread);
 
-			group_fd = get_group_fd(evsel, cpu, thread);
+			if (evsel__tool_event(evsel) == PERF_TOOL_USER_TIME ||
+			    evsel__tool_event(evsel) == PERF_TOOL_SYSTEM_TIME) {
+				bool system = evsel__tool_event(evsel) == PERF_TOOL_SYSTEM_TIME;
+				__u64 *start_time = NULL;
+
+				if (evsel->core.attr.sample_period) {
+					/* no sampling */
+					err = -EINVAL;
+					goto out_close;
+				}
+				if (pid > -1) {
+					char buf[64];
+
+					snprintf(buf, sizeof(buf), "/proc/%d/stat", pid);
+					fd = open(buf, O_RDONLY);
+					evsel->pid_stat = true;
+				} else {
+					fd = open("/proc/stat", O_RDONLY);
+				}
+				FD(evsel, idx, thread) = fd;
+				if (fd < 0) {
+					err = -errno;
+					goto out_close;
+				}
+				start_time = xyarray__entry(evsel->start_times, idx, thread);
+				if (pid > -1) {
+					err = read_pid_stat_field(fd, system ? 15 : 14,
+								  start_time);
+				} else {
+					struct perf_cpu cpu;
+
+					cpu = perf_cpu_map__cpu(evsel->core.cpus, idx);
+					err = read_stat_field(fd, cpu, system ? 3 : 1,
+							      start_time);
+				}
+				if (err)
+					goto out_close;
+				continue;
+			}
+
+			group_fd = get_group_fd(evsel, idx, thread);
+
+			if (group_fd == -2) {
+				pr_debug("broken group leader for %s\n", evsel->name);
+				err = -EINVAL;
+				goto out_close;
+			}
 
 			test_attr__ready();
 
+			/* Debug message used by test scripts */
 			pr_debug2_peo("sys_perf_event_open: pid %d  cpu %d  group_fd %d  flags %#lx",
-				pid, cpus->map[cpu], group_fd, evsel->open_flags);
+				pid, perf_cpu_map__cpu(cpus, idx).cpu, group_fd, evsel->open_flags);
 
-			fd = sys_perf_event_open(&evsel->core.attr, pid, cpus->map[cpu],
+			fd = sys_perf_event_open(&evsel->core.attr, pid,
+						perf_cpu_map__cpu(cpus, idx).cpu,
 						group_fd, evsel->open_flags);
 
-			FD(evsel, cpu, thread) = fd;
+			FD(evsel, idx, thread) = fd;
 
 			if (fd < 0) {
 				err = -errno;
@@ -2062,13 +2372,15 @@ retry_open:
 				goto try_fallback;
 			}
 
-			bpf_counter__install_pe(evsel, cpu, fd);
+			bpf_counter__install_pe(evsel, idx, fd);
 
 			if (unlikely(test_attr__enabled)) {
-				test_attr__open(&evsel->core.attr, pid, cpus->map[cpu],
+				test_attr__open(&evsel->core.attr, pid,
+						perf_cpu_map__cpu(cpus, idx),
 						fd, group_fd, evsel->open_flags);
 			}
 
+			/* Debug message used by test scripts */
 			pr_debug2_peo(" = %d\n", fd);
 
 			if (evsel->bpf_fd >= 0) {
@@ -2106,7 +2418,8 @@ try_fallback:
 	if (evsel__precise_ip_fallback(evsel))
 		goto retry_open;
 
-	if (evsel__ignore_missing_thread(evsel, cpus->nr, cpu, threads, thread, err)) {
+	if (evsel__ignore_missing_thread(evsel, perf_cpu_map__nr(cpus),
+					 idx, threads, thread, err)) {
 		/* We just removed 1 thread, so lower the upper nthreads limit. */
 		nthreads--;
 
@@ -2118,10 +2431,10 @@ try_fallback:
 	 * perf stat needs between 5 and 22 fds per CPU. When we run out
 	 * of them try to increase the limits.
 	 */
-	if (err == -EMFILE && evsel__increase_rlimit(&set_rlimit))
+	if (err == -EMFILE && rlimit__increase_nofile(&set_rlimit))
 		goto retry_open;
 
-	if (err != -EINVAL || cpu > 0 || thread > 0)
+	if (err != -EINVAL || idx > 0 || thread > 0)
 		goto out_close;
 
 	if (evsel__detect_missing_features(evsel))
@@ -2133,12 +2446,12 @@ out_close:
 	old_errno = errno;
 	do {
 		while (--thread >= 0) {
-			if (FD(evsel, cpu, thread) >= 0)
-				close(FD(evsel, cpu, thread));
-			FD(evsel, cpu, thread) = -1;
+			if (FD(evsel, idx, thread) >= 0)
+				close(FD(evsel, idx, thread));
+			FD(evsel, idx, thread) = -1;
 		}
 		thread = nthreads;
-	} while (--cpu >= 0);
+	} while (--idx >= 0);
 	errno = old_errno;
 	return err;
 }
@@ -2146,22 +2459,23 @@ out_close:
 int evsel__open(struct evsel *evsel, struct perf_cpu_map *cpus,
 		struct perf_thread_map *threads)
 {
-	return evsel__open_cpu(evsel, cpus, threads, 0, cpus ? cpus->nr : 1);
+	return evsel__open_cpu(evsel, cpus, threads, 0, perf_cpu_map__nr(cpus));
 }
 
 void evsel__close(struct evsel *evsel)
 {
+	if (evsel__is_retire_lat(evsel))
+		tpebs_delete();
 	perf_evsel__close(&evsel->core);
 	perf_evsel__free_id(&evsel->core);
 }
 
-int evsel__open_per_cpu(struct evsel *evsel, struct perf_cpu_map *cpus, int cpu)
+int evsel__open_per_cpu(struct evsel *evsel, struct perf_cpu_map *cpus, int cpu_map_idx)
 {
-	if (cpu == -1)
-		return evsel__open_cpu(evsel, cpus, NULL, 0,
-					cpus ? cpus->nr : 1);
+	if (cpu_map_idx == -1)
+		return evsel__open_cpu(evsel, cpus, NULL, 0, perf_cpu_map__nr(cpus));
 
-	return evsel__open_cpu(evsel, cpus, NULL, cpu, cpu + 1);
+	return evsel__open_cpu(evsel, cpus, NULL, cpu_map_idx, cpu_map_idx + 1);
 }
 
 int evsel__open_per_thread(struct evsel *evsel, struct perf_thread_map *threads)
@@ -2281,7 +2595,10 @@ u64 evsel__bitfield_swap_branch_flags(u64 value)
 	 * 		abort:1		//transaction abort
 	 * 		cycles:16	//cycle count to last branch
 	 * 		type:4		//branch type
-	 * 		reserved:40
+	 * 		spec:2		//branch speculation info
+	 * 		new_type:4	//additional branch type
+	 * 		priv:3		//privilege level
+	 * 		reserved:31
 	 * 	}
 	 * }
 	 *
@@ -2289,18 +2606,18 @@ u64 evsel__bitfield_swap_branch_flags(u64 value)
 	 * as it has variable bit-field sizes. Instead the
 	 * macro takes the bit-field position/size,
 	 * swaps it based on the host endianness.
-	 *
-	 * tep_is_bigendian() is used here instead of
-	 * bigendian() to avoid python test fails.
 	 */
-	if (tep_is_bigendian()) {
+	if (host_is_bigendian()) {
 		new_val = bitfield_swap(value, 0, 1);
 		new_val |= bitfield_swap(value, 1, 1);
 		new_val |= bitfield_swap(value, 2, 1);
 		new_val |= bitfield_swap(value, 3, 1);
 		new_val |= bitfield_swap(value, 4, 16);
 		new_val |= bitfield_swap(value, 20, 4);
-		new_val |= bitfield_swap(value, 24, 40);
+		new_val |= bitfield_swap(value, 24, 2);
+		new_val |= bitfield_swap(value, 26, 4);
+		new_val |= bitfield_swap(value, 30, 3);
+		new_val |= bitfield_swap(value, 33, 31);
 	} else {
 		new_val = bitfield_swap(value, 63, 1);
 		new_val |= bitfield_swap(value, 62, 1);
@@ -2308,10 +2625,30 @@ u64 evsel__bitfield_swap_branch_flags(u64 value)
 		new_val |= bitfield_swap(value, 60, 1);
 		new_val |= bitfield_swap(value, 44, 16);
 		new_val |= bitfield_swap(value, 40, 4);
-		new_val |= bitfield_swap(value, 0, 40);
+		new_val |= bitfield_swap(value, 38, 2);
+		new_val |= bitfield_swap(value, 34, 4);
+		new_val |= bitfield_swap(value, 31, 3);
+		new_val |= bitfield_swap(value, 0, 31);
 	}
 
 	return new_val;
+}
+
+static inline bool evsel__has_branch_counters(const struct evsel *evsel)
+{
+	struct evsel *leader = evsel__leader(evsel);
+
+	/* The branch counters feature only supports group */
+	if (!leader || !evsel->evlist)
+		return false;
+
+	if (evsel->evlist->nr_br_cntr < 0)
+		evlist__update_br_cntr(evsel->evlist);
+
+	if (leader->br_cntr_nr > 0)
+		return true;
+
+	return false;
 }
 
 int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
@@ -2336,8 +2673,8 @@ int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 	data->period = evsel->core.attr.sample_period;
 	data->cpumode = event->header.misc & PERF_RECORD_MISC_CPUMODE_MASK;
 	data->misc    = event->header.misc;
-	data->id = -1ULL;
 	data->data_src = PERF_MEM_DATA_SRC_NONE;
+	data->vcpu = -1;
 
 	if (event->header.type != PERF_RECORD_SAMPLE) {
 		if (!evsel->core.attr.sample_id_all)
@@ -2442,8 +2779,8 @@ int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 
 			if (data->read.group.nr > max_group_nr)
 				return -EFAULT;
-			sz = data->read.group.nr *
-			     sizeof(struct sample_read_value);
+
+			sz = data->read.group.nr * sample_read_value_size(read_format);
 			OVERFLOW_CHECK(array, sz, max_size);
 			data->read.group.values =
 					(struct sample_read_value *)array;
@@ -2452,6 +2789,12 @@ int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 			OVERFLOW_CHECK_u64(array);
 			data->read.one.id = *array;
 			array++;
+
+			if (read_format & PERF_FORMAT_LOST) {
+				OVERFLOW_CHECK_u64(array);
+				data->read.one.lost = *array;
+				array++;
+			}
 		}
 	}
 
@@ -2540,6 +2883,14 @@ int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 
 		OVERFLOW_CHECK(array, sz, max_size);
 		array = (void *)array + sz;
+
+		if (evsel__has_branch_counters(evsel)) {
+			data->branch_stack_cntr = (u64 *)array;
+			sz = data->branch_stack->nr * sizeof(u64);
+
+			OVERFLOW_CHECK(array, sz, max_size);
+			array = (void *)array + sz;
+		}
 	}
 
 	if (type & PERF_SAMPLE_REGS_USER) {
@@ -2697,9 +3048,41 @@ int evsel__parse_sample_timestamp(struct evsel *evsel, union perf_event *event,
 	return 0;
 }
 
+u16 evsel__id_hdr_size(const struct evsel *evsel)
+{
+	u64 sample_type = evsel->core.attr.sample_type;
+	u16 size = 0;
+
+	if (sample_type & PERF_SAMPLE_TID)
+		size += sizeof(u64);
+
+	if (sample_type & PERF_SAMPLE_TIME)
+		size += sizeof(u64);
+
+	if (sample_type & PERF_SAMPLE_ID)
+		size += sizeof(u64);
+
+	if (sample_type & PERF_SAMPLE_STREAM_ID)
+		size += sizeof(u64);
+
+	if (sample_type & PERF_SAMPLE_CPU)
+		size += sizeof(u64);
+
+	if (sample_type & PERF_SAMPLE_IDENTIFIER)
+		size += sizeof(u64);
+
+	return size;
+}
+
+#ifdef HAVE_LIBTRACEEVENT
 struct tep_format_field *evsel__field(struct evsel *evsel, const char *name)
 {
 	return tep_find_field(evsel->tp_format, name);
+}
+
+struct tep_format_field *evsel__common_field(struct evsel *evsel, const char *name)
+{
+	return tep_find_common_field(evsel->tp_format, name);
 }
 
 void *evsel__rawptr(struct evsel *evsel, struct perf_sample *sample, const char *name)
@@ -2715,6 +3098,8 @@ void *evsel__rawptr(struct evsel *evsel, struct perf_sample *sample, const char 
 	if (field->flags & TEP_FIELD_IS_DYNAMIC) {
 		offset = *(int *)(sample->raw_data + field->offset);
 		offset &= 0xffff;
+		if (tep_field_is_relative(field->flags))
+			offset += field->offset + field->size;
 	}
 
 	return sample->raw_data + offset;
@@ -2763,13 +3148,53 @@ u64 evsel__intval(struct evsel *evsel, struct perf_sample *sample, const char *n
 {
 	struct tep_format_field *field = evsel__field(evsel, name);
 
-	if (!field)
-		return 0;
+	return field ? format_field__intval(field, sample, evsel->needs_swap) : 0;
+}
+
+u64 evsel__intval_common(struct evsel *evsel, struct perf_sample *sample, const char *name)
+{
+	struct tep_format_field *field = evsel__common_field(evsel, name);
 
 	return field ? format_field__intval(field, sample, evsel->needs_swap) : 0;
 }
 
-bool evsel__fallback(struct evsel *evsel, int err, char *msg, size_t msgsize)
+char evsel__taskstate(struct evsel *evsel, struct perf_sample *sample, const char *name)
+{
+	static struct tep_format_field *prev_state_field;
+	static const char *states;
+	struct tep_format_field *field;
+	unsigned long long val;
+	unsigned int bit;
+	char state = '?'; /* '?' denotes unknown task state */
+
+	field = evsel__field(evsel, name);
+
+	if (!field)
+		return state;
+
+	if (!states || field != prev_state_field) {
+		states = parse_task_states(field);
+		if (!states)
+			return state;
+		prev_state_field = field;
+	}
+
+	/*
+	 * Note since the kernel exposes TASK_REPORT_MAX to userspace
+	 * to denote the 'preempted' state, we might as welll report
+	 * 'R' for this case, which make senses to users as well.
+	 *
+	 * We can change this if we have a good reason in the future.
+	 */
+	val = evsel__intval(evsel, sample, name);
+	bit = val ? ffs(val) : 0;
+	state = (!bit || bit > strlen(states)) ? 'R' : states[bit-1];
+	return state;
+}
+#endif
+
+bool evsel__fallback(struct evsel *evsel, struct target *target, int err,
+		     char *msg, size_t msgsize)
 {
 	int paranoid;
 
@@ -2777,18 +3202,19 @@ bool evsel__fallback(struct evsel *evsel, int err, char *msg, size_t msgsize)
 	    evsel->core.attr.type   == PERF_TYPE_HARDWARE &&
 	    evsel->core.attr.config == PERF_COUNT_HW_CPU_CYCLES) {
 		/*
-		 * If it's cycles then fall back to hrtimer based
-		 * cpu-clock-tick sw counter, which is always available even if
-		 * no PMU support.
+		 * If it's cycles then fall back to hrtimer based cpu-clock sw
+		 * counter, which is always available even if no PMU support.
 		 *
 		 * PPC returns ENXIO until 2.6.37 (behavior changed with commit
 		 * b0a873e).
 		 */
-		scnprintf(msg, msgsize, "%s",
-"The cycles event is not supported, trying to fall back to cpu-clock-ticks");
-
 		evsel->core.attr.type   = PERF_TYPE_SOFTWARE;
-		evsel->core.attr.config = PERF_COUNT_SW_CPU_CLOCK;
+		evsel->core.attr.config = target__has_cpu(target)
+			? PERF_COUNT_SW_CPU_CLOCK
+			: PERF_COUNT_SW_TASK_CLOCK;
+		scnprintf(msg, msgsize,
+			"The cycles event is not supported, trying to fall back to %s",
+			target__has_cpu(target) ? "cpu-clock" : "task-clock");
 
 		zfree(&evsel->name);
 		return true;
@@ -2810,8 +3236,7 @@ bool evsel__fallback(struct evsel *evsel, int err, char *msg, size_t msgsize)
 		if (asprintf(&new_name, "%s%su", name, sep) < 0)
 			return false;
 
-		if (evsel->name)
-			free(evsel->name);
+		free(evsel->name);
 		evsel->name = new_name;
 		scnprintf(msg, msgsize, "kernel.perf_event_paranoid=%d, trying "
 			  "to fall back to excluding kernel and hypervisor "
@@ -2861,11 +3286,19 @@ static bool find_process(const char *name)
 	return ret ? false : true;
 }
 
+int __weak arch_evsel__open_strerror(struct evsel *evsel __maybe_unused,
+				     char *msg __maybe_unused,
+				     size_t size __maybe_unused)
+{
+	return 0;
+}
+
 int evsel__open_strerror(struct evsel *evsel, struct target *target,
 			 int err, char *msg, size_t size)
 {
 	char sbuf[STRERR_BUFSIZE];
 	int printed = 0, enforced = 0;
+	int ret;
 
 	switch (err) {
 	case EPERM:
@@ -2923,6 +3356,10 @@ int evsel__open_strerror(struct evsel *evsel, struct target *target,
 	 "No such device - did you specify an out-of-range profile CPU?");
 		break;
 	case EOPNOTSUPP:
+		if (evsel->core.attr.sample_type & PERF_SAMPLE_BRANCH_STACK)
+			return scnprintf(msg, size,
+	"%s: PMU Hardware or event type doesn't support branch stack sampling.",
+					 evsel__name(evsel));
 		if (evsel->core.attr.aux_output)
 			return scnprintf(msg, size,
 	"%s: PMU Hardware doesn't support 'aux_output' feature",
@@ -2959,6 +3396,11 @@ int evsel__open_strerror(struct evsel *evsel, struct target *target,
 			return scnprintf(msg, size, "wrong clockid (%d).", clockid);
 		if (perf_missing_features.aux_output)
 			return scnprintf(msg, size, "The 'aux_output' feature is not supported, update the kernel.");
+		if (!target__has_cpu(target))
+			return scnprintf(msg, size,
+	"Invalid event (%s) in per-thread mode, enable system wide with '-a'.",
+					evsel__name(evsel));
+
 		break;
 	case ENODATA:
 		return scnprintf(msg, size, "Cannot collect data source with the load latency event alone. "
@@ -2966,6 +3408,10 @@ int evsel__open_strerror(struct evsel *evsel, struct target *target,
 	default:
 		break;
 	}
+
+	ret = arch_evsel__open_strerror(evsel, msg, size);
+	if (ret)
+		return ret;
 
 	return scnprintf(msg, size,
 	"The sys_perf_event_open() syscall returned with %d (%s) for event (%s).\n"
@@ -2975,22 +3421,25 @@ int evsel__open_strerror(struct evsel *evsel, struct target *target,
 
 struct perf_env *evsel__env(struct evsel *evsel)
 {
-	if (evsel && evsel->evlist)
+	if (evsel && evsel->evlist && evsel->evlist->env)
 		return evsel->evlist->env;
 	return &perf_env;
 }
 
 static int store_evsel_ids(struct evsel *evsel, struct evlist *evlist)
 {
-	int cpu, thread;
+	int cpu_map_idx, thread;
 
-	for (cpu = 0; cpu < xyarray__max_x(evsel->core.fd); cpu++) {
+	if (evsel__is_retire_lat(evsel))
+		return 0;
+
+	for (cpu_map_idx = 0; cpu_map_idx < xyarray__max_x(evsel->core.fd); cpu_map_idx++) {
 		for (thread = 0; thread < xyarray__max_y(evsel->core.fd);
 		     thread++) {
-			int fd = FD(evsel, cpu, thread);
+			int fd = FD(evsel, cpu_map_idx, thread);
 
 			if (perf_evlist__id_add_fd(&evlist->core, &evsel->core,
-						   cpu, thread, fd) < 0)
+						   cpu_map_idx, thread, fd) < 0)
 				return -1;
 		}
 	}
@@ -3003,7 +3452,7 @@ int evsel__store_ids(struct evsel *evsel, struct evlist *evlist)
 	struct perf_cpu_map *cpus = evsel->core.cpus;
 	struct perf_thread_map *threads = evsel->core.threads;
 
-	if (perf_evsel__alloc_id(&evsel->core, cpus->nr, threads->nr))
+	if (perf_evsel__alloc_id(&evsel->core, perf_cpu_map__nr(cpus), threads->nr))
 		return -ENOMEM;
 
 	return store_evsel_ids(evsel, evlist);
@@ -3016,18 +3465,26 @@ void evsel__zero_per_pkg(struct evsel *evsel)
 
 	if (evsel->per_pkg_mask) {
 		hashmap__for_each_entry(evsel->per_pkg_mask, cur, bkt)
-			free((char *)cur->key);
+			zfree(&cur->pkey);
 
 		hashmap__clear(evsel->per_pkg_mask);
 	}
 }
 
-bool evsel__is_hybrid(struct evsel *evsel)
+/**
+ * evsel__is_hybrid - does the evsel have a known PMU that is hybrid. Note, this
+ *                    will be false on hybrid systems for hardware and legacy
+ *                    cache events.
+ */
+bool evsel__is_hybrid(const struct evsel *evsel)
 {
-	return evsel->pmu_name && perf_pmu__is_hybrid(evsel->pmu_name);
+	if (perf_pmus__num_core_pmus() == 1)
+		return false;
+
+	return evsel->core.is_pmu_core;
 }
 
-struct evsel *evsel__leader(struct evsel *evsel)
+struct evsel *evsel__leader(const struct evsel *evsel)
 {
 	return container_of(evsel->core.leader, struct evsel, core);
 }
@@ -3057,4 +3514,23 @@ int evsel__source_count(const struct evsel *evsel)
 			count++;
 	}
 	return count;
+}
+
+bool __weak arch_evsel__must_be_in_group(const struct evsel *evsel __maybe_unused)
+{
+	return false;
+}
+
+/*
+ * Remove an event from a given group (leader).
+ * Some events, e.g., perf metrics Topdown events,
+ * must always be grouped. Ignore the events.
+ */
+void evsel__remove_from_group(struct evsel *evsel, struct evsel *leader)
+{
+	if (!arch_evsel__must_be_in_group(evsel) && evsel != leader) {
+		evsel__set_leader(evsel, evsel);
+		evsel->core.nr_members = 0;
+		leader->core.nr_members--;
+	}
 }

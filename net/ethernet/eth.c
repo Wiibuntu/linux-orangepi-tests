@@ -161,20 +161,8 @@ __be16 eth_type_trans(struct sk_buff *skb, struct net_device *dev)
 	skb->dev = dev;
 	skb_reset_mac_header(skb);
 
-	eth = (struct ethhdr *)skb->data;
-	skb_pull_inline(skb, ETH_HLEN);
-
-	if (unlikely(!ether_addr_equal_64bits(eth->h_dest,
-					      dev->dev_addr))) {
-		if (unlikely(is_multicast_ether_addr_64bits(eth->h_dest))) {
-			if (ether_addr_equal_64bits(eth->h_dest, dev->broadcast))
-				skb->pkt_type = PACKET_BROADCAST;
-			else
-				skb->pkt_type = PACKET_MULTICAST;
-		} else {
-			skb->pkt_type = PACKET_OTHERHOST;
-		}
-	}
+	eth = eth_skb_pull_mac(skb);
+	eth_skb_pkt_type(skb, dev);
 
 	/*
 	 * Some variants of DSA tagging don't have an ethertype field
@@ -391,14 +379,14 @@ EXPORT_SYMBOL(ether_setup);
 struct net_device *alloc_etherdev_mqs(int sizeof_priv, unsigned int txqs,
 				      unsigned int rxqs)
 {
-	return alloc_netdev_mqs(sizeof_priv, "eth%d", NET_NAME_UNKNOWN,
+	return alloc_netdev_mqs(sizeof_priv, "eth%d", NET_NAME_ENUM,
 				ether_setup, txqs, rxqs);
 }
 EXPORT_SYMBOL(alloc_etherdev_mqs);
 
 ssize_t sysfs_format_mac(char *buf, const unsigned char *addr, int len)
 {
-	return scnprintf(buf, PAGE_SIZE, "%*phC\n", len, addr);
+	return sysfs_emit(buf, "%*phC\n", len, addr);
 }
 EXPORT_SYMBOL(sysfs_format_mac);
 
@@ -414,12 +402,9 @@ struct sk_buff *eth_gro_receive(struct list_head *head, struct sk_buff *skb)
 
 	off_eth = skb_gro_offset(skb);
 	hlen = off_eth + sizeof(*eh);
-	eh = skb_gro_header_fast(skb, off_eth);
-	if (skb_gro_header_hard(skb, hlen)) {
-		eh = skb_gro_header_slow(skb, hlen, off_eth);
-		if (unlikely(!eh))
-			goto out;
-	}
+	eh = skb_gro_header(skb, hlen, off_eth);
+	if (unlikely(!eh))
+		goto out;
 
 	flush = 0;
 
@@ -436,11 +421,10 @@ struct sk_buff *eth_gro_receive(struct list_head *head, struct sk_buff *skb)
 
 	type = eh->h_proto;
 
-	rcu_read_lock();
 	ptype = gro_find_receive_by_type(type);
 	if (ptype == NULL) {
 		flush = 1;
-		goto out_unlock;
+		goto out;
 	}
 
 	skb_gro_pull(skb, sizeof(*eh));
@@ -450,8 +434,6 @@ struct sk_buff *eth_gro_receive(struct list_head *head, struct sk_buff *skb)
 					    ipv6_gro_receive, inet_gro_receive,
 					    head, skb);
 
-out_unlock:
-	rcu_read_unlock();
 out:
 	skb_gro_flush_final(skb, pp, flush);
 
@@ -469,14 +451,12 @@ int eth_gro_complete(struct sk_buff *skb, int nhoff)
 	if (skb->encapsulation)
 		skb_set_inner_mac_header(skb, nhoff);
 
-	rcu_read_lock();
 	ptype = gro_find_complete_by_type(type);
 	if (ptype != NULL)
 		err = INDIRECT_CALL_INET(ptype->callbacks.gro_complete,
 					 ipv6_gro_complete, inet_gro_complete,
 					 skb, nhoff + sizeof(*eh));
 
-	rcu_read_unlock();
 	return err;
 }
 EXPORT_SYMBOL(eth_gro_complete);

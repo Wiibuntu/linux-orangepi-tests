@@ -229,19 +229,14 @@ void zd_mac_clear(struct zd_mac *mac)
 static int set_rx_filter(struct zd_mac *mac)
 {
 	unsigned long flags;
-	struct zd_ioreq32 ioreqs[] = {
-		{CR_RX_FILTER, STA_RX_FILTER},
-		{ CR_SNIFFER_ON, 0U },
-	};
+	u32 filter = STA_RX_FILTER;
 
 	spin_lock_irqsave(&mac->lock, flags);
-	if (mac->pass_ctrl) {
-		ioreqs[0].value |= 0xFFFFFFFF;
-		ioreqs[1].value = 0x1;
-	}
+	if (mac->pass_ctrl)
+		filter |= RX_FILTER_CTRL;
 	spin_unlock_irqrestore(&mac->lock, flags);
 
-	return zd_iowrite32a(&mac->chip, ioreqs, ARRAY_SIZE(ioreqs));
+	return zd_iowrite32(&mac->chip, CR_RX_FILTER, filter);
 }
 
 static int set_mac_and_bssid(struct zd_mac *mac)
@@ -331,7 +326,7 @@ out:
 	return r;
 }
 
-void zd_op_stop(struct ieee80211_hw *hw)
+void zd_op_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct zd_mac *mac = zd_hw_mac(hw);
 	struct zd_chip *chip = &mac->chip;
@@ -403,7 +398,7 @@ int zd_restore_settings(struct zd_mac *mac)
 	    mac->type == NL80211_IFTYPE_ADHOC ||
 	    mac->type == NL80211_IFTYPE_AP) {
 		if (mac->vif != NULL) {
-			beacon = ieee80211_beacon_get(mac->hw, mac->vif);
+			beacon = ieee80211_beacon_get(mac->hw, mac->vif, 0);
 			if (beacon)
 				zd_mac_config_beacon(mac->hw, beacon, false);
 		}
@@ -1047,8 +1042,7 @@ int zd_mac_rx(struct ieee80211_hw *hw, const u8 *buffer, unsigned int length)
 	/* Caller has to ensure that length >= sizeof(struct rx_status). */
 	status = (struct rx_status *)
 		(buffer + (length - sizeof(struct rx_status)));
-	if ((status->frame_status & ZD_RX_ERROR) ||
-		(status->frame_status & ~0x21)) {
+	if (status->frame_status & ZD_RX_ERROR) {
 		if (mac->pass_failed_fcs &&
 				(status->frame_status & ZD_RX_CRC32_ERROR)) {
 			stats.flag |= RX_FLAG_FAILED_FCS_CRC;
@@ -1173,7 +1167,7 @@ static void zd_beacon_done(struct zd_mac *mac)
 	/*
 	 * Fetch next beacon so that tim_count is updated.
 	 */
-	beacon = ieee80211_beacon_get(mac->hw, mac->vif);
+	beacon = ieee80211_beacon_get(mac->hw, mac->vif, 0);
 	if (beacon)
 		zd_mac_config_beacon(mac->hw, beacon, true);
 
@@ -1284,19 +1278,20 @@ static void set_rts_cts(struct zd_mac *mac, unsigned int short_preamble)
 static void zd_op_bss_info_changed(struct ieee80211_hw *hw,
 				   struct ieee80211_vif *vif,
 				   struct ieee80211_bss_conf *bss_conf,
-				   u32 changes)
+				   u64 changes)
 {
 	struct zd_mac *mac = zd_hw_mac(hw);
 	int associated;
 
-	dev_dbg_f(zd_mac_dev(mac), "changes: %x\n", changes);
+	dev_dbg_f(zd_mac_dev(mac), "changes: %llx\n", changes);
 
 	if (mac->type == NL80211_IFTYPE_MESH_POINT ||
 	    mac->type == NL80211_IFTYPE_ADHOC ||
 	    mac->type == NL80211_IFTYPE_AP) {
 		associated = true;
 		if (changes & BSS_CHANGED_BEACON) {
-			struct sk_buff *beacon = ieee80211_beacon_get(hw, vif);
+			struct sk_buff *beacon = ieee80211_beacon_get(hw, vif,
+								      0);
 
 			if (beacon) {
 				zd_chip_disable_hwint(&mac->chip);
@@ -1348,7 +1343,12 @@ static u64 zd_op_get_tsf(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 }
 
 static const struct ieee80211_ops zd_ops = {
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx			= zd_op_tx,
+	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.start			= zd_op_start,
 	.stop			= zd_op_stop,
 	.add_interface		= zd_op_add_interface,
@@ -1391,7 +1391,7 @@ struct ieee80211_hw *zd_mac_alloc_hw(struct usb_interface *intf)
 	ieee80211_hw_set(hw, MFP_CAPABLE);
 	ieee80211_hw_set(hw, HOST_BROADCAST_PS_BUFFERING);
 	ieee80211_hw_set(hw, RX_INCLUDES_FCS);
-	ieee80211_hw_set(hw, SIGNAL_DBM);
+	ieee80211_hw_set(hw, SIGNAL_UNSPEC);
 
 	hw->wiphy->interface_modes =
 		BIT(NL80211_IFTYPE_MESH_POINT) |
@@ -1453,7 +1453,7 @@ static void beacon_watchdog_handler(struct work_struct *work)
 
 		zd_chip_disable_hwint(&mac->chip);
 
-		beacon = ieee80211_beacon_get(mac->hw, mac->vif);
+		beacon = ieee80211_beacon_get(mac->hw, mac->vif, 0);
 		if (beacon) {
 			zd_mac_free_cur_beacon(mac);
 

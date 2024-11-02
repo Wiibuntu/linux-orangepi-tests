@@ -29,15 +29,26 @@
 void apei_mce_report_mem_error(int severity, struct cper_sec_mem_err *mem_err)
 {
 	struct mce m;
+	int lsb;
 
 	if (!(mem_err->validation_bits & CPER_MEM_VALID_PA))
 		return;
 
-	mce_setup(&m);
+	/*
+	 * Even if the ->validation_bits are set for address mask,
+	 * to be extra safe, check and reject an error radius '0',
+	 * and fall back to the default page size.
+	 */
+	if (mem_err->validation_bits & CPER_MEM_VALID_PA_MASK)
+		lsb = find_first_bit((void *)&mem_err->physical_addr_mask, PAGE_SHIFT);
+	else
+		lsb = PAGE_SHIFT;
+
+	mce_prep_record(&m);
 	m.bank = -1;
 	/* Fake a memory read error with unknown channel */
 	m.status = MCI_STATUS_VAL | MCI_STATUS_EN | MCI_STATUS_ADDRV | MCI_STATUS_MISCV | 0x9f;
-	m.misc = (MCI_MISC_ADDR_PHYS << 6) | PAGE_SHIFT;
+	m.misc = (MCI_MISC_ADDR_PHYS << 6) | lsb;
 
 	if (severity >= GHES_SEV_RECOVERABLE)
 		m.status |= MCI_STATUS_UC;
@@ -55,6 +66,7 @@ EXPORT_SYMBOL_GPL(apei_mce_report_mem_error);
 int apei_smca_report_x86_error(struct cper_ia_proc_ctx *ctx_info, u64 lapic_id)
 {
 	const u64 *i_mce = ((const u64 *) (ctx_info + 1));
+	bool apicid_found = false;
 	unsigned int cpu;
 	struct mce m;
 
@@ -86,20 +98,19 @@ int apei_smca_report_x86_error(struct cper_ia_proc_ctx *ctx_info, u64 lapic_id)
 	if (ctx_info->reg_arr_size < 48)
 		return -EINVAL;
 
-	mce_setup(&m);
-
-	m.extcpu = -1;
-	m.socketid = -1;
-
 	for_each_possible_cpu(cpu) {
-		if (cpu_data(cpu).initial_apicid == lapic_id) {
-			m.extcpu = cpu;
-			m.socketid = cpu_data(m.extcpu).phys_proc_id;
+		if (cpu_data(cpu).topo.initial_apicid == lapic_id) {
+			apicid_found = true;
 			break;
 		}
 	}
 
-	m.apicid = lapic_id;
+	if (!apicid_found)
+		return -EINVAL;
+
+	mce_prep_record_common(&m);
+	mce_prep_record_per_cpu(cpu, &m);
+
 	m.bank = (ctx_info->msr_addr >> 4) & 0xFF;
 	m.status = *i_mce;
 	m.addr = *(i_mce + 1);
@@ -177,16 +188,14 @@ retry:
 	/* no more record */
 	if (*record_id == APEI_ERST_INVALID_RECORD_ID)
 		goto out;
-	rc = erst_read(*record_id, &rcd.hdr, sizeof(rcd));
+	rc = erst_read_record(*record_id, &rcd.hdr, sizeof(rcd), sizeof(rcd),
+			&CPER_CREATOR_MCE);
 	/* someone else has cleared the record, try next one */
 	if (rc == -ENOENT)
 		goto retry;
 	else if (rc < 0)
 		goto out;
-	/* try to skip other type records in storage */
-	else if (rc != sizeof(rcd) ||
-		 !guid_equal(&rcd.hdr.creator_id, &CPER_CREATOR_MCE))
-		goto retry;
+
 	memcpy(m, &rcd.mce, sizeof(*m));
 	rc = sizeof(*m);
 out:

@@ -64,7 +64,7 @@ static int mv88e6xxx_ptp_read(struct mv88e6xxx_chip *chip, int addr,
 #define TX_TSTAMP_TIMEOUT	msecs_to_jiffies(40)
 
 int mv88e6xxx_get_ts_info(struct dsa_switch *ds, int port,
-			  struct ethtool_ts_info *info)
+			  struct kernel_ethtool_ts_info *info)
 {
 	const struct mv88e6xxx_ptp_ops *ptp_ops;
 	struct mv88e6xxx_chip *chip;
@@ -99,10 +99,6 @@ static int mv88e6xxx_set_hwtstamp_config(struct mv88e6xxx_chip *chip, int port,
 	 * timestamp hardware while we reconfigure it.
 	 */
 	clear_bit_unlock(MV88E6XXX_HWTSTAMP_ENABLED, &ps->state);
-
-	/* reserved for future extensions */
-	if (config->flags)
-		return -EINVAL;
 
 	switch (config->tx_type) {
 	case HWTSTAMP_TX_OFF:
@@ -305,7 +301,7 @@ static void mv88e6xxx_get_rxts(struct mv88e6xxx_chip *chip,
 			shwt->hwtstamp = ns_to_ktime(ns);
 			status &= ~MV88E6XXX_PTP_TS_VALID;
 		}
-		netif_rx_ni(skb);
+		netif_rx(skb);
 	}
 }
 

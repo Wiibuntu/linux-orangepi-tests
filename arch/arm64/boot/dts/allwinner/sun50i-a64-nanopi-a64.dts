@@ -41,9 +41,9 @@
 		};
 	};
 
-	wifi_pwrseq: wifi_pwrseq {
+	wifi_pwrseq: pwrseq {
 		compatible = "mmc-pwrseq-simple";
-		clocks = <&rtc 1>;
+		clocks = <&rtc CLK_OSC32K_FANOUT>;
 		clock-names = "ext_clock";
 		reset-gpios = <&r_pio 0 2 GPIO_ACTIVE_LOW>; /* PL2 */
 	};
@@ -80,7 +80,7 @@
 &emac {
 	pinctrl-names = "default";
 	pinctrl-0 = <&rgmii_pins>;
-	phy-mode = "rgmii-id";
+	phy-mode = "rgmii";
 	phy-handle = <&ext_rgmii_phy>;
 	phy-supply = <&reg_dcdc1>;
 	status = "okay";
@@ -100,10 +100,6 @@
 /* i2c1 connected with gpio headers like pine64, bananapi */
 &i2c1_pins {
 	bias-pull-up;
-};
-
-&i2s2 {
-	status = "okay";
 };
 
 &mdio {
@@ -254,10 +250,6 @@
 
 &simplefb_hdmi {
 	vcc-hdmi-supply = <&reg_dldo1>;
-};
-
-&sound_hdmi {
-	status = "okay";
 };
 
 &uart0 {

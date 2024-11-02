@@ -248,17 +248,8 @@ static void rtl8187_tx(struct ieee80211_hw *dev,
 	flags |= RTL818X_TX_DESC_FLAG_NO_ENC;
 
 	flags |= ieee80211_get_tx_rate(dev, info)->hw_value << 24;
-
-	// When this flag is set the firmware waits untill ALL fragments have
-	// reached the USB device. Then it sends the first fragment and waits
-	// for ACKS's. Of course in monitor mode it won't detect these ACK's.
 	if (ieee80211_has_morefrags(tx_hdr->frame_control))
-	{
-		// If info->control.vif is NULL it's most likely in monitor mode
-		if (likely(info->control.vif != NULL && info->control.vif->type != NL80211_IFTYPE_MONITOR)) {
-			flags |= RTL818X_TX_DESC_FLAG_MOREFRAG;
-		}
-	}
+		flags |= RTL818X_TX_DESC_FLAG_MOREFRAG;
 
 	/* HW will perform RTS-CTS when only RTS flags is set.
 	 * HW will perform CTS-to-self when both RTS and CTS flags are set.
@@ -1028,7 +1019,7 @@ rtl8187_start_exit:
 	return ret;
 }
 
-static void rtl8187_stop(struct ieee80211_hw *dev)
+static void rtl8187_stop(struct ieee80211_hw *dev, bool suspend)
 {
 	struct rtl8187_priv *priv = dev->priv;
 	struct sk_buff *skb;
@@ -1084,7 +1075,7 @@ static void rtl8187_beacon_work(struct work_struct *work)
 		goto resched;
 
 	/* grab a fresh beacon */
-	skb = ieee80211_beacon_get(dev, vif);
+	skb = ieee80211_beacon_get(dev, vif, 0);
 	if (!skb)
 		goto resched;
 
@@ -1260,7 +1251,7 @@ static void rtl8187_conf_erp(struct rtl8187_priv *priv, bool use_short_slot,
 static void rtl8187_bss_info_changed(struct ieee80211_hw *dev,
 				     struct ieee80211_vif *vif,
 				     struct ieee80211_bss_conf *info,
-				     u32 changed)
+				     u64 changed)
 {
 	struct rtl8187_priv *priv = dev->priv;
 	struct rtl8187_vif *vif_priv;
@@ -1347,7 +1338,8 @@ static void rtl8187_configure_filter(struct ieee80211_hw *dev,
 }
 
 static int rtl8187_conf_tx(struct ieee80211_hw *dev,
-			   struct ieee80211_vif *vif, u16 queue,
+			   struct ieee80211_vif *vif,
+			   unsigned int link_id, u16 queue,
 			   const struct ieee80211_tx_queue_params *params)
 {
 	struct rtl8187_priv *priv = dev->priv;
@@ -1385,7 +1377,12 @@ static int rtl8187_conf_tx(struct ieee80211_hw *dev,
 
 
 static const struct ieee80211_ops rtl8187_ops = {
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx			= rtl8187_tx,
+	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.start			= rtl8187_start,
 	.stop			= rtl8187_stop,
 	.add_interface		= rtl8187_add_interface,

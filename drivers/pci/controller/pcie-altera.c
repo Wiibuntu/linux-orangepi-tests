@@ -9,11 +9,10 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/irqchip/chained_irq.h>
+#include <linux/irqdomain.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
+#include <linux/of.h>
 #include <linux/of_pci.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
@@ -56,12 +55,11 @@
 #define TLP_READ_TAG			0x1d
 #define TLP_WRITE_TAG			0x10
 #define RP_DEVFN			0
-#define TLP_REQ_ID(bus, devfn)		(((bus) << 8) | (devfn))
 #define TLP_CFG_DW0(pcie, cfg)		\
 		(((cfg) << 24) |	\
 		  TLP_PAYLOAD_SIZE)
 #define TLP_CFG_DW1(pcie, tag, be)	\
-	(((TLP_REQ_ID(pcie->root_bus_nr,  RP_DEVFN)) << 16) | (tag << 8) | (be))
+	(((PCI_DEVID(pcie->root_bus_nr,  RP_DEVFN)) << 16) | (tag << 8) | (be))
 #define TLP_CFG_DW2(bus, devfn, offset)	\
 				(((bus) << 24) | ((devfn) << 16) | (offset))
 #define TLP_COMP_STATUS(s)		(((s) >> 13) & 7)
@@ -510,10 +508,8 @@ static int altera_pcie_cfg_read(struct pci_bus *bus, unsigned int devfn,
 	if (altera_pcie_hide_rc_bar(bus, devfn, where))
 		return PCIBIOS_BAD_REGISTER_NUMBER;
 
-	if (!altera_pcie_valid_device(pcie, bus, PCI_SLOT(devfn))) {
-		*value = 0xffffffff;
+	if (!altera_pcie_valid_device(pcie, bus, PCI_SLOT(devfn)))
 		return PCIBIOS_DEVICE_NOT_FOUND;
-	}
 
 	return _altera_pcie_cfg_read(pcie, bus->number, devfn, where, size,
 				     value);
@@ -767,7 +763,7 @@ static int altera_pcie_probe(struct platform_device *pdev)
 	struct altera_pcie *pcie;
 	struct pci_host_bridge *bridge;
 	int ret;
-	const struct of_device_id *match;
+	const struct altera_pcie_data *data;
 
 	bridge = devm_pci_alloc_host_bridge(dev, sizeof(*pcie));
 	if (!bridge)
@@ -777,11 +773,11 @@ static int altera_pcie_probe(struct platform_device *pdev)
 	pcie->pdev = pdev;
 	platform_set_drvdata(pdev, pcie);
 
-	match = of_match_device(altera_pcie_of_match, &pdev->dev);
-	if (!match)
+	data = of_device_get_match_data(&pdev->dev);
+	if (!data)
 		return -ENODEV;
 
-	pcie->pcie_data = match->data;
+	pcie->pcie_data = data;
 
 	ret = altera_pcie_parse_dt(pcie);
 	if (ret) {
@@ -808,7 +804,7 @@ static int altera_pcie_probe(struct platform_device *pdev)
 	return pci_host_probe(bridge);
 }
 
-static int altera_pcie_remove(struct platform_device *pdev)
+static void altera_pcie_remove(struct platform_device *pdev)
 {
 	struct altera_pcie *pcie = platform_get_drvdata(pdev);
 	struct pci_host_bridge *bridge = pci_host_bridge_from_priv(pcie);
@@ -816,13 +812,11 @@ static int altera_pcie_remove(struct platform_device *pdev)
 	pci_stop_root_bus(bridge->bus);
 	pci_remove_root_bus(bridge->bus);
 	altera_pcie_irq_teardown(pcie);
-
-	return 0;
 }
 
 static struct platform_driver altera_pcie_driver = {
 	.probe		= altera_pcie_probe,
-	.remove		= altera_pcie_remove,
+	.remove_new	= altera_pcie_remove,
 	.driver = {
 		.name	= "altera-pcie",
 		.of_match_table = altera_pcie_of_match,
@@ -831,4 +825,5 @@ static struct platform_driver altera_pcie_driver = {
 
 MODULE_DEVICE_TABLE(of, altera_pcie_of_match);
 module_platform_driver(altera_pcie_driver);
+MODULE_DESCRIPTION("Altera PCIe host controller driver");
 MODULE_LICENSE("GPL v2");

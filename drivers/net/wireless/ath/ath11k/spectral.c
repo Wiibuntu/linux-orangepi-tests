@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (c) 2019-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/relay.h>
@@ -30,6 +31,7 @@
 #define ATH11K_SPECTRAL_20MHZ			20
 #define ATH11K_SPECTRAL_40MHZ			40
 #define ATH11K_SPECTRAL_80MHZ			80
+#define ATH11K_SPECTRAL_160MHZ			160
 
 #define ATH11K_SPECTRAL_SIGNATURE		0xFA
 
@@ -107,7 +109,7 @@ struct spectral_search_fft_report {
 	__le32 info1;
 	__le32 info2;
 	__le32 reserve0;
-	u8 bins[0];
+	u8 bins[];
 } __packed;
 
 struct ath11k_spectral_search_report {
@@ -183,6 +185,8 @@ static int ath11k_spectral_scan_trigger(struct ath11k *ar)
 	if (ar->spectral.mode == ATH11K_SPECTRAL_DISABLED)
 		return 0;
 
+	ar->spectral.is_primary = true;
+
 	ret = ath11k_wmi_vdev_spectral_enable(ar, arvif->vdev_id,
 					      ATH11K_WMI_SPECTRAL_TRIGGER_CMD_CLEAR,
 					      ATH11K_WMI_SPECTRAL_ENABLE_CMD_ENABLE);
@@ -212,7 +216,10 @@ static int ath11k_spectral_scan_config(struct ath11k *ar,
 		return -ENODEV;
 
 	arvif->spectral_enabled = (mode != ATH11K_SPECTRAL_DISABLED);
+
+	spin_lock_bh(&ar->spectral.lock);
 	ar->spectral.mode = mode;
+	spin_unlock_bh(&ar->spectral.lock);
 
 	ret = ath11k_wmi_vdev_spectral_enable(ar, arvif->vdev_id,
 					      ATH11K_WMI_SPECTRAL_TRIGGER_CMD_CLEAR,
@@ -376,16 +383,11 @@ static ssize_t ath11k_write_file_spectral_count(struct file *file,
 {
 	struct ath11k *ar = file->private_data;
 	unsigned long val;
-	char buf[32];
-	ssize_t len;
+	ssize_t ret;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	if (kstrtoul(buf, 0, &val))
-		return -EINVAL;
+	ret = kstrtoul_from_user(user_buf, count, 0, &val);
+	if (ret)
+		return ret;
 
 	if (val > ATH11K_SPECTRAL_SCAN_COUNT_MAX)
 		return -EINVAL;
@@ -431,16 +433,11 @@ static ssize_t ath11k_write_file_spectral_bins(struct file *file,
 {
 	struct ath11k *ar = file->private_data;
 	unsigned long val;
-	char buf[32];
-	ssize_t len;
+	ssize_t ret;
 
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	if (kstrtoul(buf, 0, &val))
-		return -EINVAL;
+	ret = kstrtoul_from_user(user_buf, count, 0, &val);
+	if (ret)
+		return ret;
 
 	if (val < ATH11K_SPECTRAL_MIN_BINS ||
 	    val > ar->ab->hw_params.spectral.max_fft_bins)
@@ -581,6 +578,8 @@ int ath11k_spectral_process_fft(struct ath11k *ar,
 	u16 length, freq;
 	u8 chan_width_mhz, bin_sz;
 	int ret;
+	u32 check_length;
+	bool fragment_sample = false;
 
 	lockdep_assert_held(&ar->spectral.lock);
 
@@ -590,7 +589,7 @@ int ath11k_spectral_process_fft(struct ath11k *ar,
 		return -EINVAL;
 	}
 
-	tlv = (struct spectral_tlv *)data;
+	tlv = data;
 	tlv_len = FIELD_GET(SPECTRAL_TLV_HDR_LEN, __le32_to_cpu(tlv->header));
 	/* convert Dword into bytes */
 	tlv_len *= ATH11K_SPECTRAL_DWORD_SIZE;
@@ -614,6 +613,13 @@ int ath11k_spectral_process_fft(struct ath11k *ar,
 		return -EINVAL;
 	}
 
+	check_length = sizeof(*fft_report) + (num_bins * ab->hw_params.spectral.fft_sz);
+	ret = ath11k_dbring_validate_buffer(ar, data, check_length);
+	if (ret) {
+		ath11k_warn(ar->ab, "found magic value in fft data, dropping\n");
+		return ret;
+	}
+
 	ret = ath11k_spectral_pull_search(ar, data, &search);
 	if (ret) {
 		ath11k_warn(ab, "failed to pull search report %d\n", ret);
@@ -626,6 +632,13 @@ int ath11k_spectral_process_fft(struct ath11k *ar,
 	case ATH11K_SPECTRAL_20MHZ:
 	case ATH11K_SPECTRAL_40MHZ:
 	case ATH11K_SPECTRAL_80MHZ:
+		fft_sample->chan_width_mhz = chan_width_mhz;
+		break;
+	case ATH11K_SPECTRAL_160MHZ:
+		if (ab->hw_params.spectral.fragment_160mhz) {
+			chan_width_mhz /= 2;
+			fragment_sample = true;
+		}
 		fft_sample->chan_width_mhz = chan_width_mhz;
 		break;
 	default:
@@ -651,6 +664,17 @@ int ath11k_spectral_process_fft(struct ath11k *ar,
 
 	freq = summary->meta.freq2;
 	fft_sample->freq2 = __cpu_to_be16(freq);
+
+	/* If freq2 is available then the spectral scan results are fragmented
+	 * as primary and secondary
+	 */
+	if (fragment_sample && freq) {
+		if (!ar->spectral.is_primary)
+			fft_sample->freq1 = cpu_to_be16(freq);
+
+		/* We have to toggle the is_primary to handle the next report */
+		ar->spectral.is_primary = !ar->spectral.is_primary;
+	}
 
 	ath11k_spectral_parse_fft(fft_sample->data, fft_report->bins, num_bins,
 				  ab->hw_params.spectral.fft_sz);
@@ -747,6 +771,12 @@ static int ath11k_spectral_process_data(struct ath11k *ar,
 				goto err;
 			}
 
+			ret = ath11k_dbring_validate_buffer(ar, data, tlv_len);
+			if (ret) {
+				ath11k_warn(ar->ab, "found magic value in spectral summary, dropping\n");
+				goto err;
+			}
+
 			summary = (struct spectral_summary_fft_report *)tlv;
 			ath11k_spectral_pull_summary(ar, &param->meta,
 						     summary, &summ_rpt);
@@ -829,9 +859,6 @@ static inline void ath11k_spectral_ring_free(struct ath11k *ar)
 {
 	struct ath11k_spectral *sp = &ar->spectral;
 
-	if (!sp->enabled)
-		return;
-
 	ath11k_dbring_srng_cleanup(ar, &sp->rx_ring);
 	ath11k_dbring_buf_cleanup(ar, &sp->rx_ring);
 }
@@ -883,15 +910,16 @@ void ath11k_spectral_deinit(struct ath11k_base *ab)
 		if (!sp->enabled)
 			continue;
 
-		ath11k_spectral_debug_unregister(ar);
-		ath11k_spectral_ring_free(ar);
+		mutex_lock(&ar->conf_mutex);
+		ath11k_spectral_scan_config(ar, ATH11K_SPECTRAL_DISABLED);
+		mutex_unlock(&ar->conf_mutex);
 
 		spin_lock_bh(&sp->lock);
-
-		sp->mode = ATH11K_SPECTRAL_DISABLED;
 		sp->enabled = false;
-
 		spin_unlock_bh(&sp->lock);
+
+		ath11k_spectral_debug_unregister(ar);
+		ath11k_spectral_ring_free(ar);
 	}
 }
 

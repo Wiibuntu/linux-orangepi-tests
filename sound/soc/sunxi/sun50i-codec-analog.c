@@ -13,9 +13,8 @@
 
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
@@ -126,10 +125,6 @@
 #define SUN50I_ADDA_JACK_MIC_CTRL_INNERRESEN	6
 #define SUN50I_ADDA_JACK_MIC_CTRL_HMICBIASEN	5
 #define SUN50I_ADDA_JACK_MIC_CTRL_MICADCEN	4
-
-struct sun50i_codec_analog {
-	bool	internal_bias_resistor;
-};
 
 /* mixer controls */
 static const struct snd_kcontrol_new sun50i_a64_codec_mixer_controls[] = {
@@ -497,25 +492,6 @@ static const struct snd_soc_dapm_route sun50i_a64_codec_routes[] = {
 	{ "EARPIECE", NULL, "Earpiece Amp" },
 };
 
-static int sun50i_a64_codec_probe(struct snd_soc_component *component)
-{
-	struct sun50i_codec_analog *codec = snd_soc_component_get_drvdata(component);
-
-	regmap_update_bits(component->regmap, SUN50I_ADDA_JACK_MIC_CTRL,
-			   BIT(SUN50I_ADDA_JACK_MIC_CTRL_INNERRESEN),
-			   codec->internal_bias_resistor <<
-				SUN50I_ADDA_JACK_MIC_CTRL_INNERRESEN);
-
-	/* Select sample interval of the ADC sample to 32ms */
-	regmap_update_bits(component->regmap, SUN50I_ADDA_MDET_CTRL,
-			   0x7 << SUN50I_ADDA_MDET_CTRL_SELDETADC_FS |
-			   0x3 << SUN50I_ADDA_MDET_CTRL_SELDETADC_BF,
-			   0x3 << SUN50I_ADDA_MDET_CTRL_SELDETADC_FS |
-			   0x3 << SUN50I_ADDA_MDET_CTRL_SELDETADC_BF);
-
-	return 0;
-}
-
 static int sun50i_a64_codec_set_bias_level(struct snd_soc_component *component,
 					   enum snd_soc_bias_level level)
 {
@@ -524,17 +500,16 @@ static int sun50i_a64_codec_set_bias_level(struct snd_soc_component *component,
 
 	switch (level) {
 	case SND_SOC_BIAS_OFF:
-		regmap_update_bits(component->regmap, SUN50I_ADDA_JACK_MIC_CTRL,
+		regmap_clear_bits(component->regmap, SUN50I_ADDA_JACK_MIC_CTRL,
 				   BIT(SUN50I_ADDA_JACK_MIC_CTRL_JACKDETEN) |
-				   BIT(SUN50I_ADDA_JACK_MIC_CTRL_MICADCEN), 0);
+				   BIT(SUN50I_ADDA_JACK_MIC_CTRL_MICADCEN));
 
-		regmap_update_bits(component->regmap, SUN50I_ADDA_HP_CTRL,
-				   BIT(SUN50I_ADDA_HP_CTRL_PA_CLK_GATE),
-				   BIT(SUN50I_ADDA_HP_CTRL_PA_CLK_GATE));
+		regmap_set_bits(component->regmap, SUN50I_ADDA_HP_CTRL,
+				BIT(SUN50I_ADDA_HP_CTRL_PA_CLK_GATE));
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		regmap_update_bits(component->regmap, SUN50I_ADDA_HP_CTRL,
-				   BIT(SUN50I_ADDA_HP_CTRL_PA_CLK_GATE), 0);
+		regmap_clear_bits(component->regmap, SUN50I_ADDA_HP_CTRL,
+				   BIT(SUN50I_ADDA_HP_CTRL_PA_CLK_GATE));
 
 		hbias = snd_soc_dapm_get_pin_status(dapm, "HBIAS");
 		regmap_update_bits(component->regmap, SUN50I_ADDA_JACK_MIC_CTRL,
@@ -557,7 +532,6 @@ static const struct snd_soc_component_driver sun50i_codec_analog_cmpnt_drv = {
 	.num_dapm_widgets	= ARRAY_SIZE(sun50i_a64_codec_widgets),
 	.dapm_routes		= sun50i_a64_codec_routes,
 	.num_dapm_routes	= ARRAY_SIZE(sun50i_a64_codec_routes),
-	.probe			= sun50i_a64_codec_probe,
 	.set_bias_level		= sun50i_a64_codec_set_bias_level,
 	.idle_bias_on		= true,
 	.suspend_bias_off	= true,
@@ -573,18 +547,9 @@ MODULE_DEVICE_TABLE(of, sun50i_codec_analog_of_match);
 
 static int sun50i_codec_analog_probe(struct platform_device *pdev)
 {
-	struct sun50i_codec_analog *codec;
 	struct regmap *regmap;
 	void __iomem *base;
-
-	codec = devm_kzalloc(&pdev->dev, sizeof(*codec), GFP_KERNEL);
-	if (!codec)
-		return -ENOMEM;
-
-	codec->internal_bias_resistor = of_property_read_bool(pdev->dev.of_node,
-					"allwinner,internal-bias-resistor");
-
-	platform_set_drvdata(pdev, codec);
+	bool enable;
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base)) {
@@ -597,6 +562,19 @@ static int sun50i_codec_analog_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Failed to create regmap\n");
 		return PTR_ERR(regmap);
 	}
+
+	enable = device_property_read_bool(&pdev->dev,
+					   "allwinner,internal-bias-resistor");
+	regmap_update_bits(regmap, SUN50I_ADDA_JACK_MIC_CTRL,
+			   BIT(SUN50I_ADDA_JACK_MIC_CTRL_INNERRESEN),
+			   enable << SUN50I_ADDA_JACK_MIC_CTRL_INNERRESEN);
+
+	/* Select sample interval of the ADC sample to 16ms */
+	regmap_update_bits(regmap, SUN50I_ADDA_MDET_CTRL,
+			   0x7 << SUN50I_ADDA_MDET_CTRL_SELDETADC_FS |
+			   0x3 << SUN50I_ADDA_MDET_CTRL_SELDETADC_BF,
+			   0x3 << SUN50I_ADDA_MDET_CTRL_SELDETADC_FS |
+			   0x3 << SUN50I_ADDA_MDET_CTRL_SELDETADC_BF);
 
 	return devm_snd_soc_register_component(&pdev->dev,
 					       &sun50i_codec_analog_cmpnt_drv,

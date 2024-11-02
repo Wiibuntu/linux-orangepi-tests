@@ -32,9 +32,9 @@
 #include <linux/prefetch.h>
 #include <linux/debugfs.h>
 #include <linux/mii.h>
-#include <linux/of_device.h>
 #include <linux/of_net.h>
 #include <linux/dmi.h>
+#include <linux/skbuff_ref.h>
 
 #include <asm/irq.h>
 
@@ -63,7 +63,6 @@
 #define TX_DEF_PENDING		63
 
 #define TX_WATCHDOG		(5 * HZ)
-#define NAPI_WEIGHT		64
 #define PHY_RETRIES		1000
 
 #define SKY2_EEPROM_MAGIC	0x9955aabb
@@ -1864,7 +1863,7 @@ static netdev_tx_t sky2_xmit_frame(struct sk_buff *skb,
 	if (mss != 0) {
 
 		if (!(hw->flags & SKY2_HW_NEW_LE))
-			mss += ETH_HLEN + ip_hdrlen(skb) + tcp_hdrlen(skb);
+			mss += skb_tcp_all_headers(skb);
 
 		if (mss != sky2->tx_last_mss) {
 			le = get_tx_le(sky2, &slot);
@@ -2385,7 +2384,7 @@ static int sky2_change_mtu(struct net_device *dev, int new_mtu)
 	u32 imask;
 
 	if (!netif_running(dev)) {
-		dev->mtu = new_mtu;
+		WRITE_ONCE(dev->mtu, new_mtu);
 		netdev_update_features(dev);
 		return 0;
 	}
@@ -2408,7 +2407,7 @@ static int sky2_change_mtu(struct net_device *dev, int new_mtu)
 	sky2_rx_stop(sky2);
 	sky2_rx_clean(sky2);
 
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 	netdev_update_features(dev);
 
 	mode = DATA_BLIND_VAL(DATA_BLIND_DEF) |	GM_SMOD_VLAN_ENA;
@@ -3688,9 +3687,9 @@ static void sky2_get_drvinfo(struct net_device *dev,
 {
 	struct sky2_port *sky2 = netdev_priv(dev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(sky2->hw->pdev),
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(sky2->hw->pdev),
 		sizeof(info->bus_info));
 }
 
@@ -3895,19 +3894,19 @@ static void sky2_get_stats(struct net_device *dev,
 	u64 _bytes, _packets;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&sky2->rx_stats.syncp);
+		start = u64_stats_fetch_begin(&sky2->rx_stats.syncp);
 		_bytes = sky2->rx_stats.bytes;
 		_packets = sky2->rx_stats.packets;
-	} while (u64_stats_fetch_retry_irq(&sky2->rx_stats.syncp, start));
+	} while (u64_stats_fetch_retry(&sky2->rx_stats.syncp, start));
 
 	stats->rx_packets = _packets;
 	stats->rx_bytes = _bytes;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&sky2->tx_stats.syncp);
+		start = u64_stats_fetch_begin(&sky2->tx_stats.syncp);
 		_bytes = sky2->tx_stats.bytes;
 		_packets = sky2->tx_stats.packets;
-	} while (u64_stats_fetch_retry_irq(&sky2->tx_stats.syncp, start));
+	} while (u64_stats_fetch_retry(&sky2->tx_stats.syncp, start));
 
 	stats->tx_packets = _packets;
 	stats->tx_bytes = _bytes;
@@ -4149,7 +4148,9 @@ static unsigned long roundup_ring_size(unsigned long pending)
 }
 
 static void sky2_get_ringparam(struct net_device *dev,
-			       struct ethtool_ringparam *ering)
+			       struct ethtool_ringparam *ering,
+			       struct kernel_ethtool_ringparam *kernel_ering,
+			       struct netlink_ext_ack *extack)
 {
 	struct sky2_port *sky2 = netdev_priv(dev);
 
@@ -4161,7 +4162,9 @@ static void sky2_get_ringparam(struct net_device *dev,
 }
 
 static int sky2_set_ringparam(struct net_device *dev,
-			      struct ethtool_ringparam *ering)
+			      struct ethtool_ringparam *ering,
+			      struct kernel_ethtool_ringparam *kernel_ering,
+			      struct netlink_ext_ack *extack)
 {
 	struct sky2_port *sky2 = netdev_priv(dev);
 
@@ -4266,96 +4269,36 @@ static int sky2_get_eeprom_len(struct net_device *dev)
 	return 1 << ( ((reg2 & PCI_VPD_ROM_SZ) >> 14) + 8);
 }
 
-static int sky2_vpd_wait(const struct sky2_hw *hw, int cap, u16 busy)
-{
-	unsigned long start = jiffies;
-
-	while ( (sky2_pci_read16(hw, cap + PCI_VPD_ADDR) & PCI_VPD_ADDR_F) == busy) {
-		/* Can take up to 10.6 ms for write */
-		if (time_after(jiffies, start + HZ/4)) {
-			dev_err(&hw->pdev->dev, "VPD cycle timed out\n");
-			return -ETIMEDOUT;
-		}
-		msleep(1);
-	}
-
-	return 0;
-}
-
-static int sky2_vpd_read(struct sky2_hw *hw, int cap, void *data,
-			 u16 offset, size_t length)
-{
-	int rc = 0;
-
-	while (length > 0) {
-		u32 val;
-
-		sky2_pci_write16(hw, cap + PCI_VPD_ADDR, offset);
-		rc = sky2_vpd_wait(hw, cap, 0);
-		if (rc)
-			break;
-
-		val = sky2_pci_read32(hw, cap + PCI_VPD_DATA);
-
-		memcpy(data, &val, min(sizeof(val), length));
-		offset += sizeof(u32);
-		data += sizeof(u32);
-		length -= sizeof(u32);
-	}
-
-	return rc;
-}
-
-static int sky2_vpd_write(struct sky2_hw *hw, int cap, const void *data,
-			  u16 offset, unsigned int length)
-{
-	unsigned int i;
-	int rc = 0;
-
-	for (i = 0; i < length; i += sizeof(u32)) {
-		u32 val = *(u32 *)(data + i);
-
-		sky2_pci_write32(hw, cap + PCI_VPD_DATA, val);
-		sky2_pci_write32(hw, cap + PCI_VPD_ADDR, offset | PCI_VPD_ADDR_F);
-
-		rc = sky2_vpd_wait(hw, cap, PCI_VPD_ADDR_F);
-		if (rc)
-			break;
-	}
-	return rc;
-}
-
 static int sky2_get_eeprom(struct net_device *dev, struct ethtool_eeprom *eeprom,
 			   u8 *data)
 {
 	struct sky2_port *sky2 = netdev_priv(dev);
-	int cap = pci_find_capability(sky2->hw->pdev, PCI_CAP_ID_VPD);
-
-	if (!cap)
-		return -EINVAL;
+	int rc;
 
 	eeprom->magic = SKY2_EEPROM_MAGIC;
+	rc = pci_read_vpd_any(sky2->hw->pdev, eeprom->offset, eeprom->len,
+			      data);
+	if (rc < 0)
+		return rc;
 
-	return sky2_vpd_read(sky2->hw, cap, data, eeprom->offset, eeprom->len);
+	eeprom->len = rc;
+
+	return 0;
 }
 
 static int sky2_set_eeprom(struct net_device *dev, struct ethtool_eeprom *eeprom,
 			   u8 *data)
 {
 	struct sky2_port *sky2 = netdev_priv(dev);
-	int cap = pci_find_capability(sky2->hw->pdev, PCI_CAP_ID_VPD);
-
-	if (!cap)
-		return -EINVAL;
+	int rc;
 
 	if (eeprom->magic != SKY2_EEPROM_MAGIC)
 		return -EINVAL;
 
-	/* Partial writes not supported */
-	if ((eeprom->offset & 3) || (eeprom->len & 3))
-		return -EINVAL;
+	rc = pci_write_vpd_any(sky2->hw->pdev, eeprom->offset, eeprom->len,
+			       data);
 
-	return sky2_vpd_write(sky2->hw, cap, data, eeprom->offset, eeprom->len);
+	return rc < 0 ? rc : 0;
 }
 
 static netdev_features_t sky2_fix_features(struct net_device *dev,
@@ -4586,7 +4529,7 @@ static __init void sky2_debug_init(void)
 	struct dentry *ent;
 
 	ent = debugfs_create_dir("sky2", NULL);
-	if (!ent || IS_ERR(ent))
+	if (IS_ERR(ent))
 		return;
 
 	sky2_debug = ent;
@@ -4768,7 +4711,7 @@ static irqreturn_t sky2_test_intr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-/* Test interrupt path by forcing a a software IRQ */
+/* Test interrupt path by forcing a software IRQ */
 static int sky2_test_msi(struct sky2_hw *hw)
 {
 	struct pci_dev *pdev = hw->pdev;
@@ -4994,7 +4937,7 @@ static int sky2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		}
 	}
 
-	netif_napi_add(dev, &hw->napi, sky2_poll, NAPI_WEIGHT);
+	netif_napi_add(dev, &hw->napi, sky2_poll);
 
 	err = register_netdev(dev);
 	if (err) {
@@ -5070,7 +5013,7 @@ static void sky2_remove(struct pci_dev *pdev)
 	if (!hw)
 		return;
 
-	del_timer_sync(&hw->watchdog_timer);
+	timer_shutdown_sync(&hw->watchdog_timer);
 	cancel_work_sync(&hw->restart_work);
 
 	for (i = hw->ports-1; i >= 0; --i)

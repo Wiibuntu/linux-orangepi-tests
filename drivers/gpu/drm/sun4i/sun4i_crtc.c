@@ -91,7 +91,7 @@ static void sun4i_crtc_atomic_flush(struct drm_crtc *crtc,
 
 	DRM_DEBUG_DRIVER("Committing plane changes\n");
 
-	sunxi_engine_commit(scrtc->engine);
+	sunxi_engine_commit(scrtc->engine, crtc, state);
 
 	if (event) {
 		crtc->state->event = NULL;
@@ -103,20 +103,6 @@ static void sun4i_crtc_atomic_flush(struct drm_crtc *crtc,
 			drm_crtc_send_vblank_event(crtc, event);
 		spin_unlock_irq(&crtc->dev->event_lock);
 	}
-
-	if (crtc->state->color_mgmt_changed) {
-		if (crtc->state->gamma_lut) {
-			/* LUT can be only updated when gamma correction is
-			 * disabled
-			 */
-			sun4i_tcon_enable_gamma(scrtc->tcon, false);
-			sun4i_tcon_load_gamma_lut(scrtc->tcon,
-						  crtc->state->gamma_lut->data);
-			sun4i_tcon_enable_gamma(scrtc->tcon, true);
-		} else
-			sun4i_tcon_enable_gamma(scrtc->tcon, false);
-	}
-
 }
 
 static void sun4i_crtc_atomic_disable(struct drm_crtc *crtc,
@@ -160,6 +146,7 @@ static void sun4i_crtc_mode_set_nofb(struct drm_crtc *crtc)
 	struct sun4i_crtc *scrtc = drm_crtc_to_sun4i_crtc(crtc);
 
 	sun4i_tcon_mode_set(scrtc->tcon, encoder, mode);
+	sunxi_engine_mode_set(scrtc->engine, mode);
 }
 
 static const struct drm_crtc_helper_funcs sun4i_crtc_helper_funcs = {

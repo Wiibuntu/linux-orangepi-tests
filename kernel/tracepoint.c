@@ -571,7 +571,8 @@ static void for_each_tracepoint_range(
 bool trace_module_has_bad_taint(struct module *mod)
 {
 	return mod->taints & ~((1 << TAINT_OOT_MODULE) | (1 << TAINT_CRAP) |
-			       (1 << TAINT_UNSIGNED_MODULE));
+				(1 << TAINT_UNSIGNED_MODULE) | (1 << TAINT_TEST) |
+				(1 << TAINT_LIVEPATCH));
 }
 
 static BLOCKING_NOTIFIER_HEAD(tracepoint_notify_list);
@@ -639,7 +640,6 @@ static void tp_module_going_check_quiescent(struct tracepoint *tp, void *priv)
 static int tracepoint_module_coming(struct module *mod)
 {
 	struct tp_module *tp_mod;
-	int ret = 0;
 
 	if (!mod->num_tracepoints)
 		return 0;
@@ -647,23 +647,22 @@ static int tracepoint_module_coming(struct module *mod)
 	/*
 	 * We skip modules that taint the kernel, especially those with different
 	 * module headers (for forced load), to make sure we don't cause a crash.
-	 * Staging, out-of-tree, and unsigned GPL modules are fine.
+	 * Staging, out-of-tree, unsigned GPL, and test modules are fine.
 	 */
 	if (trace_module_has_bad_taint(mod))
 		return 0;
-	mutex_lock(&tracepoint_module_list_mutex);
+
 	tp_mod = kmalloc(sizeof(struct tp_module), GFP_KERNEL);
-	if (!tp_mod) {
-		ret = -ENOMEM;
-		goto end;
-	}
+	if (!tp_mod)
+		return -ENOMEM;
 	tp_mod->mod = mod;
+
+	mutex_lock(&tracepoint_module_list_mutex);
 	list_add_tail(&tp_mod->list, &tracepoint_module_list);
 	blocking_notifier_call_chain(&tracepoint_notify_list,
 			MODULE_STATE_COMING, tp_mod);
-end:
 	mutex_unlock(&tracepoint_module_list_mutex);
-	return ret;
+	return 0;
 }
 
 static void tracepoint_module_going(struct module *mod)
@@ -736,6 +735,48 @@ static __init int init_tracepoints(void)
 	return ret;
 }
 __initcall(init_tracepoints);
+
+/**
+ * for_each_tracepoint_in_module - iteration on all tracepoints in a module
+ * @mod: module
+ * @fct: callback
+ * @priv: private data
+ */
+void for_each_tracepoint_in_module(struct module *mod,
+				   void (*fct)(struct tracepoint *tp,
+				    struct module *mod, void *priv),
+				   void *priv)
+{
+	tracepoint_ptr_t *begin, *end, *iter;
+
+	lockdep_assert_held(&tracepoint_module_list_mutex);
+
+	if (!mod)
+		return;
+
+	begin = mod->tracepoints_ptrs;
+	end = mod->tracepoints_ptrs + mod->num_tracepoints;
+
+	for (iter = begin; iter < end; iter++)
+		fct(tracepoint_ptr_deref(iter), mod, priv);
+}
+
+/**
+ * for_each_module_tracepoint - iteration on all tracepoints in all modules
+ * @fct: callback
+ * @priv: private data
+ */
+void for_each_module_tracepoint(void (*fct)(struct tracepoint *tp,
+				 struct module *mod, void *priv),
+				void *priv)
+{
+	struct tp_module *tp_mod;
+
+	mutex_lock(&tracepoint_module_list_mutex);
+	list_for_each_entry(tp_mod, &tracepoint_module_list, list)
+		for_each_tracepoint_in_module(tp_mod->mod, fct, priv);
+	mutex_unlock(&tracepoint_module_list_mutex);
+}
 #endif /* CONFIG_MODULES */
 
 /**

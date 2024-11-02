@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2005-2014, 2018-2022 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2024 Intel Corporation
  * Copyright (C) 2013-2014 Intel Mobile Communications GmbH
  * Copyright (C) 2016 Intel Deutschland GmbH
  */
@@ -102,8 +102,14 @@
 #define CSR_LTR_LONG_VAL_AD_SNOOP_VAL		0x000003ff
 #define CSR_LTR_LONG_VAL_AD_SCALE_USEC		2
 
+#define CSR_LTR_LAST_MSG			(CSR_BASE + 0x0DC)
+
 /* GIO Chicken Bits (PCI Express bus link power management) */
 #define CSR_GIO_CHICKEN_BITS    (CSR_BASE+0x100)
+
+#define CSR_IPC_SLEEP_CONTROL	(CSR_BASE + 0x114)
+#define CSR_IPC_SLEEP_CONTROL_SUSPEND	0x3
+#define CSR_IPC_SLEEP_CONTROL_RESUME	0
 
 /* Doorbell - since Bz
  * connected to UREG_DOORBELL_TO_ISR6 (lower 16 bits only)
@@ -144,8 +150,7 @@
 #define CSR_FUNC_SCRATCH_INIT_VALUE		(0x01010101)
 
 /* Bits for CSR_HW_IF_CONFIG_REG */
-#define CSR_HW_IF_CONFIG_REG_MSK_MAC_DASH	(0x00000003)
-#define CSR_HW_IF_CONFIG_REG_MSK_MAC_STEP	(0x0000000C)
+#define CSR_HW_IF_CONFIG_REG_MSK_MAC_STEP_DASH	(0x0000000F)
 #define CSR_HW_IF_CONFIG_REG_BIT_MONITOR_SRAM	(0x00000080)
 #define CSR_HW_IF_CONFIG_REG_MSK_BOARD_VER	(0x000000C0)
 #define CSR_HW_IF_CONFIG_REG_BIT_MAC_SI		(0x00000100)
@@ -288,8 +293,7 @@
 #define CSR_GP_CNTRL_REG_FLAG_SW_RESET			BIT(31)
 
 /* HW REV */
-#define CSR_HW_REV_DASH(_val)          (((_val) & 0x0000003) >> 0)
-#define CSR_HW_REV_STEP(_val)          (((_val) & 0x000000C) >> 2)
+#define CSR_HW_REV_STEP_DASH(_val)     ((_val) & CSR_HW_IF_CONFIG_REG_MSK_MAC_STEP_DASH)
 #define CSR_HW_REV_TYPE(_val)          (((_val) & 0x000FFF0) >> 4)
 
 /* HW RFID */
@@ -300,13 +304,15 @@
 #define CSR_HW_RFID_IS_CDB(_val)       (((_val) & 0x10000000) >> 28)
 #define CSR_HW_RFID_IS_JACKET(_val)    (((_val) & 0x20000000) >> 29)
 
-/**
- *  hw_rev values
- */
+/* hw_rev values */
 enum {
 	SILICON_A_STEP = 0,
 	SILICON_B_STEP,
 	SILICON_C_STEP,
+	SILICON_D_STEP,
+	SILICON_E_STEP,
+	SILICON_TC_STEP = 0xe,
+	SILICON_Z_STEP = 0xf,
 };
 
 
@@ -330,10 +336,10 @@ enum {
 #define CSR_HW_REV_TYPE_7265D		(0x0000210)
 #define CSR_HW_REV_TYPE_NONE		(0x00001F0)
 #define CSR_HW_REV_TYPE_QNJ		(0x0000360)
-#define CSR_HW_REV_TYPE_QNJ_B0		(0x0000364)
-#define CSR_HW_REV_TYPE_QU_B0		(0x0000334)
-#define CSR_HW_REV_TYPE_QU_C0		(0x0000338)
-#define CSR_HW_REV_TYPE_QUZ		(0x0000354)
+#define CSR_HW_REV_TYPE_QNJ_B0		(0x0000361)
+#define CSR_HW_REV_TYPE_QU_B0		(0x0000331)
+#define CSR_HW_REV_TYPE_QU_C0		(0x0000332)
+#define CSR_HW_REV_TYPE_QUZ		(0x0000351)
 #define CSR_HW_REV_TYPE_HR_CDB		(0x0000340)
 #define CSR_HW_REV_TYPE_SO		(0x0000370)
 #define CSR_HW_REV_TYPE_TY		(0x0000420)
@@ -345,6 +351,9 @@ enum {
 #define CSR_HW_RF_ID_TYPE_HRCDB		(0x00109F00)
 #define CSR_HW_RF_ID_TYPE_GF		(0x0010D000)
 #define CSR_HW_RF_ID_TYPE_GF4		(0x0010E000)
+#define CSR_HW_RF_ID_TYPE_MS		(0x00111000)
+#define CSR_HW_RF_ID_TYPE_FM		(0x00112000)
+#define CSR_HW_RF_ID_TYPE_WP		(0x00113000)
 
 /* HW_RF CHIP STEP  */
 #define CSR_HW_RF_STEP(_val) (((_val) >> 8) & 0xF)
@@ -531,6 +540,9 @@ enum {
  * 11-8:  queue selector
  */
 #define HBUS_TARG_WRPTR         (HBUS_BASE+0x060)
+/* This register is common for Tx and Rx, Rx queues start from 512 */
+#define HBUS_TARG_WRPTR_Q_SHIFT (16)
+#define HBUS_TARG_WRPTR_RX_Q(q) (((q) + 512) << HBUS_TARG_WRPTR_Q_SHIFT)
 
 /**********************************************************
  * CSR values
@@ -607,6 +619,7 @@ enum msix_hw_int_causes {
 	MSIX_HW_INT_CAUSES_REG_WAKEUP		= BIT(1),
 	MSIX_HW_INT_CAUSES_REG_IML              = BIT(1),
 	MSIX_HW_INT_CAUSES_REG_RESET_DONE	= BIT(2),
+	MSIX_HW_INT_CAUSES_REG_TOP_FATAL_ERR	= BIT(3),
 	MSIX_HW_INT_CAUSES_REG_SW_ERR_BZ	= BIT(5),
 	MSIX_HW_INT_CAUSES_REG_CT_KILL		= BIT(6),
 	MSIX_HW_INT_CAUSES_REG_RF_KILL		= BIT(7),

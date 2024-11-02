@@ -33,7 +33,9 @@
 #include <linux/sunrpc/stats.h>
 #include <linux/sunrpc/rpc_pipe_fs.h>
 #include <trace/events/sunrpc.h>
+
 #include "netns.h"
+#include "fail.h"
 
 #define	 RPCDBG_FACILITY RPCDBG_CACHE
 
@@ -675,7 +677,7 @@ static void cache_limit_defers(void)
 
 	/* Consider removing either the first or the last */
 	if (cache_defer_cnt > DFR_MAX) {
-		if (prandom_u32() & 1)
+		if (get_random_u32_below(2))
 			discard = list_entry(cache_defer_list.next,
 					     struct cache_deferred_req, recent);
 		else
@@ -688,16 +690,30 @@ static void cache_limit_defers(void)
 		discard->revisit(discard, 1);
 }
 
+#if IS_ENABLED(CONFIG_FAIL_SUNRPC)
+static inline bool cache_defer_immediately(void)
+{
+	return !fail_sunrpc.ignore_cache_wait &&
+		should_fail(&fail_sunrpc.attr, 1);
+}
+#else
+static inline bool cache_defer_immediately(void)
+{
+	return false;
+}
+#endif
+
 /* Return true if and only if a deferred request is queued. */
 static bool cache_defer_req(struct cache_req *req, struct cache_head *item)
 {
 	struct cache_deferred_req *dreq;
 
-	if (req->thread_wait) {
+	if (!cache_defer_immediately()) {
 		cache_wait_req(req, item);
 		if (!test_bit(CACHE_PENDING, &item->flags))
 			return false;
 	}
+
 	dreq = req->defer(req);
 	if (dreq == NULL)
 		return false;
@@ -715,11 +731,10 @@ static bool cache_defer_req(struct cache_req *req, struct cache_head *item)
 static void cache_revisit_request(struct cache_head *item)
 {
 	struct cache_deferred_req *dreq;
-	struct list_head pending;
 	struct hlist_node *tmp;
 	int hash = DFR_HASH(item);
+	LIST_HEAD(pending);
 
-	INIT_LIST_HEAD(&pending);
 	spin_lock(&cache_defer_lock);
 
 	hlist_for_each_entry_safe(dreq, tmp, &cache_defer_hash[hash], hash)
@@ -740,10 +755,8 @@ static void cache_revisit_request(struct cache_head *item)
 void cache_clean_deferred(void *owner)
 {
 	struct cache_deferred_req *dreq, *tmp;
-	struct list_head pending;
+	LIST_HEAD(pending);
 
-
-	INIT_LIST_HEAD(&pending);
 	spin_lock(&cache_defer_lock);
 
 	list_for_each_entry_safe(dreq, tmp, &cache_defer_list, recent) {
@@ -1069,9 +1082,8 @@ static void cache_dequeue(struct cache_detail *detail, struct cache_head *ch)
 {
 	struct cache_queue *cq, *tmp;
 	struct cache_request *cr;
-	struct list_head dequeued;
+	LIST_HEAD(dequeued);
 
-	INIT_LIST_HEAD(&dequeued);
 	spin_lock(&queue_lock);
 	list_for_each_entry_safe(cq, tmp, &detail->queue, list)
 		if (!cq->reader) {
@@ -1536,7 +1548,7 @@ static ssize_t write_flush(struct file *file, const char __user *buf,
 static ssize_t cache_read_procfs(struct file *filp, char __user *buf,
 				 size_t count, loff_t *ppos)
 {
-	struct cache_detail *cd = PDE_DATA(file_inode(filp));
+	struct cache_detail *cd = pde_data(file_inode(filp));
 
 	return cache_read(filp, buf, count, ppos, cd);
 }
@@ -1544,14 +1556,14 @@ static ssize_t cache_read_procfs(struct file *filp, char __user *buf,
 static ssize_t cache_write_procfs(struct file *filp, const char __user *buf,
 				  size_t count, loff_t *ppos)
 {
-	struct cache_detail *cd = PDE_DATA(file_inode(filp));
+	struct cache_detail *cd = pde_data(file_inode(filp));
 
 	return cache_write(filp, buf, count, ppos, cd);
 }
 
 static __poll_t cache_poll_procfs(struct file *filp, poll_table *wait)
 {
-	struct cache_detail *cd = PDE_DATA(file_inode(filp));
+	struct cache_detail *cd = pde_data(file_inode(filp));
 
 	return cache_poll(filp, wait, cd);
 }
@@ -1560,27 +1572,26 @@ static long cache_ioctl_procfs(struct file *filp,
 			       unsigned int cmd, unsigned long arg)
 {
 	struct inode *inode = file_inode(filp);
-	struct cache_detail *cd = PDE_DATA(inode);
+	struct cache_detail *cd = pde_data(inode);
 
 	return cache_ioctl(inode, filp, cmd, arg, cd);
 }
 
 static int cache_open_procfs(struct inode *inode, struct file *filp)
 {
-	struct cache_detail *cd = PDE_DATA(inode);
+	struct cache_detail *cd = pde_data(inode);
 
 	return cache_open(inode, filp, cd);
 }
 
 static int cache_release_procfs(struct inode *inode, struct file *filp)
 {
-	struct cache_detail *cd = PDE_DATA(inode);
+	struct cache_detail *cd = pde_data(inode);
 
 	return cache_release(inode, filp, cd);
 }
 
 static const struct proc_ops cache_channel_proc_ops = {
-	.proc_lseek	= no_llseek,
 	.proc_read	= cache_read_procfs,
 	.proc_write	= cache_write_procfs,
 	.proc_poll	= cache_poll_procfs,
@@ -1591,14 +1602,14 @@ static const struct proc_ops cache_channel_proc_ops = {
 
 static int content_open_procfs(struct inode *inode, struct file *filp)
 {
-	struct cache_detail *cd = PDE_DATA(inode);
+	struct cache_detail *cd = pde_data(inode);
 
 	return content_open(inode, filp, cd);
 }
 
 static int content_release_procfs(struct inode *inode, struct file *filp)
 {
-	struct cache_detail *cd = PDE_DATA(inode);
+	struct cache_detail *cd = pde_data(inode);
 
 	return content_release(inode, filp, cd);
 }
@@ -1612,14 +1623,14 @@ static const struct proc_ops content_proc_ops = {
 
 static int open_flush_procfs(struct inode *inode, struct file *filp)
 {
-	struct cache_detail *cd = PDE_DATA(inode);
+	struct cache_detail *cd = pde_data(inode);
 
 	return open_flush(inode, filp, cd);
 }
 
 static int release_flush_procfs(struct inode *inode, struct file *filp)
 {
-	struct cache_detail *cd = PDE_DATA(inode);
+	struct cache_detail *cd = pde_data(inode);
 
 	return release_flush(inode, filp, cd);
 }
@@ -1627,7 +1638,7 @@ static int release_flush_procfs(struct inode *inode, struct file *filp)
 static ssize_t read_flush_procfs(struct file *filp, char __user *buf,
 			    size_t count, loff_t *ppos)
 {
-	struct cache_detail *cd = PDE_DATA(file_inode(filp));
+	struct cache_detail *cd = pde_data(file_inode(filp));
 
 	return read_flush(filp, buf, count, ppos, cd);
 }
@@ -1636,7 +1647,7 @@ static ssize_t write_flush_procfs(struct file *filp,
 				  const char __user *buf,
 				  size_t count, loff_t *ppos)
 {
-	struct cache_detail *cd = PDE_DATA(file_inode(filp));
+	struct cache_detail *cd = pde_data(file_inode(filp));
 
 	return write_flush(filp, buf, count, ppos, cd);
 }
@@ -1646,7 +1657,6 @@ static const struct proc_ops cache_flush_proc_ops = {
 	.proc_read	= read_flush_procfs,
 	.proc_write	= write_flush_procfs,
 	.proc_release	= release_flush_procfs,
-	.proc_lseek	= no_llseek,
 };
 
 static void remove_cache_proc_entries(struct cache_detail *cd)
@@ -1799,7 +1809,6 @@ static int cache_release_pipefs(struct inode *inode, struct file *filp)
 
 const struct file_operations cache_file_operations_pipefs = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.read		= cache_read_pipefs,
 	.write		= cache_write_pipefs,
 	.poll		= cache_poll_pipefs,
@@ -1865,7 +1874,6 @@ const struct file_operations cache_flush_operations_pipefs = {
 	.read		= read_flush_pipefs,
 	.write		= write_flush_pipefs,
 	.release	= release_flush_pipefs,
-	.llseek		= no_llseek,
 };
 
 int sunrpc_cache_register_pipefs(struct dentry *parent,

@@ -196,9 +196,6 @@ static int tps65218_gpio_probe(struct platform_device *pdev)
 	tps65218_gpio->tps65218 = tps65218;
 	tps65218_gpio->gpio_chip = template_chip;
 	tps65218_gpio->gpio_chip.parent = &pdev->dev;
-#ifdef CONFIG_OF_GPIO
-	tps65218_gpio->gpio_chip.of_node = pdev->dev.of_node;
-#endif
 
 	return devm_gpiochip_add_data(&pdev->dev, &tps65218_gpio->gpio_chip,
 				      tps65218_gpio);
@@ -219,7 +216,7 @@ MODULE_DEVICE_TABLE(platform, tps65218_gpio_id_table);
 static struct platform_driver tps65218_gpio_driver = {
 	.driver = {
 		.name = "tps65218-gpio",
-		.of_match_table = of_match_ptr(tps65218_dt_match)
+		.of_match_table = tps65218_dt_match,
 	},
 	.probe = tps65218_gpio_probe,
 	.id_table = tps65218_gpio_id_table,

@@ -13,44 +13,28 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
-#include <sound/cs35l41.h>
 #include "cs35l41.h"
 
-static struct regmap_config cs35l41_regmap_i2c = {
-	.reg_bits = 32,
-	.val_bits = 32,
-	.reg_stride = CS35L41_REGSTRIDE,
-	.reg_format_endian = REGMAP_ENDIAN_BIG,
-	.val_format_endian = REGMAP_ENDIAN_BIG,
-	.max_register = CS35L41_LASTREG,
-	.reg_defaults = cs35l41_reg,
-	.num_reg_defaults = ARRAY_SIZE(cs35l41_reg),
-	.volatile_reg = cs35l41_volatile_reg,
-	.readable_reg = cs35l41_readable_reg,
-	.precious_reg = cs35l41_precious_reg,
-	.cache_type = REGCACHE_RBTREE,
-};
-
 static const struct i2c_device_id cs35l41_id_i2c[] = {
-	{ "cs35l40", 0 },
-	{ "cs35l41", 0 },
+	{ "cs35l40" },
+	{ "cs35l41" },
+	{ "cs35l51" },
+	{ "cs35l53" },
 	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, cs35l41_id_i2c);
 
-static int cs35l41_i2c_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int cs35l41_i2c_probe(struct i2c_client *client)
 {
 	struct cs35l41_private *cs35l41;
 	struct device *dev = &client->dev;
-	struct cs35l41_platform_data *pdata = dev_get_platdata(dev);
+	struct cs35l41_hw_cfg *hw_cfg = dev_get_platdata(dev);
 	const struct regmap_config *regmap_config = &cs35l41_regmap_i2c;
-	int ret;
 
 	cs35l41 = devm_kzalloc(dev, sizeof(struct cs35l41_private), GFP_KERNEL);
 
@@ -62,22 +46,18 @@ static int cs35l41_i2c_probe(struct i2c_client *client,
 
 	i2c_set_clientdata(client, cs35l41);
 	cs35l41->regmap = devm_regmap_init_i2c(client, regmap_config);
-	if (IS_ERR(cs35l41->regmap)) {
-		ret = PTR_ERR(cs35l41->regmap);
-		dev_err(cs35l41->dev, "Failed to allocate register map: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(cs35l41->regmap))
+		return dev_err_probe(cs35l41->dev, PTR_ERR(cs35l41->regmap),
+				     "Failed to allocate register map\n");
 
-	return cs35l41_probe(cs35l41, pdata);
+	return cs35l41_probe(cs35l41, hw_cfg);
 }
 
-static int cs35l41_i2c_remove(struct i2c_client *client)
+static void cs35l41_i2c_remove(struct i2c_client *client)
 {
 	struct cs35l41_private *cs35l41 = i2c_get_clientdata(client);
 
 	cs35l41_remove(cs35l41);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -100,6 +80,7 @@ MODULE_DEVICE_TABLE(acpi, cs35l41_acpi_match);
 static struct i2c_driver cs35l41_i2c_driver = {
 	.driver = {
 		.name		= "cs35l41",
+		.pm		= pm_ptr(&cs35l41_pm_ops),
 		.of_match_table = of_match_ptr(cs35l41_of_match),
 		.acpi_match_table = ACPI_PTR(cs35l41_acpi_match),
 	},

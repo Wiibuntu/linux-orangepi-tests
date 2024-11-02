@@ -73,12 +73,20 @@
 
 #include <linux/module.h>
 #include <linux/interrupt.h>
-#include "../comedidev.h"
-
+#include <linux/comedi/comedidev.h>
 #include <linux/isapnp.h>
+#include <linux/comedi/comedi_8255.h>
 
 #include "ni_stc.h"
-#include "8255.h"
+
+static const struct comedi_lrange range_ni_E_ao_ext = {
+	4, {
+		BIP_RANGE(10),
+		UNI_RANGE(10),
+		RANGE_ext(-1, 1),
+		RANGE_ext(0, 1)
+	}
+};
 
 /* AT specific setup */
 static const struct ni_board_struct ni_boards[] = {

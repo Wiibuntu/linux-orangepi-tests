@@ -71,7 +71,6 @@ static struct ctl_table ucma_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 	},
-	{ }
 };
 
 struct ucma_file {
@@ -754,8 +753,8 @@ static void ucma_copy_ib_route(struct rdma_ucm_query_route_resp *resp,
 {
 	struct rdma_dev_addr *dev_addr;
 
-	resp->num_paths = route->num_paths;
-	switch (route->num_paths) {
+	resp->num_paths = route->num_pri_alt_paths;
+	switch (route->num_pri_alt_paths) {
 	case 0:
 		dev_addr = &route->addr.dev_addr;
 		rdma_addr_get_dgid(dev_addr,
@@ -781,8 +780,8 @@ static void ucma_copy_iboe_route(struct rdma_ucm_query_route_resp *resp,
 				 struct rdma_route *route)
 {
 
-	resp->num_paths = route->num_paths;
-	switch (route->num_paths) {
+	resp->num_paths = route->num_pri_alt_paths;
+	switch (route->num_pri_alt_paths) {
 	case 0:
 		rdma_ip2gid((struct sockaddr *)&route->addr.dst_addr,
 			    (union ib_gid *)&resp->ib_route[0].dgid);
@@ -921,7 +920,7 @@ static ssize_t ucma_query_path(struct ucma_context *ctx,
 	if (!resp)
 		return -ENOMEM;
 
-	resp->num_paths = ctx->cm_id->route.num_paths;
+	resp->num_paths = ctx->cm_id->route.num_pri_alt_paths;
 	for (i = 0, out_len -= sizeof(*resp);
 	     i < resp->num_paths && out_len > sizeof(struct ib_path_rec_data);
 	     i++, out_len -= sizeof(struct ib_path_rec_data)) {
@@ -1625,13 +1624,13 @@ static ssize_t ucma_migrate_id(struct ucma_file *new_file,
 
 	/* Get current fd to protect against it being closed */
 	f = fdget(cmd.fd);
-	if (!f.file)
+	if (!fd_file(f))
 		return -ENOENT;
-	if (f.file->f_op != &ucma_fops) {
+	if (fd_file(f)->f_op != &ucma_fops) {
 		ret = -EINVAL;
 		goto file_put;
 	}
-	cur_file = f.file->private_data;
+	cur_file = fd_file(f)->private_data;
 
 	/* Validate current fd and prevent destruction of id. */
 	ctx = ucma_get_ctx(cur_file, cmd.id);
@@ -1818,7 +1817,6 @@ static const struct file_operations ucma_fops = {
 	.release = ucma_close,
 	.write	 = ucma_write,
 	.poll    = ucma_poll,
-	.llseek	 = no_llseek,
 };
 
 static struct miscdevice ucma_misc = {

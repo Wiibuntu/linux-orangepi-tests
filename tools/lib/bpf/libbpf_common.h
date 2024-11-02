@@ -30,16 +30,23 @@
 /* Add checks for other versions below when planning deprecation of API symbols
  * with the LIBBPF_DEPRECATED_SINCE macro.
  */
-#if __LIBBPF_CURRENT_VERSION_GEQ(0, 6)
-#define __LIBBPF_MARK_DEPRECATED_0_6(X) X
+#if __LIBBPF_CURRENT_VERSION_GEQ(1, 0)
+#define __LIBBPF_MARK_DEPRECATED_1_0(X) X
 #else
-#define __LIBBPF_MARK_DEPRECATED_0_6(X)
+#define __LIBBPF_MARK_DEPRECATED_1_0(X)
 #endif
-#if __LIBBPF_CURRENT_VERSION_GEQ(0, 7)
-#define __LIBBPF_MARK_DEPRECATED_0_7(X) X
-#else
-#define __LIBBPF_MARK_DEPRECATED_0_7(X)
-#endif
+
+/* This set of internal macros allows to do "function overloading" based on
+ * number of arguments provided by used in backwards-compatible way during the
+ * transition to libbpf 1.0
+ * It's ugly but necessary evil that will be cleaned up when we get to 1.0.
+ * See bpf_prog_load() overload for example.
+ */
+#define ___libbpf_cat(A, B) A ## B
+#define ___libbpf_select(NAME, NUM) ___libbpf_cat(NAME, NUM)
+#define ___libbpf_nth(_1, _2, _3, _4, _5, _6, N, ...) N
+#define ___libbpf_cnt(...) ___libbpf_nth(__VA_ARGS__, 6, 5, 4, 3, 2, 1)
+#define ___libbpf_overload(NAME, ...) ___libbpf_select(NAME, ___libbpf_cnt(__VA_ARGS__))(__VA_ARGS__)
 
 /* Helper macro to declare and initialize libbpf options struct
  *
@@ -54,7 +61,7 @@
  * including any extra padding, it with memset() and then assigns initial
  * values provided by users in struct initializer-syntax as varargs.
  */
-#define DECLARE_LIBBPF_OPTS(TYPE, NAME, ...)				    \
+#define LIBBPF_OPTS(TYPE, NAME, ...)					    \
 	struct TYPE NAME = ({ 						    \
 		memset(&NAME, 0, sizeof(struct TYPE));			    \
 		(struct TYPE) {						    \
@@ -62,5 +69,24 @@
 			__VA_ARGS__					    \
 		};							    \
 	})
+
+/* Helper macro to clear and optionally reinitialize libbpf options struct
+ *
+ * Small helper macro to reset all fields and to reinitialize the common
+ * structure size member. Values provided by users in struct initializer-
+ * syntax as varargs can be provided as well to reinitialize options struct
+ * specific members.
+ */
+#define LIBBPF_OPTS_RESET(NAME, ...)					    \
+	do {								    \
+		typeof(NAME) ___##NAME = ({ 				    \
+			memset(&___##NAME, 0, sizeof(NAME));		    \
+			(typeof(NAME)) {				    \
+				.sz = sizeof(NAME),			    \
+				__VA_ARGS__				    \
+			};						    \
+		});							    \
+		memcpy(&NAME, &___##NAME, sizeof(NAME));		    \
+	} while (0)
 
 #endif /* __LIBBPF_LIBBPF_COMMON_H */

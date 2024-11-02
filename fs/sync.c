@@ -152,15 +152,15 @@ SYSCALL_DEFINE1(syncfs, int, fd)
 	struct super_block *sb;
 	int ret, ret2;
 
-	if (!f.file)
+	if (!fd_file(f))
 		return -EBADF;
-	sb = f.file->f_path.dentry->d_sb;
+	sb = fd_file(f)->f_path.dentry->d_sb;
 
 	down_read(&sb->s_umount);
 	ret = sync_filesystem(sb);
 	up_read(&sb->s_umount);
 
-	ret2 = errseq_check_and_advance(&sb->s_wb_err, &f.file->f_sb_err);
+	ret2 = errseq_check_and_advance(&sb->s_wb_err, &fd_file(f)->f_sb_err);
 
 	fdput(f);
 	return ret ? ret : ret2;
@@ -208,8 +208,8 @@ static int do_fsync(unsigned int fd, int datasync)
 	struct fd f = fdget(fd);
 	int ret = -EBADF;
 
-	if (f.file) {
-		ret = vfs_fsync(f.file, datasync);
+	if (fd_file(f)) {
+		ret = vfs_fsync(fd_file(f), datasync);
 		fdput(f);
 	}
 	return ret;
@@ -360,8 +360,8 @@ int ksys_sync_file_range(int fd, loff_t offset, loff_t nbytes,
 
 	ret = -EBADF;
 	f = fdget(fd);
-	if (f.file)
-		ret = sync_file_range(f.file, offset, nbytes, flags);
+	if (fd_file(f))
+		ret = sync_file_range(fd_file(f), offset, nbytes, flags);
 
 	fdput(f);
 	return ret;
@@ -372,6 +372,15 @@ SYSCALL_DEFINE4(sync_file_range, int, fd, loff_t, offset, loff_t, nbytes,
 {
 	return ksys_sync_file_range(fd, offset, nbytes, flags);
 }
+
+#if defined(CONFIG_COMPAT) && defined(__ARCH_WANT_COMPAT_SYNC_FILE_RANGE)
+COMPAT_SYSCALL_DEFINE6(sync_file_range, int, fd, compat_arg_u64_dual(offset),
+		       compat_arg_u64_dual(nbytes), unsigned int, flags)
+{
+	return ksys_sync_file_range(fd, compat_arg_u64_glue(offset),
+				    compat_arg_u64_glue(nbytes), flags);
+}
+#endif
 
 /* It would be nice if people remember that not all the world's an i386
    when they introduce new system calls */

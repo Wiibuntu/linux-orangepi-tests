@@ -51,6 +51,8 @@ static bool report_undeciphered;
 module_param(report_undeciphered, bool, 0644);
 MODULE_PARM_DESC(report_undeciphered, "Report undeciphered multi-touch state field using a MSC_RAW event");
 
+#define TRACKPAD2_2021_BT_VERSION 0x110
+
 #define TRACKPAD_REPORT_ID 0x28
 #define TRACKPAD2_USB_REPORT_ID 0x02
 #define TRACKPAD2_BT_REPORT_ID 0x31
@@ -118,6 +120,9 @@ MODULE_PARM_DESC(report_undeciphered, "Report undeciphered multi-touch state fie
  * @scroll_jiffies: Time of last scroll motion.
  * @touches: Most recent data for a touch, indexed by tracking ID.
  * @tracking_ids: Mapping of current touch input data to @touches.
+ * @hdev: Pointer to the underlying HID device.
+ * @work: Workqueue to handle initialization retry for quirky devices.
+ * @battery_timer: Timer for obtaining battery level information.
  */
 struct magicmouse_sc {
 	struct input_dev *input;
@@ -478,7 +483,7 @@ static int magicmouse_raw_event(struct hid_device *hdev,
 		magicmouse_raw_event(hdev, report, data + 2, data[1]);
 		magicmouse_raw_event(hdev, report, data + 2 + data[1],
 			size - 2 - data[1]);
-		break;
+		return 0;
 	default:
 		return 0;
 	}
@@ -541,10 +546,22 @@ static int magicmouse_setup_input(struct input_dev *input, struct hid_device *hd
 			__set_bit(REL_HWHEEL_HI_RES, input->relbit);
 		}
 	} else if (input->id.product == USB_DEVICE_ID_APPLE_MAGICTRACKPAD2) {
-		/* setting the device name to ensure the same driver settings
-		 * get loaded, whether connected through bluetooth or USB
+		/* If the trackpad has been connected to a Mac, the name is
+		 * automatically personalized, e.g., "José Expósito's Trackpad".
+		 * When connected through Bluetooth, the personalized name is
+		 * reported, however, when connected through USB the generic
+		 * name is reported.
+		 * Set the device name to ensure the same driver settings get
+		 * loaded, whether connected through bluetooth or USB.
 		 */
-		input->name = "Apple Inc. Magic Trackpad 2";
+		if (hdev->vendor == BT_VENDOR_ID_APPLE) {
+			if (input->id.version == TRACKPAD2_2021_BT_VERSION)
+				input->name = "Apple Inc. Magic Trackpad";
+			else
+				input->name = "Apple Inc. Magic Trackpad 2";
+		} else { /* USB_VENDOR_ID_APPLE */
+			input->name = hdev->name;
+		}
 
 		__clear_bit(EV_MSC, input->evbit);
 		__clear_bit(BTN_0, input->keybit);
@@ -890,8 +907,8 @@ static void magicmouse_remove(struct hid_device *hdev)
 	hid_hw_stop(hdev);
 }
 
-static __u8 *magicmouse_report_fixup(struct hid_device *hdev, __u8 *rdesc,
-				     unsigned int *rsize)
+static const __u8 *magicmouse_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+					   unsigned int *rsize)
 {
 	/*
 	 * Change the usage from:
@@ -951,4 +968,5 @@ static struct hid_driver magicmouse_driver = {
 };
 module_hid_driver(magicmouse_driver);
 
+MODULE_DESCRIPTION("Apple \"Magic\" Wireless Mouse driver");
 MODULE_LICENSE("GPL");

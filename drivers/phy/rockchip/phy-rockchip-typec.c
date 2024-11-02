@@ -350,7 +350,6 @@ struct usb3phy_reg {
  * struct rockchip_usb3phy_port_cfg - usb3-phy port configuration.
  * @reg: the base address for usb3-phy config.
  * @typec_conn_dir: the register of type-c connector direction.
- * @typec_conn_dir_sel: the register of type-c connector direction source.
  * @usb3tousb2_en: the register of type-c force usb2 to usb2 enable.
  * @external_psm: the register of type-c phy external psm clock.
  * @pipe_status: the register of type-c phy pipe status.
@@ -361,7 +360,6 @@ struct usb3phy_reg {
 struct rockchip_usb3phy_port_cfg {
 	unsigned int reg;
 	struct usb3phy_reg typec_conn_dir;
-	struct usb3phy_reg typec_conn_dir_sel;
 	struct usb3phy_reg usb3tousb2_en;
 	struct usb3phy_reg external_psm;
 	struct usb3phy_reg pipe_status;
@@ -436,7 +434,6 @@ static const struct rockchip_usb3phy_port_cfg rk3399_usb3phy_port_cfgs[] = {
 	{
 		.reg = 0xff7c0000,
 		.typec_conn_dir	= { 0xe580, 0, 16 },
-		.typec_conn_dir_sel	= { 0xe580, 8, 16+8 },
 		.usb3tousb2_en	= { 0xe580, 3, 19 },
 		.external_psm	= { 0xe588, 14, 30 },
 		.pipe_status	= { 0xe5c0, 0, 0 },
@@ -447,7 +444,6 @@ static const struct rockchip_usb3phy_port_cfg rk3399_usb3phy_port_cfgs[] = {
 	{
 		.reg = 0xff800000,
 		.typec_conn_dir	= { 0xe58c, 0, 16 },
-		.typec_conn_dir_sel	= { 0xe58c, 8, 16+8 },
 		.usb3tousb2_en	= { 0xe58c, 3, 19 },
 		.external_psm	= { 0xe594, 14, 30 },
 		.pipe_status	= { 0xe5c0, 16, 16 },
@@ -743,7 +739,6 @@ static int tcphy_phy_init(struct rockchip_typec_phy *tcphy, u8 mode)
 
 	reset_control_deassert(tcphy->tcphy_rst);
 
-	property_enable(tcphy, &cfg->typec_conn_dir_sel, 0);
 	property_enable(tcphy, &cfg->typec_conn_dir, tcphy->flip);
 	tcphy_dp_aux_set_flip(tcphy);
 
@@ -813,9 +808,8 @@ static int tcphy_get_mode(struct rockchip_typec_phy *tcphy)
 	struct extcon_dev *edev = tcphy->extcon;
 	union extcon_property_value property;
 	unsigned int id;
-	bool ufp, dp;
 	u8 mode;
-	int ret;
+	int ret, ufp, dp;
 
 	if (!edev)
 		return MODE_DFP_USB;
@@ -826,10 +820,10 @@ static int tcphy_get_mode(struct rockchip_typec_phy *tcphy)
 	mode = MODE_DFP_USB;
 	id = EXTCON_USB_HOST;
 
-	if (ufp) {
+	if (ufp > 0) {
 		mode = MODE_UFP_USB;
 		id = EXTCON_USB;
-	} else if (dp) {
+	} else if (dp > 0) {
 		mode = MODE_DFP_DP;
 		id = EXTCON_DISP_DP;
 
@@ -1110,25 +1104,22 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 	struct phy_provider *phy_provider;
 	struct resource *res;
 	const struct rockchip_usb3phy_port_cfg *phy_cfgs;
-	const struct of_device_id *match;
 	int index, ret;
 
 	tcphy = devm_kzalloc(dev, sizeof(*tcphy), GFP_KERNEL);
 	if (!tcphy)
 		return -ENOMEM;
 
-	match = of_match_device(dev->driver->of_match_table, dev);
-	if (!match || !match->data) {
+	phy_cfgs = of_device_get_match_data(dev);
+	if (!phy_cfgs) {
 		dev_err(dev, "phy configs are not assigned!\n");
 		return -EINVAL;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	tcphy->base = devm_ioremap_resource(dev, res);
+	tcphy->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(tcphy->base))
 		return PTR_ERR(tcphy->base);
 
-	phy_cfgs = match->data;
 	/* find out a proper config which can be matched with dt. */
 	index = 0;
 	while (phy_cfgs[index].reg) {
@@ -1202,11 +1193,9 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rockchip_typec_phy_remove(struct platform_device *pdev)
+static void rockchip_typec_phy_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id rockchip_typec_phy_dt_ids[] = {
@@ -1221,7 +1210,7 @@ MODULE_DEVICE_TABLE(of, rockchip_typec_phy_dt_ids);
 
 static struct platform_driver rockchip_typec_phy_driver = {
 	.probe		= rockchip_typec_phy_probe,
-	.remove		= rockchip_typec_phy_remove,
+	.remove_new	= rockchip_typec_phy_remove,
 	.driver		= {
 		.name	= "rockchip-typec-phy",
 		.of_match_table = rockchip_typec_phy_dt_ids,

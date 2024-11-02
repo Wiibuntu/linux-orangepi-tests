@@ -58,18 +58,14 @@
 /*---------------------  Export Functions  --------------------------*/
 
 bool IFRFbWriteEmbedded(struct vnt_private *priv, unsigned long dwData);
-bool RFbSelectChannel(struct vnt_private *priv, unsigned char byRFType, u16 byChannel);
+bool RFbSelectChannel(struct vnt_private *priv, unsigned char rf_type, u16 byChannel);
 bool RFbInit(struct vnt_private *priv);
-bool RFvWriteWakeProgSyn(struct vnt_private *priv, unsigned char rf_type, u16 channel);
+bool rf_write_wake_prog_syn(struct vnt_private *priv, unsigned char rf_type, u16 channel);
 bool RFbSetPower(struct vnt_private *priv, unsigned int rate, u16 uCH);
 bool RFbRawSetPower(struct vnt_private *priv, unsigned char byPwr,
 		    unsigned int rate);
 
 void RFvRSSITodBm(struct vnt_private *priv, unsigned char byCurrRSSI,
 		  long *pldBm);
-
-/* {{ RobertYu: 20050104 */
-bool RFbAL7230SelectChannelPostProcess(struct vnt_private *priv, u16 byOldChannel, u16 byNewChannel);
-/* }} RobertYu */
 
 #endif /* __RF_H__ */
