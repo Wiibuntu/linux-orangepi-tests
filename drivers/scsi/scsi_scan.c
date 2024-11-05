@@ -97,7 +97,7 @@ MODULE_PARM_DESC(max_luns,
 #define SCSI_SCAN_TYPE_DEFAULT "sync"
 #endif
 
-char scsi_scan_type[7] = SCSI_SCAN_TYPE_DEFAULT;
+static char scsi_scan_type[7] = SCSI_SCAN_TYPE_DEFAULT;
 
 module_param_string(scan, scsi_scan_type, sizeof(scsi_scan_type),
 		    S_IRUGO|S_IWUSR);
@@ -122,7 +122,7 @@ struct async_scan_data {
 	struct completion prev_finished;
 };
 
-/**
+/*
  * scsi_enable_async_suspend - Enable async suspend and resume
  */
 void scsi_enable_async_suspend(struct device *dev)
@@ -223,6 +223,8 @@ static int scsi_realloc_sdev_budget_map(struct scsi_device *sdev,
 	int ret;
 	struct sbitmap sb_backup;
 
+	depth = min_t(unsigned int, depth, scsi_device_max_queue_depth(sdev));
+
 	/*
 	 * realloc if new shift is calculated, which is caused by setting
 	 * up one new default queue depth after calling ->slave_configure
@@ -245,6 +247,9 @@ static int scsi_realloc_sdev_budget_map(struct scsi_device *sdev,
 				scsi_device_max_queue_depth(sdev),
 				new_shift, GFP_KERNEL,
 				sdev->request_queue->node, false, true);
+	if (!ret)
+		sbitmap_resize(&sdev->budget_map, depth);
+
 	if (need_free) {
 		if (ret)
 			sdev->budget_map = sb_backup;
@@ -728,7 +733,17 @@ static int scsi_probe_lun(struct scsi_device *sdev, unsigned char *inq_result,
 		if (pass == 1) {
 			if (BLIST_INQUIRY_36 & *bflags)
 				next_inquiry_len = 36;
-			else if (sdev->inquiry_len)
+			/*
+			 * LLD specified a maximum sdev->inquiry_len
+			 * but device claims it has more data. Capping
+			 * the length only makes sense for legacy
+			 * devices. If a device supports SPC-4 (2014)
+			 * or newer, assume that it is safe to ask for
+			 * as much as the device says it supports.
+			 */
+			else if (sdev->inquiry_len &&
+				 response_len > sdev->inquiry_len &&
+				 (inq_result[2] & 0x7) < 6) /* SPC-4 */
 				next_inquiry_len = sdev->inquiry_len;
 			else
 				next_inquiry_len = response_len;

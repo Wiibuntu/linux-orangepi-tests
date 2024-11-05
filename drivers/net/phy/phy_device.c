@@ -90,8 +90,9 @@ const int phy_10_100_features_array[4] = {
 };
 EXPORT_SYMBOL_GPL(phy_10_100_features_array);
 
-const int phy_basic_t1_features_array[2] = {
+const int phy_basic_t1_features_array[3] = {
 	ETHTOOL_LINK_MODE_TP_BIT,
+	ETHTOOL_LINK_MODE_10baseT1L_Full_BIT,
 	ETHTOOL_LINK_MODE_100baseT1_Full_BIT,
 };
 EXPORT_SYMBOL_GPL(phy_basic_t1_features_array);
@@ -277,6 +278,15 @@ static __maybe_unused int mdio_bus_phy_suspend(struct device *dev)
 	if (phydev->mac_managed_pm)
 		return 0;
 
+	/* Wakeup interrupts may occur during the system sleep transition when
+	 * the PHY is inaccessible. Set flag to postpone handling until the PHY
+	 * has resumed. Wait for concurrent interrupt handler to complete.
+	 */
+	if (phy_interrupt_is_valid(phydev)) {
+		phydev->irq_suspended = 1;
+		synchronize_irq(phydev->irq);
+	}
+
 	/* We must stop the state machine manually, otherwise it stops out of
 	 * control, possibly with the phydev->lock held. Upon resume, netdev
 	 * may call phy routines that try to grab the same lock, and that may
@@ -314,6 +324,20 @@ static __maybe_unused int mdio_bus_phy_resume(struct device *dev)
 	if (ret < 0)
 		return ret;
 no_resume:
+	if (phy_interrupt_is_valid(phydev)) {
+		phydev->irq_suspended = 0;
+		synchronize_irq(phydev->irq);
+
+		/* Rerun interrupts which were postponed by phy_interrupt()
+		 * because they occurred during the system sleep transition.
+		 */
+		if (phydev->irq_rerun) {
+			phydev->irq_rerun = 0;
+			enable_irq(phydev->irq);
+			irq_wake_thread(phydev->irq, phydev);
+		}
+	}
+
 	if (phydev->attached_dev && phydev->adjust_link)
 		phy_start_machine(phydev);
 
@@ -529,69 +553,11 @@ static ssize_t phy_dev_flags_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(phy_dev_flags);
 
-static ssize_t
-phy_registers_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct phy_device *phydev = to_phy_device(dev);
-	int index;
-
-	for (index = 0; index < 32; index++)
-		sprintf(buf, "%s%2d: 0x%x\n", buf, index,
-			phy_read(phydev, index));
-
-	return strlen(buf);
-}
-
-static ssize_t
-phy_registers_store(struct device *dev,
-		    struct device_attribute *attr,
-		    const char *buf, size_t count)
-{
-	struct phy_device *phydev = to_phy_device(dev);
-	int index = 0, val = 0;
-	char tmp[32];
-	char *data;
-
-	if (count >= sizeof(tmp))
-		goto out;
-
-	memset(tmp, 0, sizeof(tmp));
-	memcpy(tmp, buf, count);
-
-	data = tmp;
-	data = strstr(data, " ");
-	if (!data)
-		goto out;
-	*data = 0;
-	data++;
-
-	if (kstrtoint(tmp, 0, &index) || index >= 32)
-		goto out;
-
-	if (kstrtoint(data, 0, &val) || val > 0xffff)
-		goto out;
-
-	pr_info("Set Ethernet PHY register %d to 0x%x\n", (int)index, (int)val);
-
-	phy_write(phydev, index, val);
-
-	return count;
-
-out:
-	pr_err("wrong register value input\n");
-	pr_err("usage: <reg index> <value>\n");
-
-	return count;
-}
-
-static DEVICE_ATTR_RW(phy_registers);
-
 static struct attribute *phy_dev_attrs[] = {
 	&dev_attr_phy_id.attr,
 	&dev_attr_phy_interface.attr,
 	&dev_attr_phy_has_fixups.attr,
 	&dev_attr_phy_dev_flags.attr,
-	&dev_attr_phy_registers.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(phy_dev);
@@ -657,6 +623,7 @@ struct phy_device *phy_device_create(struct mii_bus *bus, int addr, u32 phy_id,
 
 	dev->autoneg = AUTONEG_ENABLE;
 
+	dev->pma_extable = -ENODATA;
 	dev->is_c45 = is_c45;
 	dev->phy_id = phy_id;
 	if (c45_ids)
@@ -1507,6 +1474,8 @@ int phy_attach_direct(struct net_device *dev, struct phy_device *phydev,
 
 	phydev->state = PHY_READY;
 
+	phydev->interrupts = PHY_INTERRUPT_DISABLED;
+
 	/* Port is set to PORT_TP by default and the actual PHY driver will set
 	 * it to different value depending on the PHY configuration. If we have
 	 * the generic PHY driver we can't figure it out, thus set the old
@@ -1528,10 +1497,6 @@ int phy_attach_direct(struct net_device *dev, struct phy_device *phydev,
 	err = phy_init_hw(phydev);
 	if (err)
 		goto error;
-
-	err = phy_disable_interrupts(phydev);
-	if (err)
-		return err;
 
 	phy_resume(phydev);
 	phy_led_triggers_register(phydev);
@@ -2109,16 +2074,10 @@ static int genphy_setup_master_slave(struct phy_device *phydev)
 				   CTL1000_PREFER_MASTER), ctl);
 }
 
-static int genphy_read_master_slave(struct phy_device *phydev)
+int genphy_read_master_slave(struct phy_device *phydev)
 {
 	int cfg, state;
 	int val;
-
-	if (!phydev->is_gigabit_capable) {
-		phydev->master_slave_get = MASTER_SLAVE_CFG_UNSUPPORTED;
-		phydev->master_slave_state = MASTER_SLAVE_STATE_UNSUPPORTED;
-		return 0;
-	}
 
 	phydev->master_slave_get = MASTER_SLAVE_CFG_UNKNOWN;
 	phydev->master_slave_state = MASTER_SLAVE_STATE_UNKNOWN;
@@ -2160,6 +2119,7 @@ static int genphy_read_master_slave(struct phy_device *phydev)
 
 	return 0;
 }
+EXPORT_SYMBOL(genphy_read_master_slave);
 
 /**
  * genphy_restart_aneg - Enable and Restart Autonegotiation
@@ -2454,14 +2414,18 @@ int genphy_read_status(struct phy_device *phydev)
 	if (phydev->autoneg == AUTONEG_ENABLE && old_link && phydev->link)
 		return 0;
 
+	phydev->master_slave_get = MASTER_SLAVE_CFG_UNSUPPORTED;
+	phydev->master_slave_state = MASTER_SLAVE_STATE_UNSUPPORTED;
 	phydev->speed = SPEED_UNKNOWN;
 	phydev->duplex = DUPLEX_UNKNOWN;
 	phydev->pause = 0;
 	phydev->asym_pause = 0;
 
-	err = genphy_read_master_slave(phydev);
-	if (err < 0)
-		return err;
+	if (phydev->is_gigabit_capable) {
+		err = genphy_read_master_slave(phydev);
+		if (err < 0)
+			return err;
+	}
 
 	err = genphy_read_lpa(phydev);
 	if (err < 0)

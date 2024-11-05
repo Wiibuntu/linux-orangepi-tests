@@ -364,20 +364,17 @@ static u64 notrace arm64_858921_read_cntvct_el0(void)
  * with all ones or all zeros in the low bits. Bound the loop by the maximum
  * number of CPU cycles in 3 consecutive 24 MHz counter periods.
  */
-#define __sun50i_a64_read_reg(reg) ({                                                 \
-    register u64 _tries = 5, _old, _new;                                              \
-                                                                                      \
-    do {                                                                              \
-        if (unlikely(_tries < 3))                                                     \
-            isb();                                                                    \
-        _old = read_sysreg(reg);                                                      \
-        _new = read_sysreg(reg);                                                      \
-    } while (unlikely((_new - _old) >> 4) && --_tries);                               \
-                                                                                      \
-    if (unlikely(!_tries))                                                            \
-        pr_err("(cpu %d) returning possibly incorrect counter value %llx (%llx)\n",   \
-                smp_processor_id() + 1, _new, _old);                                  \
-   _new;                                                                              \
+#define __sun50i_a64_read_reg(reg) ({					\
+	u64 _val;							\
+	int _retries = 150;						\
+									\
+	do {								\
+		_val = read_sysreg(reg);				\
+		_retries--;						\
+	} while (((_val + 1) & GENMASK(8, 0)) <= 1 && _retries);	\
+									\
+	WARN_ON_ONCE(!_retries);					\
+	_val;								\
 })
 
 static u64 notrace sun50i_a64_read_cntpct_el0(void)
@@ -883,10 +880,19 @@ static void __arch_timer_setup(unsigned type,
 	clockevents_config_and_register(clk, arch_timer_rate, 0xf, max_delta);
 }
 
-static void arch_timer_evtstrm_enable(int divider)
+static void arch_timer_evtstrm_enable(unsigned int divider)
 {
 	u32 cntkctl = arch_timer_get_cntkctl();
 
+#ifdef CONFIG_ARM64
+	/* ECV is likely to require a large divider. Use the EVNTIS flag. */
+	if (cpus_have_const_cap(ARM64_HAS_ECV) && divider > 15) {
+		cntkctl |= ARCH_TIMER_EVT_INTERVAL_SCALE;
+		divider -= 8;
+	}
+#endif
+
+	divider = min(divider, 15U);
 	cntkctl &= ~ARCH_TIMER_EVT_TRIGGER_MASK;
 	/* Set the divider and enable virtual event stream */
 	cntkctl |= (divider << ARCH_TIMER_EVT_TRIGGER_SHIFT)
@@ -915,7 +921,7 @@ static void arch_timer_configure_evtstream(void)
 		lsb++;
 
 	/* enable event stream */
-	arch_timer_evtstrm_enable(max(0, min(lsb, 15)));
+	arch_timer_evtstrm_enable(max(0, lsb));
 }
 
 static void arch_counter_set_user_access(void)

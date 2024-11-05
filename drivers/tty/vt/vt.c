@@ -106,7 +106,6 @@
 #include <linux/ctype.h>
 #include <linux/bsearch.h>
 #include <linux/gcd.h>
-#include <linux/bootsplash.h>
 
 #define MAX_NR_CON_DRIVER 16
 
@@ -856,7 +855,7 @@ static void delete_char(struct vc_data *vc, unsigned int nr)
 	unsigned short *p = (unsigned short *) vc->vc_pos;
 
 	vc_uniscr_delete(vc, nr);
-	scr_memcpyw(p, p + nr, (vc->vc_cols - vc->state.x - nr) * 2);
+	scr_memmovew(p, p + nr, (vc->vc_cols - vc->state.x - nr) * 2);
 	scr_memsetw(p + vc->vc_cols - vc->state.x - nr, vc->vc_video_erase_char,
 			nr * 2);
 	vc->vc_need_wrap = 0;
@@ -1834,7 +1833,7 @@ static void csi_m(struct vc_data *vc)
 static void respond_string(const char *p, size_t len, struct tty_port *port)
 {
 	tty_insert_flip_string(port, p, len);
-	tty_schedule_flip(port);
+	tty_flip_buffer_push(port);
 }
 
 static void cursor_report(struct vc_data *vc, struct tty_struct *tty)
@@ -4436,7 +4435,6 @@ void do_unblank_screen(int leaving_gfx)
 	}
 
 	console_blanked = 0;
-	bootsplash_mark_dirty();
 	if (vc->vc_sw->con_blank(vc, 0, leaving_gfx))
 		/* Low-level driver cannot restore -> do it ourselves */
 		update_screen(vc);

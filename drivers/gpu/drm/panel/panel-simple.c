@@ -720,7 +720,7 @@ static const struct drm_display_mode ampire_am_1280800n3tzqw_t00h_mode = {
 static const struct panel_desc ampire_am_1280800n3tzqw_t00h = {
 	.modes = &ampire_am_1280800n3tzqw_t00h_mode,
 	.num_modes = 1,
-	.bpc = 6,
+	.bpc = 8,
 	.size = {
 		.width = 217,
 		.height = 136,
@@ -1402,6 +1402,31 @@ static const struct panel_desc chunghwa_claa101wb01 = {
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
+static const struct display_timing dataimage_fg040346dsswbg04_timing = {
+	.pixelclock = { 5000000, 9000000, 12000000 },
+	.hactive = { 480, 480, 480 },
+	.hfront_porch = { 12, 12, 12 },
+	.hback_porch = { 12, 12, 12 },
+	.hsync_len = { 21, 21, 21 },
+	.vactive = { 272, 272, 272 },
+	.vfront_porch = { 4, 4, 4 },
+	.vback_porch = { 4, 4, 4 },
+	.vsync_len = { 8, 8, 8 },
+};
+
+static const struct panel_desc dataimage_fg040346dsswbg04 = {
+	.timings = &dataimage_fg040346dsswbg04_timing,
+	.num_timings = 1,
+	.bpc = 8,
+	.size = {
+		.width = 95,
+		.height = 54,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH | DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE,
+	.connector_type = DRM_MODE_CONNECTOR_DPI,
+};
+
 static const struct drm_display_mode dataimage_scf0700c48ggu18_mode = {
 	.clock = 33260,
 	.hdisplay = 800,
@@ -2029,7 +2054,33 @@ static const struct panel_desc innolux_g070y2_l01 = {
 		.unprepare = 800,
 	},
 	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
+};
+
+static const struct drm_display_mode innolux_g070y2_t02_mode = {
+	.clock = 33333,
+	.hdisplay = 800,
+	.hsync_start = 800 + 210,
+	.hsync_end = 800 + 210 + 20,
+	.htotal = 800 + 210 + 20 + 46,
+	.vdisplay = 480,
+	.vsync_start = 480 + 22,
+	.vsync_end = 480 + 22 + 10,
+	.vtotal = 480 + 22 + 23 + 10,
+};
+
+static const struct panel_desc innolux_g070y2_t02 = {
+	.modes = &innolux_g070y2_t02_mode,
+	.num_modes = 1,
+	.bpc = 8,
+	.size = {
+		.width = 152,
+		.height = 92,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH | DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE,
+	.connector_type = DRM_MODE_CONNECTOR_DPI,
 };
 
 static const struct display_timing innolux_g101ice_l01_timing = {
@@ -2501,6 +2552,36 @@ static const struct panel_desc mitsubishi_aa070mc01 = {
 	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
 };
 
+static const struct display_timing multi_inno_mi0700s4t_6_timing = {
+	.pixelclock = { 29000000, 33000000, 38000000 },
+	.hactive = { 800, 800, 800 },
+	.hfront_porch = { 180, 210, 240 },
+	.hback_porch = { 16, 16, 16 },
+	.hsync_len = { 30, 30, 30 },
+	.vactive = { 480, 480, 480 },
+	.vfront_porch = { 12, 22, 32 },
+	.vback_porch = { 10, 10, 10 },
+	.vsync_len = { 13, 13, 13 },
+	.flags = DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW |
+		 DISPLAY_FLAGS_DE_HIGH | DISPLAY_FLAGS_PIXDATA_POSEDGE |
+		 DISPLAY_FLAGS_SYNC_POSEDGE,
+};
+
+static const struct panel_desc multi_inno_mi0700s4t_6 = {
+	.timings = &multi_inno_mi0700s4t_6_timing,
+	.num_timings = 1,
+	.bpc = 8,
+	.size = {
+		.width = 154,
+		.height = 86,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH |
+		     DRM_BUS_FLAG_PIXDATA_SAMPLE_NEGEDGE |
+		     DRM_BUS_FLAG_SYNC_SAMPLE_NEGEDGE,
+	.connector_type = DRM_MODE_CONNECTOR_DPI,
+};
+
 static const struct display_timing multi_inno_mi1010ait_1cp_timing = {
 	.pixelclock = { 68900000, 70000000, 73400000 },
 	.hactive = { 1280, 1280, 1280 },
@@ -2715,44 +2796,6 @@ static const struct panel_desc okaya_rs800480t_7x0gp = {
 	.bus_format = MEDIA_BUS_FMT_RGB666_1X18,
 };
 
-static const struct drm_display_mode olimex_vga_olinuxino_800_mode = {
-	.clock = 40000,
-	.hdisplay = 800,
-	.hsync_start = 800 + 40,
-	.hsync_end = 800 + 40 + 128,
-	.htotal = 800 + 40 + 128 + 88,
-	.vdisplay = 600,
-	.vsync_start = 600 + 5,
-	.vsync_end = 600 + 5 + 4,
-	.vtotal = 600 + 5 + 4 + 19,
-};
-
-static const struct drm_display_mode olimex_vga_olinuxino_1024_mode = {
-	.clock = 45000,
-	.hdisplay = 1024,
-	.hsync_start = 1024 + 16,
-	.hsync_end = 1024 + 16 + 10,
-	.htotal = 1024 + 16 + 10 + 150,
-	.vdisplay = 600,
-	.vsync_start = 600 + 2,
-	.vsync_end = 600 + 2 + 21,
-	.vtotal = 600 + 2 + 21 + 2,
-};
-
-
-static const struct drm_display_mode olimex_lcd_olinuxino_43_mode = {
-	.clock = 12000,
-	.hdisplay = 480,
-	.hsync_start = 480 + 8,
-	.hsync_end = 480 + 8 + 20,
-	.htotal = 480 + 8 + 20 + 23,
-	.vdisplay = 272,
-	.vsync_start = 272 + 4,
-	.vsync_end = 272 + 4 + 10,
-	.vtotal = 272 + 4 + 10 + 13,
-};
-
-
 static const struct drm_display_mode olimex_lcd_olinuxino_43ts_mode = {
 	.clock = 9000,
 	.hdisplay = 480,
@@ -2765,77 +2808,12 @@ static const struct drm_display_mode olimex_lcd_olinuxino_43ts_mode = {
 	.vtotal = 272 + 8 + 5 + 3,
 };
 
-static const struct panel_desc olimex_lcd_olinuxino_43 = {
-	.modes = &olimex_lcd_olinuxino_43_mode,
+static const struct panel_desc olimex_lcd_olinuxino_43ts = {
+	.modes = &olimex_lcd_olinuxino_43ts_mode,
 	.num_modes = 1,
 	.size = {
 		.width = 95,
 		.height = 54,
-	},
-	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
-};
-
-static const struct drm_display_mode olimex_lcd_olinuxino_5_mode = {
-	.clock = 33300,
-	.hdisplay = 800,
-	.hsync_start = 800 + 210,
-	.hsync_end = 800 + 210 + 20,
-	.htotal = 800 + 210 + 20 + 26,
-	.vdisplay = 480,
-	.vsync_start = 480 + 22,
-	.vsync_end = 480 + 22 + 10,
-	.vtotal = 480 + 22 + 10 + 13,
-};
-
-static const struct panel_desc olimex_lcd_olinuxino_5 = {
-	.modes = &olimex_lcd_olinuxino_5_mode,
-	.num_modes = 1,
-	.size = {
-		.width = 154,
-		.height = 86,
-	},
-	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
-};
-static const struct drm_display_mode olimex_lcd_olinuxino_7_mode = {
-	.clock = 33300,
-	.hdisplay = 800,
-	.hsync_start = 800 + 210,
-	.hsync_end = 800 + 210 + 20,
-	.htotal = 800 + 210 + 20 + 26,
-	.vdisplay = 480,
-	.vsync_start = 480 + 22,
-	.vsync_end = 480 + 22 + 10,
-	.vtotal = 480 + 22 + 10 + 13,
-};
-
-static const struct panel_desc olimex_lcd_olinuxino_7 = {
-	.modes = &olimex_lcd_olinuxino_7_mode,
-	.num_modes = 1,
-	.size = {
-		.width = 154,
-		.height = 86,
-	},
-	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
-};
-
-static const struct drm_display_mode olimex_lcd_olinuxino_10_mode = {
-	.clock = 45000,
-	.hdisplay = 1024,
-	.hsync_start = 1024 + 16,
-	.hsync_end = 1024 + 16 + 1,
-	.htotal = 1024 + 10 + 6 + 160,
-	.vdisplay = 600,
-	.vsync_start = 600 + 1,
-	.vsync_end = 600 + 1 + 1,
-	.vtotal = 600 + 1 + 1 + 22,
-};
-
-static const struct panel_desc olimex_lcd_olinuxino_10 = {
-	.modes = &olimex_lcd_olinuxino_10_mode,
-	.num_modes = 1,
-	.size = {
-		.width = 222,
-		.height = 143,
 	},
 	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
 };
@@ -3106,6 +3084,7 @@ static const struct drm_display_mode rocktech_rk101ii01d_ct_mode = {
 
 static const struct panel_desc rocktech_rk101ii01d_ct = {
 	.modes = &rocktech_rk101ii01d_ct_mode,
+	.bpc = 8,
 	.num_modes = 1,
 	.size = {
 		.width = 217,
@@ -3329,6 +3308,68 @@ static const struct panel_desc starry_kr070pe2t = {
 	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
 	.bus_flags = DRM_BUS_FLAG_DE_HIGH | DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE,
 	.connector_type = DRM_MODE_CONNECTOR_DPI,
+};
+
+static const struct display_timing startek_kd070wvfpa_mode = {
+	.pixelclock = { 25200000, 27200000, 30500000 },
+	.hactive = { 800, 800, 800 },
+	.hfront_porch = { 19, 44, 115 },
+	.hback_porch = { 5, 16, 101 },
+	.hsync_len = { 1, 2, 100 },
+	.vactive = { 480, 480, 480 },
+	.vfront_porch = { 5, 43, 67 },
+	.vback_porch = { 5, 5, 67 },
+	.vsync_len = { 1, 2, 66 },
+	.flags = DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW |
+		 DISPLAY_FLAGS_DE_HIGH | DISPLAY_FLAGS_PIXDATA_POSEDGE |
+		 DISPLAY_FLAGS_SYNC_POSEDGE,
+};
+
+static const struct panel_desc startek_kd070wvfpa = {
+	.timings = &startek_kd070wvfpa_mode,
+	.num_timings = 1,
+	.bpc = 8,
+	.size = {
+		.width = 152,
+		.height = 91,
+	},
+	.delay = {
+		.prepare = 20,
+		.enable = 200,
+		.disable = 200,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
+	.connector_type = DRM_MODE_CONNECTOR_DPI,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH |
+		     DRM_BUS_FLAG_PIXDATA_SAMPLE_NEGEDGE |
+		     DRM_BUS_FLAG_SYNC_SAMPLE_NEGEDGE,
+};
+
+static const struct display_timing tsd_tst043015cmhx_timing = {
+	.pixelclock = { 5000000, 9000000, 12000000 },
+	.hactive = { 480, 480, 480 },
+	.hfront_porch = { 4, 5, 65 },
+	.hback_porch = { 36, 40, 255 },
+	.hsync_len = { 1, 1, 1 },
+	.vactive = { 272, 272, 272 },
+	.vfront_porch = { 2, 8, 97 },
+	.vback_porch = { 3, 8, 31 },
+	.vsync_len = { 1, 1, 1 },
+
+	.flags = DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW |
+		 DISPLAY_FLAGS_DE_HIGH | DISPLAY_FLAGS_PIXDATA_POSEDGE,
+};
+
+static const struct panel_desc tsd_tst043015cmhx = {
+	.timings = &tsd_tst043015cmhx_timing,
+	.num_timings = 1,
+	.bpc = 8,
+	.size = {
+		.width = 105,
+		.height = 67,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH | DRM_BUS_FLAG_PIXDATA_SAMPLE_NEGEDGE,
 };
 
 static const struct drm_display_mode tfc_s9700rtwv43tr_01b_mode = {
@@ -3577,6 +3618,31 @@ static const struct panel_desc urt_umsh_8596md_parallel = {
 	.bus_format = MEDIA_BUS_FMT_RGB666_1X18,
 };
 
+static const struct drm_display_mode vivax_tpc9150_panel_mode = {
+	.clock = 60000,
+	.hdisplay = 1024,
+	.hsync_start = 1024 + 160,
+	.hsync_end = 1024 + 160 + 100,
+	.htotal = 1024 + 160 + 100 + 60,
+	.vdisplay = 600,
+	.vsync_start = 600 + 12,
+	.vsync_end = 600 + 12 + 10,
+	.vtotal = 600 + 12 + 10 + 13,
+};
+
+static const struct panel_desc vivax_tpc9150_panel = {
+	.modes = &vivax_tpc9150_panel_mode,
+	.num_modes = 1,
+	.bpc = 6,
+	.size = {
+		.width = 200,
+		.height = 115,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB666_1X7X3_SPWG,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
+	.connector_type = DRM_MODE_CONNECTOR_LVDS,
+};
+
 static const struct drm_display_mode vl050_8048nt_c01_mode = {
 	.clock = 33333,
 	.hdisplay = 800,
@@ -3764,6 +3830,9 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "chunghwa,claa101wb01",
 		.data = &chunghwa_claa101wb01
 	}, {
+		.compatible = "dataimage,fg040346dsswbg04",
+		.data = &dataimage_fg040346dsswbg04,
+	}, {
 		.compatible = "dataimage,scf0700c48ggu18",
 		.data = &dataimage_scf0700c48ggu18,
 	}, {
@@ -3842,6 +3911,9 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "innolux,g070y2-l01",
 		.data = &innolux_g070y2_l01,
 	}, {
+		.compatible = "innolux,g070y2-t02",
+		.data = &innolux_g070y2_t02,
+	}, {
 		.compatible = "innolux,g101ice-l01",
 		.data = &innolux_g101ice_l01
 	}, {
@@ -3896,6 +3968,9 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "mitsubishi,aa070mc01-ca1",
 		.data = &mitsubishi_aa070mc01,
 	}, {
+		.compatible = "multi-inno,mi0700s4t-6",
+		.data = &multi_inno_mi0700s4t_6,
+	}, {
 		.compatible = "multi-inno,mi1010ait-1cp",
 		.data = &multi_inno_mi1010ait_1cp,
 	}, {
@@ -3920,23 +3995,8 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "okaya,rs800480t-7x0gp",
 		.data = &okaya_rs800480t_7x0gp,
 	}, {
-		.compatible = "olimex,olinuxino-vga-800x600",
-		.data = &olimex_vga_olinuxino_800_mode,
-	}, {
-		.compatible = "olimex,olinuxino-vga-1024x768",
-		.data = &olimex_vga_olinuxino_1024_mode,
-	}, {
-		.compatible = "olimex,lcd-olinuxino-4.3",
-		.data = &olimex_lcd_olinuxino_43,
-	}, {
-		.compatible = "olimex,lcd-olinuxino-5",
-		.data = &olimex_lcd_olinuxino_5,
-	}, {
-		.compatible = "olimex,lcd-olinuxino-7",
-		.data = &olimex_lcd_olinuxino_7,
-	}, {
-		.compatible = "olimex,lcd-olinuxino-10",
-		.data = &olimex_lcd_olinuxino_10,
+		.compatible = "olimex,lcd-olinuxino-43-ts",
+		.data = &olimex_lcd_olinuxino_43ts,
 	}, {
 		.compatible = "ontat,yx700wv03",
 		.data = &ontat_yx700wv03,
@@ -3995,6 +4055,12 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "starry,kr070pe2t",
 		.data = &starry_kr070pe2t,
 	}, {
+		.compatible = "startek,kd070wvfpa",
+		.data = &startek_kd070wvfpa,
+	}, {
+		.compatible = "team-source-display,tst043015cmhx",
+		.data = &tsd_tst043015cmhx,
+	}, {
 		.compatible = "tfc,s9700rtwv43tr-01b",
 		.data = &tfc_s9700rtwv43tr_01b,
 	}, {
@@ -4039,6 +4105,9 @@ static const struct of_device_id platform_of_match[] = {
 	}, {
 		.compatible = "urt,umsh-8596md-20t",
 		.data = &urt_umsh_8596md_parallel,
+	}, {
+		.compatible = "vivax,tpc9150-panel",
+		.data = &vivax_tpc9150_panel,
 	}, {
 		.compatible = "vxt,vl050-8048nt-c01",
 		.data = &vl050_8048nt_c01,

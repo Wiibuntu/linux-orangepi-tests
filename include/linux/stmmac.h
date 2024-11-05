@@ -242,6 +242,7 @@ struct plat_stmmacenet_data {
 	unsigned int clk_ref_rate;
 	unsigned int mult_fact_100ns;
 	s32 ptp_max_adj;
+	u32 cdc_error_adj;
 	struct reset_control *stmmac_rst;
 	struct reset_control *stmmac_ahb_rst;
 	struct stmmac_axi *axi;
@@ -259,6 +260,7 @@ struct plat_stmmacenet_data {
 	bool has_crossts;
 	int int_snapshot_num;
 	int ext_snapshot_num;
+	bool int_snapshot_en;
 	bool ext_snapshot_en;
 	bool multi_msi_en;
 	int msi_mac_vec;
@@ -269,5 +271,6 @@ struct plat_stmmacenet_data {
 	int msi_rx_base_vec;
 	int msi_tx_base_vec;
 	bool use_phy_wol;
+	bool sph_disable;
 };
 #endif

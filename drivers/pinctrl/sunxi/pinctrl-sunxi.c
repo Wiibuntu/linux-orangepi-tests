@@ -544,6 +544,8 @@ static int sunxi_pconf_set(struct pinctrl_dev *pctldev, unsigned pin,
 	struct sunxi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
 	int i;
 
+	pin -= pctl->desc->pin_base;
+
 	for (i = 0; i < num_configs; i++) {
 		enum pin_config_param param;
 		unsigned long flags;
@@ -784,11 +786,10 @@ static int sunxi_pmx_request(struct pinctrl_dev *pctldev, unsigned offset)
 
 	snprintf(supply, sizeof(supply), "vcc-p%c", 'a' + bank);
 	reg = regulator_get(pctl->dev, supply);
-	if (IS_ERR(reg)) {
-		dev_err(pctl->dev, "Couldn't get bank P%c regulator\n",
-			'A' + bank);
-		return PTR_ERR(reg);
-	}
+	if (IS_ERR(reg))
+		return dev_err_probe(pctl->dev, PTR_ERR(reg),
+				     "Couldn't get bank P%c regulator\n",
+				     'A' + bank);
 
 	ret = regulator_enable(reg);
 	if (ret) {
@@ -842,7 +843,10 @@ static const struct pinmux_ops sunxi_pmx_ops = {
 static int sunxi_pinctrl_gpio_direction_input(struct gpio_chip *chip,
 					unsigned offset)
 {
-	return pinctrl_gpio_direction_input(chip->base + offset);
+	struct sunxi_pinctrl *pctl = gpiochip_get_data(chip);
+
+	return sunxi_pmx_gpio_set_direction(pctl->pctl_dev, NULL,
+					    chip->base + offset, true);
 }
 
 static int sunxi_pinctrl_gpio_get(struct gpio_chip *chip, unsigned offset)
@@ -892,8 +896,11 @@ static void sunxi_pinctrl_gpio_set(struct gpio_chip *chip,
 static int sunxi_pinctrl_gpio_direction_output(struct gpio_chip *chip,
 					unsigned offset, int value)
 {
+	struct sunxi_pinctrl *pctl = gpiochip_get_data(chip);
+
 	sunxi_pinctrl_gpio_set(chip, offset, value);
-	return pinctrl_gpio_direction_output(chip->base + offset);
+	return sunxi_pmx_gpio_set_direction(pctl->pctl_dev, NULL,
+					    chip->base + offset, false);
 }
 
 static int sunxi_pinctrl_gpio_of_xlate(struct gpio_chip *gc,

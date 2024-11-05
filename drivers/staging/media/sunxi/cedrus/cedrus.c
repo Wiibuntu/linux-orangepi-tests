@@ -336,7 +336,7 @@ static int cedrus_open(struct file *file)
 		goto err_ctrls;
 	}
 	ctx->dst_fmt.pixelformat = V4L2_PIX_FMT_NV12_32L32;
-	cedrus_prepare_format(&ctx->dst_fmt, 0);
+	cedrus_prepare_format(&ctx->dst_fmt);
 	ctx->src_fmt.pixelformat = V4L2_PIX_FMT_MPEG2_SLICE;
 	/*
 	 * TILED_NV12 has more strict requirements, so copy the width and
@@ -344,7 +344,7 @@ static int cedrus_open(struct file *file)
 	 */
 	ctx->src_fmt.width = ctx->dst_fmt.width;
 	ctx->src_fmt.height = ctx->dst_fmt.height;
-	cedrus_prepare_format(&ctx->src_fmt, 0);
+	cedrus_prepare_format(&ctx->src_fmt);
 
 	v4l2_fh_add(&ctx->fh);
 
@@ -354,9 +354,7 @@ static int cedrus_open(struct file *file)
 
 err_ctrls:
 	v4l2_ctrl_handler_free(&ctx->hdl);
-	kfree(ctx->ctrls);
 err_free:
-	v4l2_fh_exit(&ctx->fh);
 	kfree(ctx);
 	mutex_unlock(&dev->dev_mutex);
 
@@ -441,10 +439,12 @@ static int cedrus_probe(struct platform_device *pdev)
 
 	mutex_init(&dev->dev_mutex);
 
+	INIT_DELAYED_WORK(&dev->watchdog_work, cedrus_watchdog);
+
 	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to register V4L2 device\n");
-		goto err_hw;
+		return ret;
 	}
 
 	vfd = &dev->vfd;
@@ -507,8 +507,6 @@ err_m2m:
 	v4l2_m2m_release(dev->m2m_dev);
 err_v4l2:
 	v4l2_device_unregister(&dev->v4l2_dev);
-err_hw:
-	cedrus_hw_remove(dev);
 
 	return ret;
 }
@@ -584,6 +582,14 @@ static const struct cedrus_variant sun8i_r40_cedrus_variant = {
 	.mod_rate	= 297000000,
 };
 
+static const struct cedrus_variant sun20i_d1_cedrus_variant = {
+	.capabilities	= CEDRUS_CAPABILITY_UNTILED |
+			  CEDRUS_CAPABILITY_MPEG2_DEC |
+			  CEDRUS_CAPABILITY_H264_DEC |
+			  CEDRUS_CAPABILITY_H265_DEC,
+	.mod_rate	= 432000000,
+};
+
 static const struct cedrus_variant sun50i_a64_cedrus_variant = {
 	.capabilities	= CEDRUS_CAPABILITY_UNTILED |
 			  CEDRUS_CAPABILITY_MPEG2_DEC |
@@ -608,15 +614,6 @@ static const struct cedrus_variant sun50i_h6_cedrus_variant = {
 			  CEDRUS_CAPABILITY_H264_DEC |
 			  CEDRUS_CAPABILITY_H265_DEC |
 			  CEDRUS_CAPABILITY_H265_10_DEC |
-			  CEDRUS_CAPABILITY_VP8_DEC,
-	.mod_rate	= 600000000,
-};
-
-static const struct cedrus_variant sun50i_h616_cedrus_variant = {
-	.capabilities	= CEDRUS_CAPABILITY_UNTILED |
-			  CEDRUS_CAPABILITY_MPEG2_DEC |
-			  CEDRUS_CAPABILITY_H264_DEC |
-			  CEDRUS_CAPABILITY_H265_DEC |
 			  CEDRUS_CAPABILITY_VP8_DEC,
 	.mod_rate	= 600000000,
 };
@@ -651,6 +648,10 @@ static const struct of_device_id cedrus_dt_match[] = {
 		.data = &sun8i_r40_cedrus_variant,
 	},
 	{
+		.compatible = "allwinner,sun20i-d1-video-engine",
+		.data = &sun20i_d1_cedrus_variant,
+	},
+	{
 		.compatible = "allwinner,sun50i-a64-video-engine",
 		.data = &sun50i_a64_cedrus_variant,
 	},
@@ -660,10 +661,6 @@ static const struct of_device_id cedrus_dt_match[] = {
 	},
 	{
 		.compatible = "allwinner,sun50i-h6-video-engine",
-		.data = &sun50i_h6_cedrus_variant,
-	},
-	{
-		.compatible = "allwinner,sun50i-h616-video-engine",
 		.data = &sun50i_h6_cedrus_variant,
 	},
 	{ /* sentinel */ }

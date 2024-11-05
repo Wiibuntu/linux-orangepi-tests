@@ -23,6 +23,7 @@
 #include <linux/sysrq.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/tty.h>
 #include <linux/ratelimit.h>
 #include <linux/tty_flip.h>
@@ -32,7 +33,6 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
-#include <linux/pm_runtime.h>
 #include <linux/io.h>
 #ifdef CONFIG_SPARC
 #include <linux/sunserialcore.h>
@@ -509,11 +509,10 @@ static void __init serial8250_isa_init_ports(void)
 
 		up->ops = &univ8250_driver_ops;
 
-		/*
-		 * ALPHA_KLUDGE_MCR needs to be killed.
-		 */
-		up->mcr_mask = ~ALPHA_KLUDGE_MCR;
-		up->mcr_force = ALPHA_KLUDGE_MCR;
+		if (IS_ENABLED(CONFIG_ALPHA_JENSEN) ||
+		    (IS_ENABLED(CONFIG_ALPHA_GENERIC) && alpha_jensen()))
+			port->set_mctrl = alpha_jensen_set_mctrl;
+
 		serial8250_set_defaults(up);
 	}
 
@@ -560,6 +559,9 @@ serial8250_register_ports(struct uart_driver *drv, struct device *dev)
 			continue;
 
 		up->port.dev = dev;
+
+		if (uart_console_enabled(&up->port))
+			pm_runtime_get_sync(up->port.dev);
 
 		serial8250_apply_quirks(up);
 		uart_add_one_port(drv, &up->port);

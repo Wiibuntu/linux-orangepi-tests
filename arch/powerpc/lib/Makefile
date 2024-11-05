@@ -13,6 +13,9 @@ CFLAGS_REMOVE_feature-fixups.o = $(CC_FLAGS_FTRACE)
 
 KASAN_SANITIZE_code-patching.o := n
 KASAN_SANITIZE_feature-fixups.o := n
+# restart_table.o contains functions called in the NMI interrupt path
+# which can be in real mode. Disable KASAN.
+KASAN_SANITIZE_restart_table.o := n
 
 ifdef CONFIG_KASAN
 CFLAGS_code-patching.o += -DDISABLE_BRANCH_PROFILING
@@ -22,7 +25,9 @@ endif
 CFLAGS_code-patching.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
 CFLAGS_feature-fixups.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
 
-obj-y += alloc.o code-patching.o feature-fixups.o pmem.o test_code-patching.o
+obj-y += alloc.o code-patching.o feature-fixups.o pmem.o
+
+obj-$(CONFIG_CODE_PATCHING_SELFTEST) += test-code-patching.o
 
 ifndef CONFIG_KASAN
 obj-y	+=	string.o memcmp_$(BITS).o

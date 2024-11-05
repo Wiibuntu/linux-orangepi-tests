@@ -2084,7 +2084,7 @@ static int sctp_skb_pull(struct sk_buff *skb, int len)
  *            5 for complete description of the flags.
  */
 static int sctp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-			int noblock, int flags, int *addr_len)
+			int flags, int *addr_len)
 {
 	struct sctp_ulpevent *event = NULL;
 	struct sctp_sock *sp = sctp_sk(sk);
@@ -2093,9 +2093,8 @@ static int sctp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	int err = 0;
 	int skb_len;
 
-	pr_debug("%s: sk:%p, msghdr:%p, len:%zd, noblock:%d, flags:0x%x, "
-		 "addr_len:%p)\n", __func__, sk, msg, len, noblock, flags,
-		 addr_len);
+	pr_debug("%s: sk:%p, msghdr:%p, len:%zd, flags:0x%x, addr_len:%p)\n",
+		 __func__, sk, msg, len, flags, addr_len);
 
 	lock_sock(sk);
 
@@ -2105,7 +2104,7 @@ static int sctp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 		goto out;
 	}
 
-	skb = sctp_skb_recv_datagram(sk, flags, noblock, &err);
+	skb = sctp_skb_recv_datagram(sk, flags, &err);
 	if (!skb)
 		goto out;
 
@@ -2129,7 +2128,7 @@ static int sctp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 		head_skb = event->chunk->head_skb;
 	else
 		head_skb = skb;
-	sock_recv_ts_and_drops(msg, sk, head_skb);
+	sock_recv_cmsgs(msg, sk, head_skb);
 	if (sctp_ulpevent_is_notification(event)) {
 		msg->msg_flags |= MSG_NOTIFICATION;
 		sp->pf->event_msgname(event, msg->msg_name, addr_len);
@@ -5068,11 +5067,8 @@ static int sctp_init_sock(struct sock *sk)
 
 	SCTP_DBG_OBJCNT_INC(sock);
 
-	local_bh_disable();
 	sk_sockets_allocated_inc(sk);
 	sock_prot_inuse_add(net, sk->sk_prot, 1);
-
-	local_bh_enable();
 
 	return 0;
 }
@@ -5099,10 +5095,8 @@ static void sctp_destroy_sock(struct sock *sk)
 		list_del(&sp->auto_asconf_list);
 	}
 	sctp_endpoint_free(sp->ep);
-	local_bh_disable();
 	sk_sockets_allocated_dec(sk);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, -1);
-	local_bh_enable();
 }
 
 /* Triggered when there are no references on the socket anymore */
@@ -5299,14 +5293,14 @@ int sctp_for_each_endpoint(int (*cb)(struct sctp_endpoint *, void *),
 			   void *p) {
 	int err = 0;
 	int hash = 0;
-	struct sctp_ep_common *epb;
+	struct sctp_endpoint *ep;
 	struct sctp_hashbucket *head;
 
 	for (head = sctp_ep_hashtable; hash < sctp_ep_hashsize;
 	     hash++, head++) {
 		read_lock_bh(&head->lock);
-		sctp_for_each_hentry(epb, &head->chain) {
-			err = cb(sctp_ep(epb), p);
+		sctp_for_each_hentry(ep, &head->chain) {
+			err = cb(ep, p);
 			if (err)
 				break;
 		}
@@ -5641,7 +5635,7 @@ int sctp_do_peeloff(struct sock *sk, sctp_assoc_t id, struct socket **sockp)
 	 * Set the daddr and initialize id to something more random and also
 	 * copy over any ip options.
 	 */
-	sp->pf->to_sk_daddr(&asoc->peer.primary_addr, sk);
+	sp->pf->to_sk_daddr(&asoc->peer.primary_addr, sock->sk);
 	sp->pf->copy_ip_options(sk, sock->sk);
 
 	/* Populate the fields of the newsk from the oldsk and migrate the
@@ -8983,14 +8977,13 @@ out:
  * Note: This is pretty much the same routine as in core/datagram.c
  * with a few changes to make lksctp work.
  */
-struct sk_buff *sctp_skb_recv_datagram(struct sock *sk, int flags,
-				       int noblock, int *err)
+struct sk_buff *sctp_skb_recv_datagram(struct sock *sk, int flags, int *err)
 {
 	int error;
 	struct sk_buff *skb;
 	long timeo;
 
-	timeo = sock_rcvtimeo(sk, noblock);
+	timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
 
 	pr_debug("%s: timeo:%ld, max:%ld\n", __func__, timeo,
 		 MAX_SCHEDULE_TIMEOUT);
@@ -9023,7 +9016,7 @@ struct sk_buff *sctp_skb_recv_datagram(struct sock *sk, int flags,
 			break;
 
 		if (sk_can_busy_loop(sk)) {
-			sk_busy_loop(sk, noblock);
+			sk_busy_loop(sk, flags & MSG_DONTWAIT);
 
 			if (!skb_queue_empty_lockless(&sk->sk_receive_queue))
 				continue;

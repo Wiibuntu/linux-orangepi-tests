@@ -33,7 +33,7 @@
 
 #define SETFL_MASK (O_APPEND | O_NONBLOCK | O_NDELAY | O_DIRECT | O_NOATIME)
 
-int setfl(int fd, struct file *filp, unsigned long arg)
+static int setfl(int fd, struct file * filp, unsigned long arg)
 {
 	struct inode * inode = file_inode(filp);
 	int error = 0;
@@ -56,16 +56,13 @@ int setfl(int fd, struct file *filp, unsigned long arg)
 		   arg |= O_NONBLOCK;
 
 	/* Pipe packetized mode is controlled by O_DIRECT flag */
-	if (!S_ISFIFO(inode->i_mode) && (arg & O_DIRECT)) {
-		if (!filp->f_mapping || !filp->f_mapping->a_ops ||
-			!filp->f_mapping->a_ops->direct_IO)
-				return -EINVAL;
-	}
+	if (!S_ISFIFO(inode->i_mode) &&
+	    (arg & O_DIRECT) &&
+	    !(filp->f_mode & FMODE_CAN_ODIRECT))
+		return -EINVAL;
 
 	if (filp->f_op->check_flags)
 		error = filp->f_op->check_flags(arg);
-	if (!error && filp->f_op->setfl)
-		error = filp->f_op->setfl(filp, arg);
 	if (error)
 		return error;
 
@@ -86,7 +83,6 @@ int setfl(int fd, struct file *filp, unsigned long arg)
  out:
 	return error;
 }
-EXPORT_SYMBOL_GPL(setfl);
 
 static void f_modown(struct file *filp, struct pid *pid, enum pid_type type,
                      int force)
@@ -294,22 +290,6 @@ static long fcntl_rw_hint(struct file *file, unsigned int cmd,
 	u64 h;
 
 	switch (cmd) {
-	case F_GET_FILE_RW_HINT:
-		h = file_write_hint(file);
-		if (copy_to_user(argp, &h, sizeof(*argp)))
-			return -EFAULT;
-		return 0;
-	case F_SET_FILE_RW_HINT:
-		if (copy_from_user(&h, argp, sizeof(h)))
-			return -EFAULT;
-		hint = (enum rw_hint) h;
-		if (!rw_hint_valid(hint))
-			return -EINVAL;
-
-		spin_lock(&file->f_lock);
-		file->f_write_hint = hint;
-		spin_unlock(&file->f_lock);
-		return 0;
 	case F_GET_RW_HINT:
 		h = inode->i_write_hint;
 		if (copy_to_user(argp, &h, sizeof(*argp)))
@@ -434,8 +414,6 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 		break;
 	case F_GET_RW_HINT:
 	case F_SET_RW_HINT:
-	case F_GET_FILE_RW_HINT:
-	case F_SET_FILE_RW_HINT:
 		err = fcntl_rw_hint(filp, cmd, arg);
 		break;
 	default:

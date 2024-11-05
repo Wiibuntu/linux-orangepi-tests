@@ -7,7 +7,7 @@
 
 #include <linux/clk-provider.h>
 #include <linux/io.h>
-#include <linux/of_address.h>
+#include <linux/module.h>
 #include <linux/platform_device.h>
 
 #include "ccu_common.h"
@@ -215,22 +215,20 @@ static struct ccu_nkmp pll_de_clk = {
 	},
 };
 
+/*
+ * TODO: Determine SDM settings for the audio PLL. The manual suggests
+ * PLL_FACTOR_N=16, PLL_POST_DIV_P=2, OUTPUT_DIV=2, pattern=0xe000c49b
+ * for 24.576 MHz, and PLL_FACTOR_N=22, PLL_POST_DIV_P=3, OUTPUT_DIV=2,
+ * pattern=0xe001288c for 22.5792 MHz.
+ * This clashes with our fixed PLL_POST_DIV_P.
+ */
 #define SUN50I_H616_PLL_AUDIO_REG	0x078
-
-static struct ccu_sdm_setting pll_audio_sdm_table[] = {
-	{ .rate = 90316800, .pattern = 0xc001288d, .m = 3, .n = 22 },
-	{ .rate = 98304000, .pattern = 0xc001eb85, .m = 5, .n = 40 },
-};
-
 static struct ccu_nm pll_audio_hs_clk = {
 	.enable		= BIT(31),
 	.lock		= BIT(28),
 	.n		= _SUNXI_CCU_MULT_MIN(8, 8, 12),
-	.m		= _SUNXI_CCU_DIV(16, 6),
-	.sdm		= _SUNXI_CCU_SDM(pll_audio_sdm_table,
-					 BIT(24), 0x178, BIT(31)),
+	.m		= _SUNXI_CCU_DIV(1, 1), /* input divider */
 	.common		= {
-		.features	= CCU_FEATURE_SIGMA_DELTA_MOD,
 		.reg		= 0x078,
 		.hw.init	= CLK_HW_INIT("pll-audio-hs", "osc24M",
 					      &ccu_nm_ops,
@@ -690,13 +688,13 @@ static const struct clk_hw *clk_parent_pll_audio[] = {
  */
 static CLK_FIXED_FACTOR_HWS(pll_audio_1x_clk, "pll-audio-1x",
 			    clk_parent_pll_audio,
-			    4, 1, CLK_SET_RATE_PARENT);
+			    96, 1, CLK_SET_RATE_PARENT);
 static CLK_FIXED_FACTOR_HWS(pll_audio_2x_clk, "pll-audio-2x",
 			    clk_parent_pll_audio,
-			    2, 1, CLK_SET_RATE_PARENT);
+			    48, 1, CLK_SET_RATE_PARENT);
 static CLK_FIXED_FACTOR_HWS(pll_audio_4x_clk, "pll-audio-4x",
 			    clk_parent_pll_audio,
-			    1, 1, CLK_SET_RATE_PARENT);
+			    24, 1, CLK_SET_RATE_PARENT);
 
 static const struct clk_hw *pll_periph0_parents[] = {
 	&pll_periph0_clk.common.hw
@@ -705,6 +703,13 @@ static const struct clk_hw *pll_periph0_parents[] = {
 static CLK_FIXED_FACTOR_HWS(pll_periph0_2x_clk, "pll-periph0-2x",
 			    pll_periph0_parents,
 			    1, 2, 0);
+
+static const struct clk_hw *pll_periph0_2x_hws[] = {
+	&pll_periph0_2x_clk.hw
+};
+
+static CLK_FIXED_FACTOR_HWS(pll_system_32k_clk, "pll-system-32k",
+			    pll_periph0_2x_hws, 36621, 1, 0);
 
 static const struct clk_hw *pll_periph1_parents[] = {
 	&pll_periph1_clk.common.hw
@@ -854,6 +859,7 @@ static struct clk_hw_onecell_data sun50i_h616_hw_clks = {
 		[CLK_PLL_DDR1]		= &pll_ddr1_clk.common.hw,
 		[CLK_PLL_PERIPH0]	= &pll_periph0_clk.common.hw,
 		[CLK_PLL_PERIPH0_2X]	= &pll_periph0_2x_clk.hw,
+		[CLK_PLL_SYSTEM_32K]	= &pll_system_32k_clk.hw,
 		[CLK_PLL_PERIPH1]	= &pll_periph1_clk.common.hw,
 		[CLK_PLL_PERIPH1_2X]	= &pll_periph1_2x_clk.hw,
 		[CLK_PLL_GPU]		= &pll_gpu_clk.common.hw,
@@ -1084,17 +1090,15 @@ static const u32 usb2_clk_regs[] = {
 	SUN50I_H616_USB3_CLK_REG,
 };
 
-static void __init sun50i_h616_ccu_setup(struct device_node *node)
+static int sun50i_h616_ccu_probe(struct platform_device *pdev)
 {
 	void __iomem *reg;
 	u32 val;
 	int i;
 
-	reg = of_io_request_and_map(node, 0, of_node_full_name(node));
-	if (IS_ERR(reg)) {
-		pr_err("%pOF: Could not map clock registers\n", node);
-		return;
-	}
+	reg = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(reg))
+		return PTR_ERR(reg);
 
 	/* Enable the lock bits and the output enable bits on all PLLs */
 	for (i = 0; i < ARRAY_SIZE(pll_regs); i++) {
@@ -1126,10 +1130,13 @@ static void __init sun50i_h616_ccu_setup(struct device_node *node)
 		writel(val, reg + usb2_clk_regs[i]);
 	}
 
+	/*
+	 * Force the post-divider of pll-audio to 12 and the output divider
+	 * of it to 2, so 24576000 and 22579200 rates can be set exactly.
+	 */
 	val = readl(reg + SUN50I_H616_PLL_AUDIO_REG);
-	val &= ~BIT(1);
-	val |= BIT(0);
-	writel(val, reg + SUN50I_H616_PLL_AUDIO_REG);
+	val &= ~(GENMASK(21, 16) | BIT(0));
+	writel(val | (11 << 16) | BIT(0), reg + SUN50I_H616_PLL_AUDIO_REG);
 
 	/*
 	 * First clock parent (osc32K) is unusable for CEC. But since there
@@ -1140,8 +1147,23 @@ static void __init sun50i_h616_ccu_setup(struct device_node *node)
 	val |= BIT(24);
 	writel(val, reg + SUN50I_H616_HDMI_CEC_CLK_REG);
 
-	of_sunxi_ccu_probe(node, reg, &sun50i_h616_ccu_desc);
+	return devm_sunxi_ccu_probe(&pdev->dev, reg, &sun50i_h616_ccu_desc);
 }
 
-CLK_OF_DECLARE(sun50i_h616_ccu, "allwinner,sun50i-h616-ccu",
-	       sun50i_h616_ccu_setup);
+static const struct of_device_id sun50i_h616_ccu_ids[] = {
+	{ .compatible = "allwinner,sun50i-h616-ccu" },
+	{ }
+};
+
+static struct platform_driver sun50i_h616_ccu_driver = {
+	.probe	= sun50i_h616_ccu_probe,
+	.driver	= {
+		.name			= "sun50i-h616-ccu",
+		.suppress_bind_attrs	= true,
+		.of_match_table		= sun50i_h616_ccu_ids,
+	},
+};
+module_platform_driver(sun50i_h616_ccu_driver);
+
+MODULE_IMPORT_NS(SUNXI_CCU);
+MODULE_LICENSE("GPL");

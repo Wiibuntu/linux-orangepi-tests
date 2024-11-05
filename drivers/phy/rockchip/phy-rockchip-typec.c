@@ -350,7 +350,6 @@ struct usb3phy_reg {
  * struct rockchip_usb3phy_port_cfg - usb3-phy port configuration.
  * @reg: the base address for usb3-phy config.
  * @typec_conn_dir: the register of type-c connector direction.
- * @typec_conn_dir_sel: the register of type-c connector direction source.
  * @usb3tousb2_en: the register of type-c force usb2 to usb2 enable.
  * @external_psm: the register of type-c phy external psm clock.
  * @pipe_status: the register of type-c phy pipe status.
@@ -361,7 +360,6 @@ struct usb3phy_reg {
 struct rockchip_usb3phy_port_cfg {
 	unsigned int reg;
 	struct usb3phy_reg typec_conn_dir;
-	struct usb3phy_reg typec_conn_dir_sel;
 	struct usb3phy_reg usb3tousb2_en;
 	struct usb3phy_reg external_psm;
 	struct usb3phy_reg pipe_status;
@@ -436,7 +434,6 @@ static const struct rockchip_usb3phy_port_cfg rk3399_usb3phy_port_cfgs[] = {
 	{
 		.reg = 0xff7c0000,
 		.typec_conn_dir	= { 0xe580, 0, 16 },
-		.typec_conn_dir_sel	= { 0xe580, 8, 16+8 },
 		.usb3tousb2_en	= { 0xe580, 3, 19 },
 		.external_psm	= { 0xe588, 14, 30 },
 		.pipe_status	= { 0xe5c0, 0, 0 },
@@ -447,7 +444,6 @@ static const struct rockchip_usb3phy_port_cfg rk3399_usb3phy_port_cfgs[] = {
 	{
 		.reg = 0xff800000,
 		.typec_conn_dir	= { 0xe58c, 0, 16 },
-		.typec_conn_dir_sel	= { 0xe58c, 8, 16+8 },
 		.usb3tousb2_en	= { 0xe58c, 3, 19 },
 		.external_psm	= { 0xe594, 14, 30 },
 		.pipe_status	= { 0xe5c0, 16, 16 },
@@ -743,7 +739,6 @@ static int tcphy_phy_init(struct rockchip_typec_phy *tcphy, u8 mode)
 
 	reset_control_deassert(tcphy->tcphy_rst);
 
-	property_enable(tcphy, &cfg->typec_conn_dir_sel, 0);
 	property_enable(tcphy, &cfg->typec_conn_dir, tcphy->flip);
 	tcphy_dp_aux_set_flip(tcphy);
 
@@ -1110,15 +1105,14 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 	struct phy_provider *phy_provider;
 	struct resource *res;
 	const struct rockchip_usb3phy_port_cfg *phy_cfgs;
-	const struct of_device_id *match;
 	int index, ret;
 
 	tcphy = devm_kzalloc(dev, sizeof(*tcphy), GFP_KERNEL);
 	if (!tcphy)
 		return -ENOMEM;
 
-	match = of_match_device(dev->driver->of_match_table, dev);
-	if (!match || !match->data) {
+	phy_cfgs = of_device_get_match_data(dev);
+	if (!phy_cfgs) {
 		dev_err(dev, "phy configs are not assigned!\n");
 		return -EINVAL;
 	}
@@ -1128,7 +1122,6 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 	if (IS_ERR(tcphy->base))
 		return PTR_ERR(tcphy->base);
 
-	phy_cfgs = match->data;
 	/* find out a proper config which can be matched with dt. */
 	index = 0;
 	while (phy_cfgs[index].reg) {

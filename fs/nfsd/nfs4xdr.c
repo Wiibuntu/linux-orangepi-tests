@@ -277,21 +277,10 @@ nfsd4_decode_verifier4(struct nfsd4_compoundargs *argp, nfs4_verifier *verf)
 static __be32
 nfsd4_decode_bitmap4(struct nfsd4_compoundargs *argp, u32 *bmval, u32 bmlen)
 {
-	u32 i, count;
-	__be32 *p;
+	ssize_t status;
 
-	if (xdr_stream_decode_u32(argp->xdr, &count) < 0)
-		return nfserr_bad_xdr;
-	/* request sanity */
-	if (count > 1000)
-		return nfserr_bad_xdr;
-	p = xdr_inline_decode(argp->xdr, count << 2);
-	if (!p)
-		return nfserr_bad_xdr;
-	for (i = 0; i < bmlen; i++)
-		bmval[i] = (i < count) ? be32_to_cpup(p++) : 0;
-
-	return nfs_ok;
+	status = xdr_stream_decode_uint32_array(argp->xdr, bmval, bmlen);
+	return status == -EBADMSG ? nfserr_bad_xdr : nfs_ok;
 }
 
 static __be32
@@ -480,6 +469,15 @@ nfsd4_decode_fattr4(struct nfsd4_compoundargs *argp, u32 *bmval, u32 bmlen,
 		default:
 			return nfserr_bad_xdr;
 		}
+	}
+	if (bmval[1] & FATTR4_WORD1_TIME_CREATE) {
+		struct timespec64 ts;
+
+		/* No Linux filesystem supports setting this attribute. */
+		bmval[1] &= ~FATTR4_WORD1_TIME_CREATE;
+		status = nfsd4_decode_nfstime4(argp, &ts);
+		if (status)
+			return status;
 	}
 	if (bmval[1] & FATTR4_WORD1_TIME_MODIFY_SET) {
 		u32 set_it;
@@ -2422,7 +2420,7 @@ nfsd4_decode_compound(struct nfsd4_compoundargs *argp)
 	argp->rqstp->rq_cachetype = cachethis ? RC_REPLBUFF : RC_NOCACHE;
 
 	if (readcount > 1 || max_reply > PAGE_SIZE - auth_slack)
-		clear_bit(RQ_SPLICE_OK, &argp->rqstp->rq_flags);
+		__clear_bit(RQ_SPLICE_OK, &argp->rqstp->rq_flags);
 
 	return true;
 }
@@ -2865,6 +2863,9 @@ nfsd4_encode_fattr(struct xdr_stream *xdr, struct svc_fh *fhp,
 	err = vfs_getattr(&path, &stat, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
 	if (err)
 		goto out_nfserr;
+	if (!(stat.result_mask & STATX_BTIME))
+		/* underlying FS does not offer btime so we can't share it */
+		bmval1 &= ~FATTR4_WORD1_TIME_CREATE;
 	if ((bmval0 & (FATTR4_WORD0_FILES_AVAIL | FATTR4_WORD0_FILES_FREE |
 			FATTR4_WORD0_FILES_TOTAL | FATTR4_WORD0_MAXNAME)) ||
 	    (bmval1 & (FATTR4_WORD1_SPACE_AVAIL | FATTR4_WORD1_SPACE_FREE |
@@ -3265,6 +3266,13 @@ out_acl:
 		p = xdr_encode_hyper(p, (s64)stat.mtime.tv_sec);
 		*p++ = cpu_to_be32(stat.mtime.tv_nsec);
 	}
+	if (bmval1 & FATTR4_WORD1_TIME_CREATE) {
+		p = xdr_reserve_space(xdr, 12);
+		if (!p)
+			goto out_resource;
+		p = xdr_encode_hyper(p, (s64)stat.btime.tv_sec);
+		*p++ = cpu_to_be32(stat.btime.tv_nsec);
+	}
 	if (bmval1 & FATTR4_WORD1_MOUNTED_ON_FILEID) {
 		struct kstat parent_stat;
 		u64 ino = stat.ino;
@@ -3506,7 +3514,7 @@ nfsd4_encode_dirent(void *ccdv, const char *name, int namlen,
 	p = xdr_reserve_space(xdr, 3*4 + namlen);
 	if (!p)
 		goto fail;
-	p = xdr_encode_hyper(p, NFS_OFFSET_MAX);    /* offset of next entry */
+	p = xdr_encode_hyper(p, OFFSET_MAX);        /* offset of next entry */
 	p = xdr_encode_array(p, name, namlen);      /* name length & name */
 
 	nfserr = nfsd4_encode_dirent_fattr(xdr, cd, name, namlen);
@@ -4802,8 +4810,8 @@ nfsd4_encode_read_plus_hole(struct nfsd4_compoundres *resp,
 		return nfserr_resource;
 
 	*p++ = htonl(NFS4_CONTENT_HOLE);
-	 p   = xdr_encode_hyper(p, read->rd_offset);
-	 p   = xdr_encode_hyper(p, count);
+	p = xdr_encode_hyper(p, read->rd_offset);
+	p = xdr_encode_hyper(p, count);
 
 	*eof = (read->rd_offset + count) >= f_size;
 	*maxcount = min_t(unsigned long, count, *maxcount);

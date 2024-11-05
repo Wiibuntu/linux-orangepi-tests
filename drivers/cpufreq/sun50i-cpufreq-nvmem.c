@@ -98,11 +98,12 @@ static int sun50i_cpufreq_nvmem_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ret = sun50i_cpufreq_get_efuse(&speed);
-	if (ret)
+	if (ret) {
+		kfree(opp_tables);
 		return ret;
+	}
 
 	snprintf(name, MAX_NAME_LEN, "speed%d", speed);
-	pr_info("Using CPU speed bin %s\n", name);
 
 	for_each_possible_cpu(cpu) {
 		struct device *cpu_dev = get_cpu_device(cpu);

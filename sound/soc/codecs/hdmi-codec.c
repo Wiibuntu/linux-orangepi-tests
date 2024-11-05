@@ -434,7 +434,6 @@ static int hdmi_codec_startup(struct snd_pcm_substream *substream,
 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
 	int ret = 0;
 
-#if ! defined(CONFIG_SND_SOC_SUN50I_HDMI)
 	mutex_lock(&hcp->lock);
 	if (hcp->busy) {
 		dev_err(dai->dev, "Only one simultaneous stream supported!\n");
@@ -447,7 +446,6 @@ static int hdmi_codec_startup(struct snd_pcm_substream *substream,
 		if (ret)
 			goto err;
 	}
-#endif
 
 	if (tx && hcp->hcd.ops->get_eld) {
 		ret = hcp->hcd.ops->get_eld(dai->dev->parent, hcp->hcd.data,
@@ -475,14 +473,12 @@ static void hdmi_codec_shutdown(struct snd_pcm_substream *substream,
 {
 	struct hdmi_codec_priv *hcp = snd_soc_dai_get_drvdata(dai);
 
-#if ! defined(CONFIG_SND_SOC_SUN50I_HDMI)
 	hcp->chmap_idx = HDMI_CODEC_CHMAP_IDX_UNKNOWN;
 	hcp->hcd.ops->audio_shutdown(dai->dev->parent, hcp->hcd.data);
 
 	mutex_lock(&hcp->lock);
 	hcp->busy = false;
 	mutex_unlock(&hcp->lock);
-#endif
 }
 
 static int hdmi_codec_fill_codec_params(struct snd_soc_dai *dai,
@@ -731,10 +727,8 @@ static const struct snd_soc_dai_ops hdmi_codec_spdif_dai_ops = {
 			 SNDRV_PCM_RATE_96000 | SNDRV_PCM_RATE_176400 |\
 			 SNDRV_PCM_RATE_192000)
 
-#define SPDIF_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S16_BE |\
-			 SNDRV_PCM_FMTBIT_S20_3LE | SNDRV_PCM_FMTBIT_S20_3BE |\
-			 SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_S24_3BE |\
-			 SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S24_BE)
+#define SPDIF_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE |\
+			 SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_S24_LE)
 
 /*
  * This list is only for formats allowed on the I2S bus. So there is
@@ -744,12 +738,9 @@ static const struct snd_soc_dai_ops hdmi_codec_spdif_dai_ops = {
  * problems, we should add the video side driver an option to disable
  * them.
  */
-#define I2S_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S16_BE |\
-			 SNDRV_PCM_FMTBIT_S20_3LE | SNDRV_PCM_FMTBIT_S20_3BE |\
-			 SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_S24_3BE |\
-			 SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S24_BE |\
-			 SNDRV_PCM_FMTBIT_S32_LE | SNDRV_PCM_FMTBIT_S32_BE |\
-			 SNDRV_PCM_FMTBIT_IEC958_SUBFRAME_LE)
+#define I2S_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE |\
+			 SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_S24_LE |\
+			 SNDRV_PCM_FMTBIT_S32_LE | SNDRV_PCM_FMTBIT_IEC958_SUBFRAME_LE)
 
 static struct snd_kcontrol_new hdmi_codec_controls[] = {
 	{
@@ -1046,15 +1037,6 @@ static int hdmi_codec_probe(struct platform_device *pdev)
 			__func__, ret);
 		return ret;
 	}
-
-#if defined(CONFIG_SND_SOC_SUN50I_HDMI)
-	if (hcp->hcd.ops->audio_startup) {
-		ret = hcp->hcd.ops->audio_startup(dev, hcp->hcd.data);
-		if (ret)
-			return 0;
-	}
-#endif
-
 	return 0;
 }
 

@@ -76,11 +76,11 @@ struct goodix_chip_data {
 struct goodix_ts_data {
 	struct i2c_client *client;
 	struct input_dev *input_dev;
+	struct input_dev *input_pen;
 	const struct goodix_chip_data *chip;
 	const char *firmware_name;
 	struct touchscreen_properties prop;
 	unsigned int max_touch_num;
-	bool use_dt_irqflags;
 	unsigned int int_trigger_type;
 	struct regulator *avdd28;
 	struct regulator *vddio;
@@ -94,6 +94,7 @@ struct goodix_ts_data {
 	u16 version;
 	bool reset_controller_at_probe;
 	bool load_cfg_from_disk;
+	int pen_input_registered;
 	struct completion firmware_loading_complete;
 	unsigned long irq_flags;
 	enum goodix_irq_pin_access_method irq_pin_access_method;
@@ -103,8 +104,6 @@ struct goodix_ts_data {
 	u8 main_clk[GOODIX_MAIN_CLK_LEN];
 	int bak_ref_len;
 	u8 *bak_ref;
-        struct dentry *debug_root;
-        bool poweroff_in_suspend;
 };
 
 int goodix_i2c_read(struct i2c_client *client, u16 reg, u8 *buf, int len);

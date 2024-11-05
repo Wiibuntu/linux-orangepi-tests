@@ -1510,9 +1510,6 @@ static int xgbe_set_hwtstamp_settings(struct xgbe_prv_data *pdata,
 	if (copy_from_user(&config, ifreq->ifr_data, sizeof(config)))
 		return -EFAULT;
 
-	if (config.flags)
-		return -EINVAL;
-
 	mac_tscr = 0;
 
 	switch (config.tx_type) {
@@ -2787,7 +2784,7 @@ void xgbe_print_pkt(struct net_device *netdev, struct sk_buff *skb, bool tx_rx)
 
 	netdev_dbg(netdev, "Dst MAC addr: %pM\n", eth->h_dest);
 	netdev_dbg(netdev, "Src MAC addr: %pM\n", eth->h_source);
-	netdev_dbg(netdev, "Protocol: %#06hx\n", ntohs(eth->h_proto));
+	netdev_dbg(netdev, "Protocol: %#06x\n", ntohs(eth->h_proto));
 
 	for (i = 0; i < skb->len; i += 32) {
 		unsigned int len = min(skb->len - i, 32U);

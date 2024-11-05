@@ -46,45 +46,45 @@
 static bool page_cache_pipe_buf_try_steal(struct pipe_inode_info *pipe,
 		struct pipe_buffer *buf)
 {
-	struct page *page = buf->page;
+	struct folio *folio = page_folio(buf->page);
 	struct address_space *mapping;
 
-	lock_page(page);
+	folio_lock(folio);
 
-	mapping = page_mapping(page);
+	mapping = folio_mapping(folio);
 	if (mapping) {
-		WARN_ON(!PageUptodate(page));
+		WARN_ON(!folio_test_uptodate(folio));
 
 		/*
 		 * At least for ext2 with nobh option, we need to wait on
-		 * writeback completing on this page, since we'll remove it
+		 * writeback completing on this folio, since we'll remove it
 		 * from the pagecache.  Otherwise truncate wont wait on the
-		 * page, allowing the disk blocks to be reused by someone else
+		 * folio, allowing the disk blocks to be reused by someone else
 		 * before we actually wrote our data to them. fs corruption
 		 * ensues.
 		 */
-		wait_on_page_writeback(page);
+		folio_wait_writeback(folio);
 
-		if (page_has_private(page) &&
-		    !try_to_release_page(page, GFP_KERNEL))
+		if (folio_has_private(folio) &&
+		    !filemap_release_folio(folio, GFP_KERNEL))
 			goto out_unlock;
 
 		/*
 		 * If we succeeded in removing the mapping, set LRU flag
 		 * and return good.
 		 */
-		if (remove_mapping(mapping, page)) {
+		if (remove_mapping(mapping, folio)) {
 			buf->flags |= PIPE_BUF_FLAG_LRU;
 			return true;
 		}
 	}
 
 	/*
-	 * Raced with truncate or failed to remove page from current
+	 * Raced with truncate or failed to remove folio from current
 	 * address space, unlock and return failure.
 	 */
 out_unlock:
-	unlock_page(page);
+	folio_unlock(folio);
 	return false;
 }
 
@@ -759,21 +759,20 @@ static int warn_unsupported(struct file *file, const char *op)
 /*
  * Attempt to initiate a splice from pipe to file.
  */
-long do_splice_from(struct pipe_inode_info *pipe, struct file *out,
-		    loff_t *ppos, size_t len, unsigned int flags)
+static long do_splice_from(struct pipe_inode_info *pipe, struct file *out,
+			   loff_t *ppos, size_t len, unsigned int flags)
 {
 	if (unlikely(!out->f_op->splice_write))
 		return warn_unsupported(out, "write");
 	return out->f_op->splice_write(pipe, out, ppos, len, flags);
 }
-EXPORT_SYMBOL_GPL(do_splice_from);
 
 /*
  * Attempt to initiate a splice from a file to a pipe.
  */
-long do_splice_to(struct file *in, loff_t *ppos,
-		  struct pipe_inode_info *pipe, size_t len,
-		  unsigned int flags)
+static long do_splice_to(struct file *in, loff_t *ppos,
+			 struct pipe_inode_info *pipe, size_t len,
+			 unsigned int flags)
 {
 	unsigned int p_space;
 	int ret;
@@ -796,7 +795,6 @@ long do_splice_to(struct file *in, loff_t *ppos,
 		return warn_unsupported(in, "read");
 	return in->f_op->splice_read(in, ppos, pipe, len, flags);
 }
-EXPORT_SYMBOL_GPL(do_splice_to);
 
 /**
  * splice_direct_to_actor - splices data directly between two non-pipes

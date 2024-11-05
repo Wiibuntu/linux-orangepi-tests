@@ -1718,16 +1718,16 @@ int pvr2_hdw_get_streaming(struct pvr2_hdw *hdw)
 int pvr2_hdw_set_streaming(struct pvr2_hdw *hdw,int enable_flag)
 {
 	int ret,st;
-	LOCK_TAKE(hdw->big_lock); do {
-		pvr2_hdw_untrip_unlocked(hdw);
-		if ((!enable_flag) != !(hdw->state_pipeline_req)) {
-			hdw->state_pipeline_req = enable_flag != 0;
-			pvr2_trace(PVR2_TRACE_START_STOP,
-				   "/*--TRACE_STREAM--*/ %s",
-				   enable_flag ? "enable" : "disable");
-		}
-		pvr2_hdw_state_sched(hdw);
-	} while (0); LOCK_GIVE(hdw->big_lock);
+	LOCK_TAKE(hdw->big_lock);
+	pvr2_hdw_untrip_unlocked(hdw);
+	if (!enable_flag != !hdw->state_pipeline_req) {
+		hdw->state_pipeline_req = enable_flag != 0;
+		pvr2_trace(PVR2_TRACE_START_STOP,
+			   "/*--TRACE_STREAM--*/ %s",
+			   enable_flag ? "enable" : "disable");
+	}
+	pvr2_hdw_state_sched(hdw);
+	LOCK_GIVE(hdw->big_lock);
 	if ((ret = pvr2_hdw_wait(hdw,0)) < 0) return ret;
 	if (enable_flag) {
 		while ((st = hdw->master_state) != PVR2_STATE_RUN) {
@@ -2569,6 +2569,11 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	} while (0);
 	mutex_unlock(&pvr2_unit_mtx);
 
+	INIT_WORK(&hdw->workpoll, pvr2_hdw_worker_poll);
+
+	if (hdw->unit_number == -1)
+		goto fail;
+
 	cnt1 = 0;
 	cnt2 = scnprintf(hdw->name+cnt1,sizeof(hdw->name)-cnt1,"pvrusb2");
 	cnt1 += cnt2;
@@ -2579,8 +2584,6 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	}
 	if (cnt1 >= sizeof(hdw->name)) cnt1 = sizeof(hdw->name)-1;
 	hdw->name[cnt1] = 0;
-
-	INIT_WORK(&hdw->workpoll,pvr2_hdw_worker_poll);
 
 	pvr2_trace(PVR2_TRACE_INIT,"Driver unit number is %d, name is %s",
 		   hdw->unit_number,hdw->name);
@@ -3394,7 +3397,8 @@ void pvr2_hdw_cpufw_set_enabled(struct pvr2_hdw *hdw,
 	int ret;
 	u16 address;
 	unsigned int pipe;
-	LOCK_TAKE(hdw->big_lock); do {
+	LOCK_TAKE(hdw->big_lock);
+	do {
 		if ((hdw->fw_buffer == NULL) == !enable_flag) break;
 
 		if (!enable_flag) {
@@ -3457,8 +3461,8 @@ void pvr2_hdw_cpufw_set_enabled(struct pvr2_hdw *hdw,
 			pvr2_trace(PVR2_TRACE_FIRMWARE,
 				   "Done sucking down EEPROM contents");
 		}
-
-	} while (0); LOCK_GIVE(hdw->big_lock);
+	} while (0);
+	LOCK_GIVE(hdw->big_lock);
 }
 
 
@@ -3473,7 +3477,8 @@ int pvr2_hdw_cpufw_get(struct pvr2_hdw *hdw,unsigned int offs,
 		       char *buf,unsigned int cnt)
 {
 	int ret = -EINVAL;
-	LOCK_TAKE(hdw->big_lock); do {
+	LOCK_TAKE(hdw->big_lock);
+	do {
 		if (!buf) break;
 		if (!cnt) break;
 
@@ -3498,7 +3503,8 @@ int pvr2_hdw_cpufw_get(struct pvr2_hdw *hdw,unsigned int offs,
 			   "Read firmware data offs=%d cnt=%d",
 			   offs,cnt);
 		ret = cnt;
-	} while (0); LOCK_GIVE(hdw->big_lock);
+	} while (0);
+	LOCK_GIVE(hdw->big_lock);
 
 	return ret;
 }

@@ -6,7 +6,6 @@
  */
 
 #include <linux/completion.h>
-#include <linux/hwmon.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -15,6 +14,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/thermal.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/driver.h>
@@ -39,7 +39,6 @@
 #define AXP813_TS_GPIO0_ADC_RATE_HZ(x)		AXP20X_ADC_RATE_HZ(x)
 #define AXP813_V_I_ADC_RATE_HZ(x)		((ilog2((x) / 100) << 4) & AXP813_V_I_ADC_RATE_MASK)
 #define AXP813_ADC_RATE_HZ(x)			(AXP20X_ADC_RATE_HZ(x) | AXP813_V_I_ADC_RATE_HZ(x))
-#define AXP20X_TS_FUNCTION_GPADC		BIT(2)
 
 #define AXP20X_ADC_CHANNEL(_channel, _name, _type, _reg)	\
 	{							\
@@ -187,6 +186,8 @@ static const struct iio_chan_spec axp20x_adc_channels[] = {
 			   AXP20X_BATT_CHRG_I_H),
 	AXP20X_ADC_CHANNEL(AXP20X_BATT_DISCHRG_I, "batt_dischrg_i", IIO_CURRENT,
 			   AXP20X_BATT_DISCHRG_I_H),
+	AXP20X_ADC_CHANNEL(AXP20X_TS_IN, "ts_v", IIO_VOLTAGE,
+			   AXP20X_TS_IN_H),
 };
 
 static const struct iio_chan_spec axp22x_adc_channels[] = {
@@ -204,6 +205,8 @@ static const struct iio_chan_spec axp22x_adc_channels[] = {
 			   AXP20X_BATT_CHRG_I_H),
 	AXP20X_ADC_CHANNEL(AXP22X_BATT_DISCHRG_I, "batt_dischrg_i", IIO_CURRENT,
 			   AXP20X_BATT_DISCHRG_I_H),
+	AXP20X_ADC_CHANNEL(AXP22X_TS_IN, "ts_v", IIO_VOLTAGE,
+			   AXP22X_TS_ADC_H),
 };
 
 static const struct iio_chan_spec axp813_adc_channels[] = {
@@ -223,6 +226,8 @@ static const struct iio_chan_spec axp813_adc_channels[] = {
 			   AXP20X_BATT_CHRG_I_H),
 	AXP20X_ADC_CHANNEL(AXP22X_BATT_DISCHRG_I, "batt_dischrg_i", IIO_CURRENT,
 			   AXP20X_BATT_DISCHRG_I_H),
+	AXP20X_ADC_CHANNEL(AXP813_TS_IN, "ts_v", IIO_VOLTAGE,
+			   AXP288_TS_ADC_H),
 };
 
 static int axp20x_adc_raw(struct iio_dev *indio_dev,
@@ -297,11 +302,36 @@ static int axp20x_adc_scale_voltage(int channel, int *val, int *val2)
 		*val2 = 400000;
 		return IIO_VAL_INT_PLUS_MICRO;
 
+	case AXP20X_TS_IN:
+		/* 0.8 mV per LSB */
+		*val = 0;
+		*val2 = 800000;
+		return IIO_VAL_INT_PLUS_MICRO;
+
 	default:
 		return -EINVAL;
 	}
 }
 
+static int axp22x_adc_scale_voltage(int channel, int *val, int *val2)
+{
+	switch (channel) {
+	case AXP22X_BATT_V:
+		/* 1.1 mV per LSB */
+		*val = 1;
+		*val2 = 100000;
+		return IIO_VAL_INT_PLUS_MICRO;
+
+	case AXP22X_TS_IN:
+		/* 0.8 mV per LSB */
+		*val = 0;
+		*val2 = 800000;
+		return IIO_VAL_INT_PLUS_MICRO;
+
+	default:
+		return -EINVAL;
+	}
+}
 static int axp813_adc_scale_voltage(int channel, int *val, int *val2)
 {
 	switch (channel) {
@@ -313,6 +343,12 @@ static int axp813_adc_scale_voltage(int channel, int *val, int *val2)
 	case AXP813_BATT_V:
 		*val = 1;
 		*val2 = 100000;
+		return IIO_VAL_INT_PLUS_MICRO;
+
+	case AXP813_TS_IN:
+		/* 0.8 mV per LSB */
+		*val = 0;
+		*val2 = 800000;
 		return IIO_VAL_INT_PLUS_MICRO;
 
 	default:
@@ -368,12 +404,7 @@ static int axp22x_adc_scale(struct iio_chan_spec const *chan, int *val,
 {
 	switch (chan->type) {
 	case IIO_VOLTAGE:
-		if (chan->channel != AXP22X_BATT_V)
-			return -EINVAL;
-
-		*val = 1;
-		*val2 = 100000;
-		return IIO_VAL_INT_PLUS_MICRO;
+		return axp22x_adc_scale_voltage(chan->channel, val, val2);
 
 	case IIO_CURRENT:
 		*val = 1;
@@ -477,6 +508,7 @@ static int axp22x_read_raw(struct iio_dev *indio_dev,
 {
 	switch (mask) {
 	case IIO_CHAN_INFO_OFFSET:
+		/* For PMIC temp only */
 		*val = -2677;
 		return IIO_VAL_INT;
 
@@ -583,74 +615,6 @@ static int axp813_adc_rate(struct axp20x_adc_iio *info, int rate)
 				 AXP813_ADC_RATE_HZ(rate));
 }
 
-
-static umode_t axp813_adc_hwmon_is_visible(const void *data,
-					   enum hwmon_sensor_types type,
-					   u32 attr, int channel)
-{
-	return (type == hwmon_temp && attr == hwmon_temp_input) ? 0444 : 0;
-}
-
-static int axp813_adc_hwmon_read(struct device *dev,
-				 enum hwmon_sensor_types type,
-				 u32 attr, int channel, long *temp)
-{
-	struct axp20x_adc_iio *info = dev_get_drvdata(dev);
-	int ret;
-	int raw;
-
-	switch (attr) {
-		case hwmon_temp_input:
-		raw = axp20x_read_variable_width(info->regmap, AXP22X_PMIC_TEMP_H, 12);
-		*temp = (raw - 2667) * 100;
-		ret = 0;
-		break;
-	default:
-		ret = -EOPNOTSUPP;
-		break;
-	}
-
-	return ret;
-}
-
-static u32 axp813_adc_hwmon_chip_config[] = {
-	HWMON_C_REGISTER_TZ,
-	0
-};
-
-static const struct hwmon_channel_info axp813_adc_hwmon_chip = {
-	.type = hwmon_chip,
-	.config = axp813_adc_hwmon_chip_config,
-};
-
-static u32 axp813_adc_hwmon_temp_config[] = {
-	HWMON_T_INPUT,
-	0
-};
-
-
-static const struct hwmon_channel_info axp813_adc_hwmon_temp = {
-	.type = hwmon_temp,
-	.config = axp813_adc_hwmon_temp_config,
-};
-
-
-static const struct hwmon_channel_info *axp813_adc_hwmon_info[] = {
-	&axp813_adc_hwmon_chip,
-	&axp813_adc_hwmon_temp,
-	NULL
-};
-
-static const struct hwmon_ops axp813_adc_hwmon_hwmon_ops = {
-	.is_visible = axp813_adc_hwmon_is_visible,
-	.read = axp813_adc_hwmon_read,
-};
-
-static const struct hwmon_chip_info axp813_adc_hwmon_chip_info = {
-	.ops = &axp813_adc_hwmon_hwmon_ops,
-	.info = axp813_adc_hwmon_info,
-};
-
 struct axp_data {
 	const struct iio_info		*iio_info;
 	int				num_channels;
@@ -659,7 +623,6 @@ struct axp_data {
 	int				(*adc_rate)(struct axp20x_adc_iio *info,
 						    int rate);
 	bool				adc_en2;
-	bool				hwmon_en;
 	struct iio_map			*maps;
 };
 
@@ -670,7 +633,6 @@ static const struct axp_data axp20x_data = {
 	.adc_en1_mask = AXP20X_ADC_EN1_MASK,
 	.adc_rate = axp20x_adc_rate,
 	.adc_en2 = true,
-	.hwmon_en = false,
 	.maps = axp20x_maps,
 };
 
@@ -681,7 +643,6 @@ static const struct axp_data axp22x_data = {
 	.adc_en1_mask = AXP22X_ADC_EN1_MASK,
 	.adc_rate = axp22x_adc_rate,
 	.adc_en2 = false,
-	.hwmon_en = false,
 	.maps = axp22x_maps,
 };
 
@@ -692,7 +653,6 @@ static const struct axp_data axp813_data = {
 	.adc_en1_mask = AXP22X_ADC_EN1_MASK,
 	.adc_rate = axp813_adc_rate,
 	.adc_en2 = false,
-	.hwmon_en = true,
 	.maps = axp22x_maps,
 };
 
@@ -755,11 +715,6 @@ static int axp20x_probe(struct platform_device *pdev)
 		regmap_update_bits(info->regmap, AXP20X_ADC_EN2,
 				   AXP20X_ADC_EN2_MASK, AXP20X_ADC_EN2_MASK);
 
-	if (of_property_read_bool(pdev->dev.of_node, "x-powers,ts-as-gpadc"))
-		regmap_update_bits(info->regmap, AXP20X_ADC_RATE,
-				   AXP20X_TS_FUNCTION_GPADC,
-				   AXP20X_TS_FUNCTION_GPADC);
-
 	/* Configure ADCs rate */
 	info->data->adc_rate(info, 100);
 
@@ -775,22 +730,7 @@ static int axp20x_probe(struct platform_device *pdev)
 		goto fail_register;
 	}
 
-	if (info->data->hwmon_en) {
-		/* Register hwmon device */
-		struct device *hwmon_dev;
-
-		hwmon_dev = devm_hwmon_device_register_with_info(&pdev->dev, "axp813_adc", info, &axp813_adc_hwmon_chip_info, NULL);
-		if (IS_ERR(hwmon_dev)) {
-			ret = PTR_ERR(hwmon_dev);
-			dev_err(&pdev->dev, "unable to register hwmon device %d\n", ret);
-			goto fail_hwmon;
-		}
-	}
-
 	return 0;
-
-fail_hwmon:
-	iio_device_unregister(indio_dev);
 
 fail_register:
 	iio_map_array_unregister(indio_dev);

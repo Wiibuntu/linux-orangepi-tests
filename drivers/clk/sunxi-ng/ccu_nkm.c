@@ -119,11 +119,6 @@ static unsigned long ccu_nkm_round_rate(struct ccu_mux_internal *mux,
 	_nkm.min_m = 1;
 	_nkm.max_m = nkm->m.max ?: 1 << nkm->m.width;
 
-	if (rate < nkm->min_rate)
-		rate = nkm->min_rate;
-	if (nkm->max_rate && (rate > nkm->max_rate))
-		rate = nkm->max_rate;
-
 	if (nkm->common.features & CCU_FEATURE_FIXED_POSTDIV)
 		rate *= nkm->fixed_post_div;
 
@@ -211,3 +206,4 @@ const struct clk_ops ccu_nkm_ops = {
 	.recalc_rate	= ccu_nkm_recalc_rate,
 	.set_rate	= ccu_nkm_set_rate,
 };
+EXPORT_SYMBOL_NS_GPL(ccu_nkm_ops, SUNXI_CCU);

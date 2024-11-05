@@ -263,9 +263,8 @@ static int pwm_backlight_parse_dt(struct device *dev,
 
 	/* read brightness levels from DT property */
 	if (num_levels > 0) {
-		size_t size = sizeof(*data->levels) * num_levels;
-
-		data->levels = devm_kzalloc(dev, size, GFP_KERNEL);
+		data->levels = devm_kcalloc(dev, num_levels,
+					    sizeof(*data->levels), GFP_KERNEL);
 		if (!data->levels)
 			return -ENOMEM;
 
@@ -320,8 +319,8 @@ static int pwm_backlight_parse_dt(struct device *dev,
 			 * Create a new table of brightness levels with all the
 			 * interpolated steps.
 			 */
-			size = sizeof(*table) * num_levels;
-			table = devm_kzalloc(dev, size, GFP_KERNEL);
+			table = devm_kcalloc(dev, num_levels, sizeof(*table),
+					     GFP_KERNEL);
 			if (!table)
 				return -ENOMEM;
 			/*
@@ -450,61 +449,6 @@ static int pwm_backlight_initial_power_state(const struct pwm_bl_data *pb)
 	return active ? FB_BLANK_UNBLANK: FB_BLANK_POWERDOWN;
 }
 
-static ssize_t lth_brightness_show(struct device *dev,
-				   struct device_attribute *attr, char *buf)
-{
-	struct backlight_device *bl = platform_get_drvdata(to_platform_device(dev));
-	struct pwm_bl_data *pb = bl ? bl_get_data(bl) : NULL;
-	struct pwm_state state;
-	unsigned val;
-
-	if (!pb)
-		return -EBUSY;
-
-	pwm_get_state(pb->pwm, &state);
-	val = div_u64(100 * pb->lth_brightness, state.period);
-
-	return scnprintf(buf, PAGE_SIZE, "%u\n", val);
-}
-
-static ssize_t lth_brightness_store(struct device *dev,
-				    struct device_attribute *attr,
-				    const char *buf, size_t len)
-{
-	struct backlight_device *bl = platform_get_drvdata(to_platform_device(dev));
-	struct pwm_bl_data *pb = bl ? bl_get_data(bl) : NULL;
-	struct pwm_state state;
-	unsigned val;
-	int ret;
-
-	if (!pb)
-		return -EBUSY;
-
-	ret = kstrtouint(buf, 10, &val);
-	if (ret)
-		return ret;
-
-        if (val > 100)
-		val = 100;
-
-	pwm_get_state(pb->pwm, &state);
-	pb->lth_brightness = div_u64(val * state.period, 100);
-	pwm_backlight_update_status(bl);
-
-	return len;
-}
-
-static DEVICE_ATTR_RW(lth_brightness);
-
-static struct attribute *pwm_bl_attrs[] = {
-	&dev_attr_lth_brightness.attr,
-	NULL,
-};
-
-static const struct attribute_group pwm_bl_group = {
-	.attrs = pwm_bl_attrs,
-};
-
 static int pwm_backlight_probe(struct platform_device *pdev)
 {
 	struct platform_pwm_backlight_data *data = dev_get_platdata(&pdev->dev);
@@ -513,8 +457,7 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 	struct backlight_device *bl;
 	struct device_node *node = pdev->dev.of_node;
 	struct pwm_bl_data *pb;
-	struct pwm_state state, state_real;
-	u32 lth_brightness;
+	struct pwm_state state;
 	unsigned int i;
 	int ret;
 
@@ -580,11 +523,6 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 
 	/* Sync up PWM state. */
 	pwm_init_state(pb->pwm, &state);
-
-	/* Read real state, but only if the PWM is enabled. */
-	pwm_get_state(pb->pwm, &state_real);
-	if (state_real.enabled)
-		state = state_real;
 
 	/*
 	 * The DT case will set the pwm_period_ns field to 0 and store the
@@ -656,20 +594,8 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 		pb->scale = data->max_brightness;
 	}
 
-	pb->lth_brightness = div_u64(data->lth_brightness * state.period, pb->scale);
-
-	ret = of_property_read_u32(pdev->dev.of_node, "lth-brightness",
-				   &lth_brightness);
-	if (ret == 0) {
-		if (lth_brightness > 100)
-			lth_brightness = 100;
-
-		pb->lth_brightness = div_u64(lth_brightness * state.period, 100);
-	}
-
-	ret = devm_device_add_group(&pdev->dev, &pwm_bl_group);
-	if (ret)
-		goto err_alloc;
+	pb->lth_brightness = data->lth_brightness * (div_u64(state.period,
+				pb->scale));
 
 	props.type = BACKLIGHT_RAW;
 	props.max_brightness = data->max_brightness;
@@ -692,24 +618,6 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 
 	bl->props.brightness = data->dft_brightness;
 	bl->props.power = pwm_backlight_initial_power_state(pb);
-	if (bl->props.power == FB_BLANK_UNBLANK && pb->levels) {
-		u64 level;
-
-		/* If the backlight is already on, determine the default
-		 * brightness from PWM duty cycle instead of forcing
-		 * the brightness determined by the driver 
-		 */
-		pwm_get_state(pb->pwm, &state);
-		level = (u64)state.duty_cycle * pb->scale;
-		do_div(level, (u64)state.period);
-
-		for (i = 0; i <= data->max_brightness; i++) {
-			if (data->levels[i] > level) {
-				bl->props.brightness = i;
-				break;
-			}
-		}
-	}
 	backlight_update_status(bl);
 
 	platform_set_drvdata(pdev, bl);

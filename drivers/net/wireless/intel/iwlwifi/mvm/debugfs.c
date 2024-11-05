@@ -426,8 +426,7 @@ static ssize_t iwl_dbgfs_amsdu_len_write(struct ieee80211_sta *sta,
 		return -EINVAL;
 
 	/* only change from debug set <-> debug unset */
-	if ((amsdu_len && mvmsta->orig_amsdu_len) ||
-	    (!!amsdu_len && mvmsta->orig_amsdu_len))
+	if (amsdu_len && mvmsta->orig_amsdu_len)
 		return -EBUSY;
 
 	if (amsdu_len) {
@@ -1023,6 +1022,11 @@ static ssize_t iwl_dbgfs_fw_restart_write(struct iwl_mvm *mvm, char *buf,
 	if (mvm->fw_restart >= 0)
 		mvm->fw_restart++;
 
+	if (count == 6 && !strcmp(buf, "nolog\n")) {
+		set_bit(IWL_MVM_STATUS_SUPPRESS_ERROR_LOG_ONCE, &mvm->status);
+		set_bit(STATUS_SUPPRESS_CMD_ERROR_ONCE, &mvm->trans->status);
+	}
+
 	/* take the return value to make compiler happy - it will fail anyway */
 	ret = iwl_mvm_send_cmd_pdu(mvm,
 				   WIDE_ID(LONG_GROUP, REPLY_ERROR),
@@ -1038,6 +1042,9 @@ static ssize_t iwl_dbgfs_fw_nmi_write(struct iwl_mvm *mvm, char *buf,
 {
 	if (!iwl_mvm_firmware_running(mvm))
 		return -EIO;
+
+	if (count == 6 && !strcmp(buf, "nolog\n"))
+		set_bit(IWL_MVM_STATUS_SUPPRESS_ERROR_LOG_ONCE, &mvm->status);
 
 	iwl_force_nmi(mvm->trans);
 
@@ -1471,7 +1478,7 @@ iwl_dbgfs_he_sniffer_params_write(struct iwl_mvm *mvm, char *buf,
 		.mvm = mvm,
 	};
 	u16 wait_cmds[] = {
-		iwl_cmd_id(HE_AIR_SNIFFER_CONFIG_CMD, DATA_PATH_GROUP, 0),
+		WIDE_ID(DATA_PATH_GROUP, HE_AIR_SNIFFER_CONFIG_CMD),
 	};
 	u32 aid;
 	int ret;
@@ -1506,8 +1513,9 @@ iwl_dbgfs_he_sniffer_params_write(struct iwl_mvm *mvm, char *buf,
 				   wait_cmds, ARRAY_SIZE(wait_cmds),
 				   iwl_mvm_sniffer_apply, &apply);
 
-	ret = iwl_mvm_send_cmd_pdu(mvm, iwl_cmd_id(HE_AIR_SNIFFER_CONFIG_CMD,
-						   DATA_PATH_GROUP, 0), 0,
+	ret = iwl_mvm_send_cmd_pdu(mvm,
+				   WIDE_ID(DATA_PATH_GROUP, HE_AIR_SNIFFER_CONFIG_CMD),
+				   0,
 				   sizeof(he_mon_cmd), &he_mon_cmd);
 
 	/* no need to really wait, we already did anyway */
@@ -1719,8 +1727,7 @@ static ssize_t iwl_dbgfs_mem_read(struct file *file, char __user *user_buf,
 	if (!iwl_mvm_firmware_running(mvm))
 		return -EIO;
 
-	hcmd.id = iwl_cmd_id(*ppos >> 24 ? UMAC_RD_WR : LMAC_RD_WR,
-			     DEBUG_GROUP, 0);
+	hcmd.id = WIDE_ID(DEBUG_GROUP, *ppos >> 24 ? UMAC_RD_WR : LMAC_RD_WR);
 	cmd.op = cpu_to_le32(DEBUG_MEM_OP_READ);
 
 	/* Take care of alignment of both the position and the length */
@@ -1750,7 +1757,7 @@ static ssize_t iwl_dbgfs_mem_read(struct file *file, char __user *user_buf,
 		goto out;
 	}
 
-	ret = len - copy_to_user(user_buf, (void *)rsp->data + delta, len);
+	ret = len - copy_to_user(user_buf, (u8 *)rsp->data + delta, len);
 	*ppos += ret;
 
 out:
@@ -1774,8 +1781,7 @@ static ssize_t iwl_dbgfs_mem_write(struct file *file,
 	if (!iwl_mvm_firmware_running(mvm))
 		return -EIO;
 
-	hcmd.id = iwl_cmd_id(*ppos >> 24 ? UMAC_RD_WR : LMAC_RD_WR,
-			     DEBUG_GROUP, 0);
+	hcmd.id = WIDE_ID(DEBUG_GROUP, *ppos >> 24 ? UMAC_RD_WR : LMAC_RD_WR);
 
 	if (*ppos & 0x3 || count < 4) {
 		op = DEBUG_MEM_OP_WRITE_BYTES;
@@ -1876,6 +1882,7 @@ void iwl_mvm_dbgfs_register(struct iwl_mvm *mvm)
 	MVM_DEBUGFS_ADD_FILE(prph_reg, mvm->debugfs_dir, 0600);
 	MVM_DEBUGFS_ADD_FILE(fw_dbg_conf, mvm->debugfs_dir, 0600);
 	MVM_DEBUGFS_ADD_FILE(fw_dbg_collect, mvm->debugfs_dir, 0200);
+	MVM_DEBUGFS_ADD_FILE(dbg_time_point, mvm->debugfs_dir, 0200);
 	MVM_DEBUGFS_ADD_FILE(send_echo_cmd, mvm->debugfs_dir, 0200);
 	MVM_DEBUGFS_ADD_FILE(indirection_tbl, mvm->debugfs_dir, 0200);
 	MVM_DEBUGFS_ADD_FILE(inject_packet, mvm->debugfs_dir, 0200);

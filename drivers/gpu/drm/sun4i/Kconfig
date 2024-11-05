@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config DRM_SUN4I
 	tristate "DRM Support for Allwinner A10 Display Engine"
-	depends on DRM && (ARM || ARM64) && COMMON_CLK
+	depends on DRM && COMMON_CLK
 	depends on ARCH_SUNXI || COMPILE_TEST
 	select DRM_GEM_CMA_HELPER
 	select DRM_KMS_HELPER
-	select DRM_KMS_CMA_HELPER
 	select DRM_PANEL
 	select REGMAP_MMIO
 	select VIDEOMODE_HELPERS
@@ -22,17 +21,6 @@ config DRM_SUN4I_HDMI
 	help
 	  Choose this option if you have an Allwinner SoC with an HDMI
 	  controller.
-
-config DRM_SUN4I_HDMI_AUDIO
-	bool "Allwinner A10 HDMI Audio Support"
-	default y
-	depends on DRM_SUN4I_HDMI
-	depends on SND_SOC=y || SND_SOC=DRM_SUN4I_HDMI
-	select SND_PCM_ELD
-	select SND_SOC_GENERIC_DMAENGINE_PCM
-	help
-	  Choose this option if you have an Allwinner SoC with an HDMI
-	  controller and want to use audio.
 
 config DRM_SUN4I_HDMI_CEC
 	bool "Allwinner A10 HDMI CEC Support"

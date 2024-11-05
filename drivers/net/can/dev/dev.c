@@ -14,7 +14,6 @@
 #include <linux/can/can-ml.h>
 #include <linux/can/dev.h>
 #include <linux/can/skb.h>
-#include <linux/can/led.h>
 #include <linux/gpio/consumer.h>
 #include <linux/of.h>
 
@@ -154,7 +153,7 @@ static void can_restart(struct net_device *dev)
 
 	cf->can_id |= CAN_ERR_RESTARTED;
 
-	netif_rx_ni(skb);
+	netif_rx(skb);
 
 restart:
 	netdev_dbg(dev, "restarted\n");
@@ -296,6 +295,7 @@ EXPORT_SYMBOL_GPL(free_candev);
 int can_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct can_priv *priv = netdev_priv(dev);
+	u32 ctrlmode_static = can_get_static_ctrlmode(priv);
 
 	/* Do not allow changing the MTU while running */
 	if (dev->flags & IFF_UP)
@@ -305,7 +305,7 @@ int can_change_mtu(struct net_device *dev, int new_mtu)
 	switch (new_mtu) {
 	case CAN_MTU:
 		/* 'CANFD-only' controllers can not switch to CAN_MTU */
-		if (priv->ctrlmode_static & CAN_CTRLMODE_FD)
+		if (ctrlmode_static & CAN_CTRLMODE_FD)
 			return -EINVAL;
 
 		priv->ctrlmode &= ~CAN_CTRLMODE_FD;
@@ -314,7 +314,7 @@ int can_change_mtu(struct net_device *dev, int new_mtu)
 	case CANFD_MTU:
 		/* check for potential CANFD ability */
 		if (!(priv->ctrlmode_supported & CAN_CTRLMODE_FD) &&
-		    !(priv->ctrlmode_static & CAN_CTRLMODE_FD))
+		    !(ctrlmode_static & CAN_CTRLMODE_FD))
 			return -EINVAL;
 
 		priv->ctrlmode |= CAN_CTRLMODE_FD;
@@ -511,8 +511,6 @@ static __init int can_dev_init(void)
 {
 	int err;
 
-	can_led_notifier_init();
-
 	err = can_netlink_register();
 	if (!err)
 		pr_info(MOD_DESC "\n");
@@ -524,8 +522,6 @@ module_init(can_dev_init);
 static __exit void can_dev_exit(void)
 {
 	can_netlink_unregister();
-
-	can_led_notifier_exit();
 }
 module_exit(can_dev_exit);
 

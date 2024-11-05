@@ -145,7 +145,7 @@ static const struct of_device_id rockchip_grf_dt_match[] __initconst = {
 		.compatible = "rockchip,rk3399-grf",
 		.data = (void *)&rk3399_grf,
 	}, {
-		.compatible = "rockchip,rk3566-pipegrf",
+		.compatible = "rockchip,rk3566-pipe-grf",
 		.data = (void *)&rk3566_pipegrf,
 	},
 	{ /* sentinel */ },
@@ -165,12 +165,14 @@ static int __init rockchip_grf_init(void)
 		return -ENODEV;
 	if (!match || !match->data) {
 		pr_err("%s: missing grf data\n", __func__);
+		of_node_put(np);
 		return -EINVAL;
 	}
 
 	grf_info = match->data;
 
 	grf = syscon_node_to_regmap(np);
+	of_node_put(np);
 	if (IS_ERR(grf)) {
 		pr_err("%s: could not get grf syscon\n", __func__);
 		return PTR_ERR(grf);

@@ -24,6 +24,7 @@
 
 #include <linux/iopoll.h>
 #include <linux/platform_device.h>
+#include <linux/workqueue.h>
 
 #define CEDRUS_NAME			"cedrus"
 
@@ -105,15 +106,7 @@ struct cedrus_buffer {
 		struct {
 			unsigned int			position;
 			enum cedrus_h264_pic_type	pic_type;
-			void		*mv_col_buf;
-			dma_addr_t	mv_col_buf_dma;
-			ssize_t		mv_col_buf_size;
 		} h264;
-		struct {
-			void		*mv_col_buf;
-			dma_addr_t	mv_col_buf_dma;
-			ssize_t		mv_col_buf_size;
-		} h265;
 	} codec;
 };
 
@@ -147,10 +140,12 @@ struct cedrus_ctx {
 			ssize_t		intra_pred_buf_size;
 		} h264;
 		struct {
+			void		*mv_col_buf;
+			dma_addr_t	mv_col_buf_addr;
+			ssize_t		mv_col_buf_size;
+			ssize_t		mv_col_buf_unit_size;
 			void		*neighbor_info_buf;
 			dma_addr_t	neighbor_info_buf_addr;
-			void		*entry_points_buf;
-			dma_addr_t	entry_points_buf_addr;
 		} h265;
 		struct {
 			unsigned int	last_frame_p_type;
@@ -171,7 +166,6 @@ struct cedrus_dec_ops {
 	int (*start)(struct cedrus_ctx *ctx);
 	void (*stop)(struct cedrus_ctx *ctx);
 	void (*trigger)(struct cedrus_ctx *ctx);
-	void (*buf_cleanup)(struct cedrus_ctx *ctx, struct cedrus_buffer *buf);
 };
 
 struct cedrus_variant {
@@ -201,6 +195,8 @@ struct cedrus_dev {
 	struct reset_control	*rstc;
 
 	unsigned int		capabilities;
+
+	struct delayed_work	watchdog_work;
 };
 
 extern struct cedrus_dec_ops cedrus_dec_ops_mpeg2;

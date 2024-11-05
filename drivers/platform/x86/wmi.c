@@ -1308,21 +1308,20 @@ acpi_wmi_ec_space_handler(u32 function, acpi_physical_address address,
 static void acpi_wmi_notify_handler(acpi_handle handle, u32 event,
 				    void *context)
 {
-	struct wmi_block *wblock;
-	bool found_it = false;
+	struct wmi_block *wblock = NULL, *iter;
 
-	list_for_each_entry(wblock, &wmi_block_list, list) {
-		struct guid_block *block = &wblock->gblock;
+	list_for_each_entry(iter, &wmi_block_list, list) {
+		struct guid_block *block = &iter->gblock;
 
-		if (wblock->acpi_device->handle == handle &&
+		if (iter->acpi_device->handle == handle &&
 		    (block->flags & ACPI_WMI_EVENT) &&
 		    (block->notify_id == event)) {
-			found_it = true;
+			wblock = iter;
 			break;
 		}
 	}
 
-	if (!found_it)
+	if (!wblock)
 		return;
 
 	/* If a driver is bound, then notify the driver. */
@@ -1331,10 +1330,12 @@ static void acpi_wmi_notify_handler(acpi_handle handle, u32 event,
 		struct acpi_buffer evdata = { ACPI_ALLOCATE_BUFFER, NULL };
 		acpi_status status;
 
-		status = get_event_data(wblock, &evdata);
-		if (ACPI_FAILURE(status)) {
-			dev_warn(&wblock->dev.dev, "failed to get event data\n");
-			return;
+		if (!driver->no_notify_data) {
+			status = get_event_data(wblock, &evdata);
+			if (ACPI_FAILURE(status)) {
+				dev_warn(&wblock->dev.dev, "failed to get event data\n");
+				return;
+			}
 		}
 
 		if (driver->notify)
