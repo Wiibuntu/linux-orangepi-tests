@@ -784,9 +784,11 @@ void brcmf_sdiod_sgtable_alloc(struct brcmf_sdio_dev *sdiodev)
 	sdiodev->txglomsz = sdiodev->settings->bus.sdio.txglomsz;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int brcmf_sdiod_freezer_attach(struct brcmf_sdio_dev *sdiodev)
 {
+	if (!IS_ENABLED(CONFIG_PM_SLEEP))
+		return 0;
+
 	sdiodev->freezer = kzalloc(sizeof(*sdiodev->freezer), GFP_KERNEL);
 	if (!sdiodev->freezer)
 		return -ENOMEM;
@@ -802,6 +804,7 @@ static void brcmf_sdiod_freezer_detach(struct brcmf_sdio_dev *sdiodev)
 	if (sdiodev->freezer) {
 		WARN_ON(atomic_read(&sdiodev->freezer->freezing));
 		kfree(sdiodev->freezer);
+		sdiodev->freezer = NULL;
 	}
 }
 
@@ -833,7 +836,8 @@ static void brcmf_sdiod_freezer_off(struct brcmf_sdio_dev *sdiodev)
 
 bool brcmf_sdiod_freezing(struct brcmf_sdio_dev *sdiodev)
 {
-	return atomic_read(&sdiodev->freezer->freezing);
+	return IS_ENABLED(CONFIG_PM_SLEEP) &&
+		atomic_read(&sdiodev->freezer->freezing);
 }
 
 void brcmf_sdiod_try_freeze(struct brcmf_sdio_dev *sdiodev)
@@ -847,23 +851,15 @@ void brcmf_sdiod_try_freeze(struct brcmf_sdio_dev *sdiodev)
 
 void brcmf_sdiod_freezer_count(struct brcmf_sdio_dev *sdiodev)
 {
-	atomic_inc(&sdiodev->freezer->thread_count);
+	if (IS_ENABLED(CONFIG_PM_SLEEP))
+		atomic_inc(&sdiodev->freezer->thread_count);
 }
 
 void brcmf_sdiod_freezer_uncount(struct brcmf_sdio_dev *sdiodev)
 {
-	atomic_dec(&sdiodev->freezer->thread_count);
+	if (IS_ENABLED(CONFIG_PM_SLEEP))
+		atomic_dec(&sdiodev->freezer->thread_count);
 }
-#else
-static int brcmf_sdiod_freezer_attach(struct brcmf_sdio_dev *sdiodev)
-{
-	return 0;
-}
-
-static void brcmf_sdiod_freezer_detach(struct brcmf_sdio_dev *sdiodev)
-{
-}
-#endif /* CONFIG_PM_SLEEP */
 
 int brcmf_sdiod_remove(struct brcmf_sdio_dev *sdiodev)
 {
@@ -875,13 +871,9 @@ int brcmf_sdiod_remove(struct brcmf_sdio_dev *sdiodev)
 
 	brcmf_sdiod_freezer_detach(sdiodev);
 
-	/* Disable Function 2 */
-	sdio_claim_host(sdiodev->func2);
-	sdio_disable_func(sdiodev->func2);
-	sdio_release_host(sdiodev->func2);
-
-	/* Disable Function 1 */
+	/* Disable functions 2 then 1. */
 	sdio_claim_host(sdiodev->func1);
+	sdio_disable_func(sdiodev->func2);
 	sdio_disable_func(sdiodev->func1);
 	sdio_release_host(sdiodev->func1);
 
@@ -911,7 +903,7 @@ int brcmf_sdiod_probe(struct brcmf_sdio_dev *sdiodev)
 	if (ret) {
 		brcmf_err("Failed to set F1 blocksize\n");
 		sdio_release_host(sdiodev->func1);
-		goto out;
+		return ret;
 	}
 	switch (sdiodev->func2->device) {
 	case SDIO_DEVICE_ID_BROADCOM_CYPRESS_4373:
@@ -933,7 +925,7 @@ int brcmf_sdiod_probe(struct brcmf_sdio_dev *sdiodev)
 	if (ret) {
 		brcmf_err("Failed to set F2 blocksize\n");
 		sdio_release_host(sdiodev->func1);
-		goto out;
+		return ret;
 	} else {
 		brcmf_dbg(SDIO, "set F2 blocksize to %d\n", f2_blksz);
 	}
@@ -967,32 +959,36 @@ out:
 	return ret;
 }
 
-#define BRCMF_SDIO_DEVICE(dev_id)	\
-	{SDIO_DEVICE(SDIO_VENDOR_ID_BROADCOM, dev_id)}
+#define BRCMF_SDIO_DEVICE(dev_id, fw_vend) \
+	{ \
+		SDIO_DEVICE(SDIO_VENDOR_ID_BROADCOM, dev_id), \
+		.driver_data = BRCMF_FWVENDOR_ ## fw_vend \
+	}
 
 /* devices we support, null terminated */
 static const struct sdio_device_id brcmf_sdmmc_ids[] = {
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43143),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43241),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4329),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4330),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4334),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43340),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43341),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43362),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43364),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4335_4339),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4339),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43430),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4345),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43455),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4354),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4356),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4359),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_4373),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_43012),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_43752),
-	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_89359),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43143, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43241, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4329, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4330, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4334, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43340, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43341, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43362, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43364, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4335_4339, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4339, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43430, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4345, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_43455, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4354, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4356, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4359, WCC),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_4373, CYW),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_43012, CYW),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_43439, CYW),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_43752, CYW),
+	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_CYPRESS_89359, CYW),
 	{ /* end: all zeroes */ }
 };
 MODULE_DEVICE_TABLE(sdio, brcmf_sdmmc_ids);
@@ -1058,6 +1054,7 @@ static int brcmf_ops_sdio_probe(struct sdio_func *func,
 	sdiodev->bus_if = bus_if;
 	bus_if->bus_priv.sdio = sdiodev;
 	bus_if->proto_type = BRCMF_PROTO_BCDC;
+	bus_if->fwvid = id->driver_data;
 	dev_set_drvdata(&func->dev, bus_if);
 	dev_set_drvdata(&sdiodev->func1->dev, bus_if);
 	sdiodev->dev = &sdiodev->func1->dev;
@@ -1136,7 +1133,6 @@ notsup:
 	brcmf_dbg(SDIO, "WOWL not supported\n");
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int brcmf_ops_sdio_suspend(struct device *dev)
 {
 	struct sdio_func *func;
@@ -1204,11 +1200,9 @@ static int brcmf_ops_sdio_resume(struct device *dev)
 	return ret;
 }
 
-static const struct dev_pm_ops brcmf_sdio_pm_ops = {
-	.suspend	= brcmf_ops_sdio_suspend,
-	.resume		= brcmf_ops_sdio_resume,
-};
-#endif	/* CONFIG_PM_SLEEP */
+static DEFINE_SIMPLE_DEV_PM_OPS(brcmf_sdio_pm_ops,
+				brcmf_ops_sdio_suspend,
+				brcmf_ops_sdio_resume);
 
 static struct sdio_driver brcmf_sdmmc_driver = {
 	.probe = brcmf_ops_sdio_probe,
@@ -1217,9 +1211,7 @@ static struct sdio_driver brcmf_sdmmc_driver = {
 	.id_table = brcmf_sdmmc_ids,
 	.drv = {
 		.owner = THIS_MODULE,
-#ifdef CONFIG_PM_SLEEP
-		.pm = &brcmf_sdio_pm_ops,
-#endif	/* CONFIG_PM_SLEEP */
+		.pm = pm_sleep_ptr(&brcmf_sdio_pm_ops),
 		.coredump = brcmf_dev_coredump,
 	},
 };

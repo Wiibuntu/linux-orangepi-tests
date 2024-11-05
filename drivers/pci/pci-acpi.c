@@ -21,8 +21,9 @@
 #include "pci.h"
 
 /*
- * The GUID is defined in the PCI Firmware Specification available here:
- * https://www.pcisig.com/members/downloads/pcifw_r3_1_13Dec10.pdf
+ * The GUID is defined in the PCI Firmware Specification available
+ * here to PCI-SIG members:
+ * https://members.pcisig.com/wg/PCI-SIG/document/15350
  */
 const guid_t pci_acpi_dsm_guid =
 	GUID_INIT(0xe5c937d0, 0x3553, 0x4d7a,
@@ -66,7 +67,7 @@ static acpi_status acpi_match_rc(acpi_handle handle, u32 lvl, void *context,
 	unsigned long long uid;
 	acpi_status status;
 
-	status = acpi_evaluate_integer(handle, "_UID", NULL, &uid);
+	status = acpi_evaluate_integer(handle, METHOD_NAME__UID, NULL, &uid);
 	if (ACPI_FAILURE(status) || uid != *segment)
 		return AE_CTRL_DEPTH;
 
