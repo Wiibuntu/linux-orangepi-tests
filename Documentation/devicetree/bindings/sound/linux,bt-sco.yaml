@@ -4,13 +4,10 @@
 $id: http://devicetree.org/schemas/sound/linux,bt-sco.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Bluetooth SCO Audio Codec
+title: Bluetooth SCO Audio Codec Device Tree Bindings
 
 maintainers:
   - Mark Brown <broonie@kernel.org>
-
-allOf:
-  - $ref: dai-common.yaml#
 
 properties:
   '#sound-dai-cells':
@@ -29,7 +26,7 @@ required:
   - '#sound-dai-cells'
   - compatible
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

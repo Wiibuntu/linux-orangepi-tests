@@ -62,6 +62,7 @@ static struct ctl_table nf_ct_frag6_sysctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_doulongvec_minmax,
 	},
+	{ }
 };
 
 static int nf_ct_frag6_sysctl_register(struct net *net)
@@ -85,9 +86,9 @@ static int nf_ct_frag6_sysctl_register(struct net *net)
 	table[1].extra2	= &nf_frag->fqdir->high_thresh;
 	table[2].data	= &nf_frag->fqdir->high_thresh;
 	table[2].extra1	= &nf_frag->fqdir->low_thresh;
+	table[2].extra2	= &nf_frag->fqdir->high_thresh;
 
-	hdr = register_net_sysctl_sz(net, "net/netfilter", table,
-				     ARRAY_SIZE(nf_ct_frag6_sysctl_table));
+	hdr = register_net_sysctl(net, "net/netfilter", table);
 	if (hdr == NULL)
 		goto err_reg;
 
@@ -104,7 +105,7 @@ err_alloc:
 static void __net_exit nf_ct_frags6_sysctl_unregister(struct net *net)
 {
 	struct nft_ct_frag6_pernet *nf_frag = nf_frag_pernet(net);
-	const struct ctl_table *table;
+	struct ctl_table *table;
 
 	table = nf_frag->nf_frag_frags_hdr->ctl_table_arg;
 	unregister_net_sysctl_table(nf_frag->nf_frag_frags_hdr);
@@ -153,10 +154,6 @@ static struct frag_queue *fq_find(struct net *net, __be32 id, u32 user,
 		.iif = iif,
 	};
 	struct inet_frag_queue *q;
-
-	if (!(ipv6_addr_type(&hdr->daddr) & (IPV6_ADDR_MULTICAST |
-					    IPV6_ADDR_LINKLOCAL)))
-		key.iif = 0;
 
 	q = inet_frag_find(nf_frag->fqdir, &key);
 	if (!q)
@@ -257,7 +254,7 @@ static int nf_ct_frag6_queue(struct frag_queue *fq, struct sk_buff *skb,
 	if (err) {
 		if (err == IPFRAG_DUP) {
 			/* No error for duplicates, pretend they got queued. */
-			kfree_skb_reason(skb, SKB_DROP_REASON_DUP_FRAG);
+			kfree_skb(skb);
 			return -EINPROGRESS;
 		}
 		goto insert_error;
@@ -267,7 +264,6 @@ static int nf_ct_frag6_queue(struct frag_queue *fq, struct sk_buff *skb,
 		fq->iif = dev->ifindex;
 
 	fq->q.stamp = skb->tstamp;
-	fq->q.tstamp_type = skb->tstamp_type;
 	fq->q.meat += skb->len;
 	fq->ecn |= ecn;
 	if (payload_len > fq->q.max_size)
@@ -297,7 +293,6 @@ static int nf_ct_frag6_queue(struct frag_queue *fq, struct sk_buff *skb,
 	}
 
 	skb_dst_drop(skb);
-	skb_orphan(skb);
 	return -EINPROGRESS;
 
 insert_error:
@@ -331,9 +326,9 @@ static int nf_ct_frag6_reasm(struct frag_queue *fq, struct sk_buff *skb,
 	if (!reasm_data)
 		goto err;
 
-	payload_len = -skb_network_offset(skb) -
+	payload_len = ((skb->data - skb_network_header(skb)) -
 		       sizeof(struct ipv6hdr) + fq->q.len -
-		       sizeof(struct frag_hdr);
+		       sizeof(struct frag_hdr));
 	if (payload_len > IPV6_MAXPLEN) {
 		net_dbg_ratelimited("nf_ct_frag6_reasm: payload len = %d\n",
 				    payload_len);
@@ -473,6 +468,7 @@ int nf_ct_frag6_gather(struct net *net, struct sk_buff *skb, u32 user)
 	hdr = ipv6_hdr(skb);
 	fhdr = (struct frag_hdr *)skb_transport_header(skb);
 
+	skb_orphan(skb);
 	fq = fq_find(net, fhdr->identification, user, hdr,
 		     skb->dev ? skb->dev->ifindex : 0);
 	if (fq == NULL) {

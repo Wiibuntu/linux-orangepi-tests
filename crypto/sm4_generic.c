@@ -7,14 +7,14 @@
  * All rights reserved.
  */
 
-#include <crypto/algapi.h>
 #include <crypto/sm4.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/errno.h>
+#include <linux/crypto.h>
 #include <asm/byteorder.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /**
  * sm4_setkey - Set the SM4 key.

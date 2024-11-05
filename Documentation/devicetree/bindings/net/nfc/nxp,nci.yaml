@@ -7,16 +7,15 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: NXP Semiconductors NCI NFC controller
 
 maintainers:
-  - Krzysztof Kozlowski <krzk@kernel.org>
+  - Charles Gorand <charles.gorand@effinnov.com>
+  - Krzysztof Kozlowski <krzysztof.kozlowski@canonical.com>
 
 properties:
   compatible:
     oneOf:
       - const: nxp,nxp-nci-i2c
       - items:
-          - enum:
-              - nxp,nq310
-              - nxp,pn547
+          - const: nxp,pn547
           - const: nxp,nxp-nci-i2c
 
   enable-gpios:

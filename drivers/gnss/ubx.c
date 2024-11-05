@@ -7,7 +7,6 @@
 
 #include <linux/errno.h>
 #include <linux/gnss.h>
-#include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -18,6 +17,7 @@
 #include "serial.h"
 
 struct ubx_data {
+	struct regulator *v_bckp;
 	struct regulator *vcc;
 };
 
@@ -33,10 +33,45 @@ static int ubx_set_active(struct gnss_serial *gserial)
 	return 0;
 }
 
+// RXM-PMREQ
+static const u8 ubx_suspend_packet[] = {
+	0xb5, 0x62, // 'ub'
+	0x02, 0x41, // message class and id
+	0x08, 0x00, // message length
+	0x00, 0x00, 0x00, 0x00, // duration (0 == infinite)
+	0x02, 0x00, 0x00, 0x00, // flags (backup)
+	0x4d, 0x3b, // checksum
+};
+
 static int ubx_set_standby(struct gnss_serial *gserial)
 {
 	struct ubx_data *data = gnss_serial_get_drvdata(gserial);
 	int ret;
+
+#if 0
+	struct serdev_device *serdev = gserial->serdev;
+
+	// we can't know what state the device is in, so first make sure
+	// it's woken up by writing a zero byte to it and then suspend it
+	// for sure
+
+	ret = serdev_device_write(serdev, "", 1, MAX_SCHEDULE_TIMEOUT);
+	if (ret < 0)
+		return ret;
+
+	serdev_device_wait_until_sent(serdev, 0);
+
+	// wait for wakeup
+	mdelay(100);
+
+	ret = serdev_device_write(serdev, ubx_suspend_packet,
+				  sizeof(ubx_suspend_packet),
+				  MAX_SCHEDULE_TIMEOUT);
+	if (ret < 0 || ret < sizeof(ubx_suspend_packet))
+		return ret;
+
+	serdev_device_wait_until_sent(serdev, 0);
+#endif
 
 	ret = regulator_disable(data->vcc);
 	if (ret)
@@ -66,7 +101,6 @@ static const struct gnss_serial_ops ubx_gserial_ops = {
 static int ubx_probe(struct serdev_device *serdev)
 {
 	struct gnss_serial *gserial;
-	struct gpio_desc *reset;
 	struct ubx_data *data;
 	int ret;
 
@@ -88,23 +122,30 @@ static int ubx_probe(struct serdev_device *serdev)
 		goto err_free_gserial;
 	}
 
-	ret = devm_regulator_get_enable_optional(&serdev->dev, "v-bckp");
-	if (ret < 0 && ret != -ENODEV)
-		goto err_free_gserial;
+	data->v_bckp = devm_regulator_get_optional(&serdev->dev, "v-bckp");
+	if (IS_ERR(data->v_bckp)) {
+		ret = PTR_ERR(data->v_bckp);
+		if (ret == -ENODEV)
+			data->v_bckp = NULL;
+		else
+			goto err_free_gserial;
+	}
 
-	/* Deassert reset */
-	reset = devm_gpiod_get_optional(&serdev->dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(reset)) {
-		ret = PTR_ERR(reset);
-		goto err_free_gserial;
+	if (data->v_bckp) {
+		ret = regulator_enable(data->v_bckp);
+		if (ret)
+			goto err_free_gserial;
 	}
 
 	ret = gnss_serial_register(gserial);
 	if (ret)
-		goto err_free_gserial;
+		goto err_disable_v_bckp;
 
 	return 0;
 
+err_disable_v_bckp:
+	if (data->v_bckp)
+		regulator_disable(data->v_bckp);
 err_free_gserial:
 	gnss_serial_free(gserial);
 
@@ -114,10 +155,13 @@ err_free_gserial:
 static void ubx_remove(struct serdev_device *serdev)
 {
 	struct gnss_serial *gserial = serdev_device_get_drvdata(serdev);
+	struct ubx_data *data = gnss_serial_get_drvdata(gserial);
 
 	gnss_serial_deregister(gserial);
+	if (data->v_bckp)
+		regulator_disable(data->v_bckp);
 	gnss_serial_free(gserial);
-}
+};
 
 #ifdef CONFIG_OF
 static const struct of_device_id ubx_of_match[] = {

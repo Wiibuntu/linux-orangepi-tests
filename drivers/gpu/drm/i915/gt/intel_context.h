@@ -14,7 +14,6 @@
 #include "i915_drv.h"
 #include "intel_context_types.h"
 #include "intel_engine_types.h"
-#include "intel_gt_pm.h"
 #include "intel_ring_types.h"
 #include "intel_timeline_types.h"
 #include "i915_trace.h"
@@ -25,8 +24,6 @@
 		     ce__->timeline->fence_context,			\
 		     ##__VA_ARGS__);					\
 } while (0)
-
-#define INTEL_CONTEXT_BANNED_PREEMPT_TIMEOUT_MS (1)
 
 struct i915_gem_ww_ctx;
 
@@ -97,7 +94,7 @@ void intel_context_bind_parent_child(struct intel_context *parent,
 
 /**
  * intel_context_lock_pinned - Stablises the 'pinned' status of the HW context
- * @ce: the context
+ * @ce - the context
  *
  * Acquire a lock on the pinned status of the HW context, such that the context
  * can neither be bound to the GPU or unbound whilst the lock is held, i.e.
@@ -111,7 +108,7 @@ static inline int intel_context_lock_pinned(struct intel_context *ce)
 
 /**
  * intel_context_is_pinned - Reports the 'pinned' status
- * @ce: the context
+ * @ce - the context
  *
  * While in use by the GPU, the context, along with its ring and page
  * tables is pinned into memory and the GTT.
@@ -133,7 +130,7 @@ static inline void intel_context_cancel_request(struct intel_context *ce,
 
 /**
  * intel_context_unlock_pinned - Releases the earlier locking of 'pinned' status
- * @ce: the context
+ * @ce - the context
  *
  * Releases the lock earlier acquired by intel_context_unlock_pinned().
  */
@@ -208,17 +205,13 @@ void intel_context_exit_engine(struct intel_context *ce);
 static inline void intel_context_enter(struct intel_context *ce)
 {
 	lockdep_assert_held(&ce->timeline->mutex);
-	if (ce->active_count++)
-		return;
-
-	ce->ops->enter(ce);
-	ce->wakeref = intel_gt_pm_get(ce->vm->gt);
+	if (!ce->active_count++)
+		ce->ops->enter(ce);
 }
 
 static inline void intel_context_mark_active(struct intel_context *ce)
 {
-	lockdep_assert(lockdep_is_held(&ce->timeline->mutex) ||
-		       test_bit(CONTEXT_IS_PARKING, &ce->flags));
+	lockdep_assert_held(&ce->timeline->mutex);
 	++ce->active_count;
 }
 
@@ -226,11 +219,8 @@ static inline void intel_context_exit(struct intel_context *ce)
 {
 	lockdep_assert_held(&ce->timeline->mutex);
 	GEM_BUG_ON(!ce->active_count);
-	if (--ce->active_count)
-		return;
-
-	intel_gt_pm_put_async(ce->vm->gt, ce->wakeref);
-	ce->ops->exit(ce);
+	if (!--ce->active_count)
+		ce->ops->exit(ce);
 }
 
 static inline struct intel_context *intel_context_get(struct intel_context *ce)
@@ -275,19 +265,12 @@ int intel_context_prepare_remote_request(struct intel_context *ce,
 
 struct i915_request *intel_context_create_request(struct intel_context *ce);
 
-struct i915_request *intel_context_get_active_request(struct intel_context *ce);
+struct i915_request *
+intel_context_find_active_request(struct intel_context *ce);
 
 static inline bool intel_context_is_barrier(const struct intel_context *ce)
 {
 	return test_bit(CONTEXT_BARRIER_BIT, &ce->flags);
-}
-
-static inline void intel_context_close(struct intel_context *ce)
-{
-	set_bit(CONTEXT_CLOSED_BIT, &ce->flags);
-
-	if (ce->ops->close)
-		ce->ops->close(ce);
 }
 
 static inline bool intel_context_is_closed(const struct intel_context *ce)
@@ -325,25 +308,17 @@ static inline bool intel_context_set_banned(struct intel_context *ce)
 	return test_and_set_bit(CONTEXT_BANNED, &ce->flags);
 }
 
-bool intel_context_ban(struct intel_context *ce, struct i915_request *rq);
-
-static inline bool intel_context_is_schedulable(const struct intel_context *ce)
+static inline bool intel_context_ban(struct intel_context *ce,
+				     struct i915_request *rq)
 {
-	return !test_bit(CONTEXT_EXITING, &ce->flags) &&
-	       !test_bit(CONTEXT_BANNED, &ce->flags);
-}
+	bool ret = intel_context_set_banned(ce);
 
-static inline bool intel_context_is_exiting(const struct intel_context *ce)
-{
-	return test_bit(CONTEXT_EXITING, &ce->flags);
-}
+	trace_intel_context_ban(ce);
+	if (ce->ops->ban)
+		ce->ops->ban(ce, rq);
 
-static inline bool intel_context_set_exiting(struct intel_context *ce)
-{
-	return test_and_set_bit(CONTEXT_EXITING, &ce->flags);
+	return ret;
 }
-
-bool intel_context_revoke(struct intel_context *ce);
 
 static inline bool
 intel_context_force_single_submission(const struct intel_context *ce)
@@ -375,35 +350,18 @@ intel_context_clear_nopreempt(struct intel_context *ce)
 	clear_bit(CONTEXT_NOPREEMPT, &ce->flags);
 }
 
-#if IS_ENABLED(CONFIG_DRM_I915_REPLAY_GPU_HANGS_API)
-static inline bool intel_context_has_own_state(const struct intel_context *ce)
+static inline u64 intel_context_get_total_runtime_ns(struct intel_context *ce)
 {
-	return test_bit(CONTEXT_OWN_STATE, &ce->flags);
+	const u32 period = ce->engine->gt->clock_period_ns;
+
+	return READ_ONCE(ce->runtime.total) * period;
 }
 
-static inline bool intel_context_set_own_state(struct intel_context *ce)
+static inline u64 intel_context_get_avg_runtime_ns(struct intel_context *ce)
 {
-	return test_and_set_bit(CONTEXT_OWN_STATE, &ce->flags);
-}
-#else
-static inline bool intel_context_has_own_state(const struct intel_context *ce)
-{
-	return false;
-}
+	const u32 period = ce->engine->gt->clock_period_ns;
 
-static inline bool intel_context_set_own_state(struct intel_context *ce)
-{
-	return true;
-}
-#endif
-
-u64 intel_context_get_total_runtime_ns(struct intel_context *ce);
-u64 intel_context_get_avg_runtime_ns(struct intel_context *ce);
-
-static inline u64 intel_context_clock(void)
-{
-	/* As we mix CS cycles with CPU clocks, use the raw monotonic clock. */
-	return ktime_get_raw_fast_ns();
+	return mul_u32_u32(ewma_runtime_read(&ce->runtime.avg), period);
 }
 
 #endif /* __INTEL_CONTEXT_H__ */

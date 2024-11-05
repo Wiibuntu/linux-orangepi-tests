@@ -11,6 +11,7 @@
 #include <linux/kernel.h>
 #include <linux/ktime.h>
 #include <linux/pm_domain.h>
+#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset-controller.h>
@@ -46,7 +47,6 @@
 #define RETAIN_MEM		BIT(14)
 #define RETAIN_PERIPH		BIT(13)
 
-#define STATUS_POLL_TIMEOUT_US	1500
 #define TIMEOUT_US		500
 
 #define domain_to_gdsc(domain) container_of(domain, struct gdsc, pd)
@@ -55,6 +55,22 @@ enum gdsc_status {
 	GDSC_OFF,
 	GDSC_ON
 };
+
+static int gdsc_pm_runtime_get(struct gdsc *sc)
+{
+	if (!sc->dev)
+		return 0;
+
+	return pm_runtime_resume_and_get(sc->dev);
+}
+
+static int gdsc_pm_runtime_put(struct gdsc *sc)
+{
+	if (!sc->dev)
+		return 0;
+
+	return pm_runtime_put_sync(sc->dev);
+}
 
 /* Returns 1 if GDSC status is status, 0 if not, and < 0 on error */
 static int gdsc_check_status(struct gdsc *sc, enum gdsc_status status)
@@ -108,7 +124,7 @@ static int gdsc_poll_status(struct gdsc *sc, enum gdsc_status status)
 	do {
 		if (gdsc_check_status(sc, status))
 			return 0;
-	} while (ktime_us_delta(ktime_get(), start) < STATUS_POLL_TIMEOUT_US);
+	} while (ktime_us_delta(ktime_get(), start) < TIMEOUT_US);
 
 	if (gdsc_check_status(sc, status))
 		return 0;
@@ -116,30 +132,10 @@ static int gdsc_poll_status(struct gdsc *sc, enum gdsc_status status)
 	return -ETIMEDOUT;
 }
 
-static int gdsc_update_collapse_bit(struct gdsc *sc, bool val)
-{
-	u32 reg, mask;
-	int ret;
-
-	if (sc->collapse_mask) {
-		reg = sc->collapse_ctrl;
-		mask = sc->collapse_mask;
-	} else {
-		reg = sc->gdscr;
-		mask = SW_COLLAPSE_MASK;
-	}
-
-	ret = regmap_update_bits(sc->regmap, reg, mask, val ? mask : 0);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-
-static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
-		bool wait)
+static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status)
 {
 	int ret;
+	u32 val = (status == GDSC_ON) ? 0 : SW_COLLAPSE_MASK;
 
 	if (status == GDSC_ON && sc->rsupply) {
 		ret = regulator_enable(sc->rsupply);
@@ -147,10 +143,12 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
 			return ret;
 	}
 
-	ret = gdsc_update_collapse_bit(sc, status == GDSC_OFF);
+	ret = regmap_update_bits(sc->regmap, sc->gdscr, SW_COLLAPSE_MASK, val);
+	if (ret)
+		return ret;
 
 	/* If disabling votable gdscs, don't poll on status */
-	if ((sc->flags & VOTABLE) && status == GDSC_OFF && !wait) {
+	if ((sc->flags & VOTABLE) && status == GDSC_OFF) {
 		/*
 		 * Add a short delay here to ensure that an enable
 		 * right after it was disabled does not put it in an
@@ -256,9 +254,8 @@ static void gdsc_retain_ff_on(struct gdsc *sc)
 	regmap_update_bits(sc->regmap, sc->gdscr, mask, mask);
 }
 
-static int gdsc_enable(struct generic_pm_domain *domain)
+static int _gdsc_enable(struct gdsc *sc)
 {
-	struct gdsc *sc = domain_to_gdsc(domain);
 	int ret;
 
 	if (sc->pwrsts == PWRSTS_ON)
@@ -276,7 +273,7 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 		gdsc_deassert_clamp_io(sc);
 	}
 
-	ret = gdsc_toggle_logic(sc, GDSC_ON, false);
+	ret = gdsc_toggle_logic(sc, GDSC_ON);
 	if (ret)
 		return ret;
 
@@ -314,9 +311,20 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 	return 0;
 }
 
-static int gdsc_disable(struct generic_pm_domain *domain)
+static int gdsc_enable(struct generic_pm_domain *domain)
 {
 	struct gdsc *sc = domain_to_gdsc(domain);
+	int ret;
+
+	ret = gdsc_pm_runtime_get(sc);
+	if (ret)
+		return ret;
+
+	return _gdsc_enable(sc);
+}
+
+static int _gdsc_disable(struct gdsc *sc)
+{
 	int ret;
 
 	if (sc->pwrsts == PWRSTS_ON)
@@ -343,17 +351,7 @@ static int gdsc_disable(struct generic_pm_domain *domain)
 	if (sc->pwrsts & PWRSTS_OFF)
 		gdsc_clear_mem_on(sc);
 
-	/*
-	 * If the GDSC supports only a Retention state, apart from ON,
-	 * leave it in ON state.
-	 * There is no SW control to transition the GDSC into
-	 * Retention state. This happens in HW when the parent
-	 * domain goes down to a Low power state
-	 */
-	if (sc->pwrsts == PWRSTS_RET_ON)
-		return 0;
-
-	ret = gdsc_toggle_logic(sc, GDSC_OFF, domain->synced_poweroff);
+	ret = gdsc_toggle_logic(sc, GDSC_OFF);
 	if (ret)
 		return ret;
 
@@ -363,41 +361,16 @@ static int gdsc_disable(struct generic_pm_domain *domain)
 	return 0;
 }
 
-static int gdsc_set_hwmode(struct generic_pm_domain *domain, struct device *dev, bool mode)
+static int gdsc_disable(struct generic_pm_domain *domain)
 {
 	struct gdsc *sc = domain_to_gdsc(domain);
 	int ret;
 
-	ret = gdsc_hwctrl(sc, mode);
-	if (ret)
-		return ret;
+	ret = _gdsc_disable(sc);
 
-	/*
-	 * Wait for the GDSC to go through a power down and
-	 * up cycle. If we poll the status register before the
-	 * power cycle is finished we might read incorrect values.
-	 */
-	udelay(1);
+	gdsc_pm_runtime_put(sc);
 
-	/*
-	 * When the GDSC is switched to HW mode, HW can disable the GDSC.
-	 * When the GDSC is switched back to SW mode, the GDSC will be enabled
-	 * again, hence we need to poll for GDSC to complete the power up.
-	 */
-	if (!mode)
-		return gdsc_poll_status(sc, GDSC_ON);
-
-	return 0;
-}
-
-static bool gdsc_get_hwmode(struct generic_pm_domain *domain, struct device *dev)
-{
-	struct gdsc *sc = domain_to_gdsc(domain);
-	u32 val;
-
-	regmap_read(sc->regmap, sc->gdscr, &val);
-
-	return !!(val & HW_CONTROL_MASK);
+	return ret;
 }
 
 static int gdsc_init(struct gdsc *sc)
@@ -430,7 +403,7 @@ static int gdsc_init(struct gdsc *sc)
 
 	/* Force gdsc ON if only ON state is supported */
 	if (sc->pwrsts == PWRSTS_ON) {
-		ret = gdsc_toggle_logic(sc, GDSC_ON, false);
+		ret = gdsc_toggle_logic(sc, GDSC_ON);
 		if (ret)
 			return ret;
 	}
@@ -452,16 +425,17 @@ static int gdsc_init(struct gdsc *sc)
 		 * If a Votable GDSC is ON, make sure we have a Vote.
 		 */
 		if (sc->flags & VOTABLE) {
-			ret = gdsc_update_collapse_bit(sc, false);
+			ret = regmap_update_bits(sc->regmap, sc->gdscr,
+						 SW_COLLAPSE_MASK, val);
 			if (ret)
-				goto err_disable_supply;
+				return ret;
 		}
 
 		/* Turn on HW trigger mode if supported */
 		if (sc->flags & HW_CTRL) {
 			ret = gdsc_hwctrl(sc, true);
 			if (ret < 0)
-				goto err_disable_supply;
+				return ret;
 		}
 
 		/*
@@ -488,22 +462,9 @@ static int gdsc_init(struct gdsc *sc)
 		sc->pd.power_off = gdsc_disable;
 	if (!sc->pd.power_on)
 		sc->pd.power_on = gdsc_enable;
-	if (sc->flags & HW_CTRL_TRIGGER) {
-		sc->pd.set_hwmode_dev = gdsc_set_hwmode;
-		sc->pd.get_hwmode_dev = gdsc_get_hwmode;
-	}
-
-	ret = pm_genpd_init(&sc->pd, NULL, !on);
-	if (ret)
-		goto err_disable_supply;
+	pm_genpd_init(&sc->pd, NULL, !on);
 
 	return 0;
-
-err_disable_supply:
-	if (on && sc->rsupply)
-		regulator_disable(sc->rsupply);
-
-	return ret;
 }
 
 int gdsc_register(struct gdsc_desc *desc,
@@ -528,20 +489,17 @@ int gdsc_register(struct gdsc_desc *desc,
 		if (!scs[i] || !scs[i]->supply)
 			continue;
 
-		scs[i]->rsupply = devm_regulator_get_optional(dev, scs[i]->supply);
-		if (IS_ERR(scs[i]->rsupply)) {
-			ret = PTR_ERR(scs[i]->rsupply);
-			if (ret != -ENODEV)
-				return ret;
-
-			scs[i]->rsupply = NULL;
-		}
+		scs[i]->rsupply = devm_regulator_get(dev, scs[i]->supply);
+		if (IS_ERR(scs[i]->rsupply))
+			return PTR_ERR(scs[i]->rsupply);
 	}
 
 	data->num_domains = num;
 	for (i = 0; i < num; i++) {
 		if (!scs[i])
 			continue;
+		if (pm_runtime_enabled(dev))
+			scs[i]->dev = dev;
 		scs[i]->regmap = regmap;
 		scs[i]->rcdev = rcdev;
 		ret = gdsc_init(scs[i]);
@@ -603,15 +561,7 @@ void gdsc_unregister(struct gdsc_desc *desc)
  */
 int gdsc_gx_do_nothing_enable(struct generic_pm_domain *domain)
 {
-	struct gdsc *sc = domain_to_gdsc(domain);
-	int ret = 0;
-
-	/* Enable the parent supply, when controlled through the regulator framework. */
-	if (sc->rsupply)
-		ret = regulator_enable(sc->rsupply);
-
-	/* Do nothing with the GDSC itself */
-
-	return ret;
+	/* Do nothing but give genpd the impression that we were successful */
+	return 0;
 }
 EXPORT_SYMBOL_GPL(gdsc_gx_do_nothing_enable);

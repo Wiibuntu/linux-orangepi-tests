@@ -17,6 +17,9 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/msi.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+#include <linux/of_platform.h>
 #include <linux/of_pci.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
@@ -292,7 +295,7 @@ int mobiveil_host_init(struct mobiveil_pcie *pcie, bool reinit)
 	/* fixup for PCIe class register */
 	value = mobiveil_csr_readl(pcie, PAB_INTP_AXI_PIO_CLASS);
 	value &= 0xff;
-	value |= PCI_CLASS_BRIDGE_PCI_NORMAL << 8;
+	value |= (PCI_CLASS_BRIDGE_PCI << 16);
 	mobiveil_csr_writel(pcie, value, PAB_INTP_AXI_PIO_CLASS);
 
 	return 0;
@@ -360,8 +363,8 @@ static struct irq_chip mobiveil_msi_irq_chip = {
 };
 
 static struct msi_domain_info mobiveil_msi_domain_info = {
-	.flags	= MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
-		  MSI_FLAG_NO_AFFINITY | MSI_FLAG_PCI_MSIX,
+	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
+		   MSI_FLAG_PCI_MSIX),
 	.chip	= &mobiveil_msi_irq_chip,
 };
 
@@ -378,9 +381,16 @@ static void mobiveil_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 		(int)data->hwirq, msg->address_hi, msg->address_lo);
 }
 
+static int mobiveil_msi_set_affinity(struct irq_data *irq_data,
+				     const struct cpumask *mask, bool force)
+{
+	return -EINVAL;
+}
+
 static struct irq_chip mobiveil_msi_bottom_irq_chip = {
 	.name			= "Mobiveil MSI",
 	.irq_compose_msi_msg	= mobiveil_compose_msi_msg,
+	.irq_set_affinity	= mobiveil_msi_set_affinity,
 };
 
 static int mobiveil_irq_msi_domain_alloc(struct irq_domain *domain,
@@ -532,7 +542,7 @@ static bool mobiveil_pcie_is_bridge(struct mobiveil_pcie *pcie)
 	u32 header_type;
 
 	header_type = mobiveil_csr_readb(pcie, PCI_HEADER_TYPE);
-	header_type &= PCI_HEADER_TYPE_MASK;
+	header_type &= 0x7f;
 
 	return header_type == PCI_HEADER_TYPE_BRIDGE;
 }

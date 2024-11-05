@@ -31,6 +31,8 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/io-mapping.h>
 #include <linux/mlx5/driver.h>
 #include "mlx5_core.h"
 
@@ -98,21 +100,19 @@ static struct mlx5_uars_page *alloc_uars_page(struct mlx5_core_dev *mdev,
 	int err = -ENOMEM;
 	phys_addr_t pfn;
 	int bfregs;
-	int node;
 	int i;
 
 	bfregs = uars_per_sys_page(mdev) * MLX5_BFREGS_PER_UAR;
-	node = mdev->priv.numa_node;
-	up = kzalloc_node(sizeof(*up), GFP_KERNEL, node);
+	up = kzalloc(sizeof(*up), GFP_KERNEL);
 	if (!up)
 		return ERR_PTR(err);
 
 	up->mdev = mdev;
-	up->reg_bitmap = bitmap_zalloc_node(bfregs, GFP_KERNEL, node);
+	up->reg_bitmap = bitmap_zalloc(bfregs, GFP_KERNEL);
 	if (!up->reg_bitmap)
 		goto error1;
 
-	up->fp_bitmap = bitmap_zalloc_node(bfregs, GFP_KERNEL, node);
+	up->fp_bitmap = bitmap_zalloc(bfregs, GFP_KERNEL);
 	if (!up->fp_bitmap)
 		goto error1;
 

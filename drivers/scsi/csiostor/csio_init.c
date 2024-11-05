@@ -38,6 +38,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/pci.h>
+#include <linux/aer.h>
 #include <linux/mm.h>
 #include <linux/notifier.h>
 #include <linux/kdebug.h>
@@ -521,8 +522,7 @@ static struct csio_hw *csio_hw_alloc(struct pci_dev *pdev)
 		goto err;
 
 	hw->pdev = pdev;
-	strscpy(hw->drv_version, CSIO_DRV_VERSION,
-		sizeof(hw->drv_version));
+	strncpy(hw->drv_version, CSIO_DRV_VERSION, 32);
 
 	/* memory pool/DMA pool allocation */
 	if (csio_resource_alloc(hw))
@@ -1185,6 +1185,9 @@ static struct pci_error_handlers csio_err_handler = {
 
 static struct pci_driver csio_pci_driver = {
 	.name		= KBUILD_MODNAME,
+	.driver		= {
+		.owner	= THIS_MODULE,
+	},
 	.id_table	= csio_pci_tbl,
 	.probe		= csio_probe_one,
 	.remove		= csio_remove_one,

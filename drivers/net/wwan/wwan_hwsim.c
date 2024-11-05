@@ -25,9 +25,7 @@ static int wwan_hwsim_devsnum = 2;
 module_param_named(devices, wwan_hwsim_devsnum, int, 0444);
 MODULE_PARM_DESC(devices, "Number of simulated devices");
 
-static const struct class wwan_hwsim_class = {
-	.name = "wwan_hwsim",
-};
+static struct class *wwan_hwsim_class;
 
 static struct dentry *wwan_hwsim_debugfs_topdir;
 static struct dentry *wwan_hwsim_debugfs_devcreate;
@@ -35,7 +33,6 @@ static struct dentry *wwan_hwsim_debugfs_devcreate;
 static DEFINE_SPINLOCK(wwan_hwsim_devs_lock);
 static LIST_HEAD(wwan_hwsim_devs);
 static unsigned int wwan_hwsim_dev_idx;
-static struct workqueue_struct *wwan_wq;
 
 struct wwan_hwsim_dev {
 	struct list_head list;
@@ -159,8 +156,8 @@ static int wwan_hwsim_port_tx(struct wwan_port *wport, struct sk_buff *in)
 			if ((i + 1) < in->len && in->data[i + 1] == '\n')
 				i++;
 			n = i - s + 1;
-			skb_put_data(out, &in->data[s], n);/* Echo */
-			skb_put_data(out, "\r\nOK\r\n", 6);
+			memcpy(skb_put(out, n), &in->data[s], n);/* Echo */
+			memcpy(skb_put(out, 6), "\r\nOK\r\n", 6);
 			s = i + 1;
 			port->pstate = AT_PARSER_WAIT_A;
 		} else if (port->pstate == AT_PARSER_SKIP_LINE) {
@@ -173,7 +170,7 @@ static int wwan_hwsim_port_tx(struct wwan_port *wport, struct sk_buff *in)
 	if (i > s) {
 		/* Echo the processed portion of a not yet completed command */
 		n = i - s;
-		skb_put_data(out, &in->data[s], n);
+		memcpy(skb_put(out, n), &in->data[s], n);
 	}
 
 	consume_skb(in);
@@ -207,7 +204,7 @@ static struct wwan_hwsim_port *wwan_hwsim_port_new(struct wwan_hwsim_dev *dev)
 
 	port->wwan = wwan_create_port(&dev->dev, WWAN_PORT_AT,
 				      &wwan_hwsim_port_ops,
-				      NULL, port);
+				      port);
 	if (IS_ERR(port->wwan)) {
 		err = PTR_ERR(port->wwan);
 		goto err_free_port;
@@ -279,7 +276,7 @@ static struct wwan_hwsim_dev *wwan_hwsim_dev_new(void)
 	spin_unlock(&wwan_hwsim_devs_lock);
 
 	dev->dev.release = wwan_hwsim_dev_release;
-	dev->dev.class = &wwan_hwsim_class;
+	dev->dev.class = wwan_hwsim_class;
 	dev_set_name(&dev->dev, "hwsim%u", dev->id);
 
 	spin_lock_init(&dev->ports_lock);
@@ -313,7 +310,7 @@ err_unreg_dev:
 	return ERR_PTR(err);
 
 err_free_dev:
-	put_device(&dev->dev);
+	kfree(dev);
 
 	return ERR_PTR(err);
 }
@@ -374,7 +371,7 @@ static ssize_t wwan_hwsim_debugfs_portdestroy_write(struct file *file,
 	 * waiting this callback to finish in the debugfs_remove() call. So,
 	 * use workqueue.
 	 */
-	queue_work(wwan_wq, &port->del_work);
+	schedule_work(&port->del_work);
 
 	return count;
 }
@@ -419,7 +416,7 @@ static ssize_t wwan_hwsim_debugfs_devdestroy_write(struct file *file,
 	 * waiting this callback to finish in the debugfs_remove() call. So,
 	 * use workqueue.
 	 */
-	queue_work(wwan_wq, &dev->del_work);
+	schedule_work(&dev->del_work);
 
 	return count;
 }
@@ -509,13 +506,9 @@ static int __init wwan_hwsim_init(void)
 	if (wwan_hwsim_devsnum < 0 || wwan_hwsim_devsnum > 128)
 		return -EINVAL;
 
-	wwan_wq = alloc_workqueue("wwan_wq", 0, 0);
-	if (!wwan_wq)
-		return -ENOMEM;
-
-	err = class_register(&wwan_hwsim_class);
-	if (err)
-		goto err_wq_destroy;
+	wwan_hwsim_class = class_create(THIS_MODULE, "wwan_hwsim");
+	if (IS_ERR(wwan_hwsim_class))
+		return PTR_ERR(wwan_hwsim_class);
 
 	wwan_hwsim_debugfs_topdir = debugfs_create_dir("wwan_hwsim", NULL);
 	wwan_hwsim_debugfs_devcreate =
@@ -530,13 +523,9 @@ static int __init wwan_hwsim_init(void)
 	return 0;
 
 err_clean_devs:
-	debugfs_remove(wwan_hwsim_debugfs_devcreate);	/* Avoid new devs */
 	wwan_hwsim_free_devs();
-	flush_workqueue(wwan_wq);	/* Wait deletion works completion */
 	debugfs_remove(wwan_hwsim_debugfs_topdir);
-	class_unregister(&wwan_hwsim_class);
-err_wq_destroy:
-	destroy_workqueue(wwan_wq);
+	class_destroy(wwan_hwsim_class);
 
 	return err;
 }
@@ -545,10 +534,9 @@ static void __exit wwan_hwsim_exit(void)
 {
 	debugfs_remove(wwan_hwsim_debugfs_devcreate);	/* Avoid new devs */
 	wwan_hwsim_free_devs();
-	flush_workqueue(wwan_wq);	/* Wait deletion works completion */
+	flush_scheduled_work();		/* Wait deletion works completion */
 	debugfs_remove(wwan_hwsim_debugfs_topdir);
-	class_unregister(&wwan_hwsim_class);
-	destroy_workqueue(wwan_wq);
+	class_destroy(wwan_hwsim_class);
 }
 
 module_init(wwan_hwsim_init);

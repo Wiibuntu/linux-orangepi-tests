@@ -1,6 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef _KERNEL_STATS_H
-#define _KERNEL_STATS_H
 
 #ifdef CONFIG_SCHEDSTATS
 
@@ -107,68 +105,41 @@ __schedstats_from_se(struct sched_entity *se)
 }
 
 #ifdef CONFIG_PSI
-void psi_task_change(struct task_struct *task, int clear, int set);
-void psi_task_switch(struct task_struct *prev, struct task_struct *next,
-		     bool sleep);
-#ifdef CONFIG_IRQ_TIME_ACCOUNTING
-void psi_account_irqtime(struct rq *rq, struct task_struct *curr, struct task_struct *prev);
-#else
-static inline void psi_account_irqtime(struct rq *rq, struct task_struct *curr,
-				       struct task_struct *prev) {}
-#endif /*CONFIG_IRQ_TIME_ACCOUNTING */
 /*
  * PSI tracks state that persists across sleeps, such as iowaits and
  * memory stalls. As a result, it has to distinguish between sleeps,
- * where a task's runnable state changes, and migrations, where a task
- * and its runnable state are being moved between CPUs and runqueues.
- *
- * A notable case is a task whose dequeue is delayed. PSI considers
- * those sleeping, but because they are still on the runqueue they can
- * go through migration requeues. In this case, *sleeping* states need
- * to be transferred.
+ * where a task's runnable state changes, and requeues, where a task
+ * and its state are being moved between CPUs and runqueues.
  */
-static inline void psi_enqueue(struct task_struct *p, bool migrate)
+static inline void psi_enqueue(struct task_struct *p, bool wakeup)
 {
-	int clear = 0, set = 0;
+	int clear = 0, set = TSK_RUNNING;
 
 	if (static_branch_likely(&psi_disabled))
 		return;
 
-	if (p->se.sched_delayed) {
-		/* CPU migration of "sleeping" task */
-		SCHED_WARN_ON(!migrate);
+	if (p->in_memstall)
+		set |= TSK_MEMSTALL_RUNNING;
+
+	if (!wakeup || p->sched_psi_wake_requeue) {
 		if (p->in_memstall)
 			set |= TSK_MEMSTALL;
-		if (p->in_iowait)
-			set |= TSK_IOWAIT;
-	} else if (migrate) {
-		/* CPU migration of runnable task */
-		set = TSK_RUNNING;
-		if (p->in_memstall)
-			set |= TSK_MEMSTALL | TSK_MEMSTALL_RUNNING;
+		if (p->sched_psi_wake_requeue)
+			p->sched_psi_wake_requeue = 0;
 	} else {
-		/* Wakeup of new or sleeping task */
 		if (p->in_iowait)
 			clear |= TSK_IOWAIT;
-		set = TSK_RUNNING;
-		if (p->in_memstall)
-			set |= TSK_MEMSTALL_RUNNING;
 	}
 
 	psi_task_change(p, clear, set);
 }
 
-static inline void psi_dequeue(struct task_struct *p, bool migrate)
+static inline void psi_dequeue(struct task_struct *p, bool sleep)
 {
+	int clear = TSK_RUNNING;
+
 	if (static_branch_likely(&psi_disabled))
 		return;
-
-	/*
-	 * When migrating a task to another CPU, clear all psi
-	 * state. The enqueue callback above will work it out.
-	 */
-	if (migrate)
-		psi_task_change(p, p->psi_flags, 0);
 
 	/*
 	 * A voluntary sleep is a dequeue followed by a task switch. To
@@ -176,6 +147,13 @@ static inline void psi_dequeue(struct task_struct *p, bool migrate)
 	 * TSK_RUNNING and TSK_IOWAIT for us when it moves TSK_ONCPU.
 	 * Do nothing here.
 	 */
+	if (sleep)
+		return;
+
+	if (p->in_memstall)
+		clear |= (TSK_MEMSTALL | TSK_MEMSTALL_RUNNING);
+
+	psi_task_change(p, clear, 0);
 }
 
 static inline void psi_ttwu_dequeue(struct task_struct *p)
@@ -187,12 +165,19 @@ static inline void psi_ttwu_dequeue(struct task_struct *p)
 	 * deregister its sleep-persistent psi states from the old
 	 * queue, and let psi_enqueue() know it has to requeue.
 	 */
-	if (unlikely(p->psi_flags)) {
+	if (unlikely(p->in_iowait || p->in_memstall)) {
 		struct rq_flags rf;
 		struct rq *rq;
+		int clear = 0;
+
+		if (p->in_iowait)
+			clear |= TSK_IOWAIT;
+		if (p->in_memstall)
+			clear |= TSK_MEMSTALL;
 
 		rq = __task_rq_lock(p, &rf);
-		psi_task_change(p, p->psi_flags, 0);
+		psi_task_change(p, clear, 0);
+		p->sched_psi_wake_requeue = 1;
 		__task_rq_unlock(rq, &rf);
 	}
 }
@@ -208,14 +193,12 @@ static inline void psi_sched_switch(struct task_struct *prev,
 }
 
 #else /* CONFIG_PSI */
-static inline void psi_enqueue(struct task_struct *p, bool migrate) {}
-static inline void psi_dequeue(struct task_struct *p, bool migrate) {}
+static inline void psi_enqueue(struct task_struct *p, bool wakeup) {}
+static inline void psi_dequeue(struct task_struct *p, bool sleep) {}
 static inline void psi_ttwu_dequeue(struct task_struct *p) {}
 static inline void psi_sched_switch(struct task_struct *prev,
 				    struct task_struct *next,
 				    bool sleep) {}
-static inline void psi_account_irqtime(struct rq *rq, struct task_struct *curr,
-				       struct task_struct *prev) {}
 #endif /* CONFIG_PSI */
 
 #ifdef CONFIG_SCHED_INFO
@@ -242,7 +225,7 @@ static inline void sched_info_dequeue(struct rq *rq, struct task_struct *t)
 /*
  * Called when a task finally hits the CPU.  We can now calculate how
  * long it was waiting to run.  We also note when it began so that we
- * can keep stats on how long its time-slice is.
+ * can keep stats on how long its timeslice is.
  */
 static void sched_info_arrive(struct rq *rq, struct task_struct *t)
 {
@@ -315,5 +298,3 @@ sched_info_switch(struct rq *rq, struct task_struct *prev, struct task_struct *n
 # define sched_info_dequeue(rq, t)	do { } while (0)
 # define sched_info_switch(rq, t, next)	do { } while (0)
 #endif /* CONFIG_SCHED_INFO */
-
-#endif /* _KERNEL_STATS_H */

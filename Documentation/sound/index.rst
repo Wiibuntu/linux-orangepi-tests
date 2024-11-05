@@ -1,8 +1,6 @@
-.. SPDX-License-Identifier: GPL-2.0
-
-=============================
-Sound Subsystem Documentation
-=============================
+===================================
+Linux Sound Subsystem Documentation
+===================================
 
 .. toctree::
    :maxdepth: 2
@@ -13,7 +11,6 @@ Sound Subsystem Documentation
    alsa-configuration
    hd-audio/index
    cards/index
-   utimers
 
 .. only::  subproject and html
 

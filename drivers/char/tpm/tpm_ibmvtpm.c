@@ -681,7 +681,6 @@ static int tpm_ibmvtpm_probe(struct vio_dev *vio_dev,
 	if (!wait_event_timeout(ibmvtpm->crq_queue.wq,
 				ibmvtpm->rtce_buf != NULL,
 				HZ)) {
-		rc = -ENODEV;
 		dev_err(dev, "CRQ response timed out\n");
 		goto init_irq_cleanup;
 	}
@@ -696,10 +695,6 @@ static int tpm_ibmvtpm_probe(struct vio_dev *vio_dev,
 
 	if (chip->flags & TPM_CHIP_FLAG_TPM2) {
 		rc = tpm2_get_cc_attrs_tbl(chip);
-		if (rc)
-			goto init_irq_cleanup;
-
-		rc = tpm2_sessions_init(chip);
 		if (rc)
 			goto init_irq_cleanup;
 	}

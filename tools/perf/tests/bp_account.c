@@ -16,7 +16,6 @@
 #include "tests.h"
 #include "debug.h"
 #include "event.h"
-#include "parse-events.h"
 #include "../perf-sys.h"
 #include "cloexec.h"
 
@@ -51,7 +50,7 @@ static int __event(bool is_x, void *addr, struct perf_event_attr *attr)
 	attr->config = 0;
 	attr->bp_type = is_x ? HW_BREAKPOINT_X : HW_BREAKPOINT_W;
 	attr->bp_addr = (unsigned long) addr;
-	attr->bp_len = is_x ? default_breakpoint_len() : sizeof(long);
+	attr->bp_len = sizeof(long);
 
 	attr->sample_period = 1;
 	attr->sample_type = PERF_SAMPLE_IP;
@@ -93,7 +92,6 @@ static int bp_accounting(int wp_cnt, int share)
 	attr_mod = attr;
 	attr_mod.bp_type = HW_BREAKPOINT_X;
 	attr_mod.bp_addr = (unsigned long) test_function;
-	attr_mod.bp_len = default_breakpoint_len();
 
 	ret = ioctl(fd[0], PERF_EVENT_IOC_MODIFY_ATTRIBUTES, &attr_mod);
 	TEST_ASSERT_VAL("failed to modify wp\n", ret == 0);
@@ -153,21 +151,11 @@ static int detect_ioctl(void)
 static int detect_share(int wp_cnt, int bp_cnt)
 {
 	struct perf_event_attr attr;
-	int i, *fd = NULL, ret = -1;
-
-	if (wp_cnt + bp_cnt == 0)
-		return 0;
-
-	fd = malloc(sizeof(int) * (wp_cnt + bp_cnt));
-	if (!fd)
-		return -1;
+	int i, fd[wp_cnt + bp_cnt], ret;
 
 	for (i = 0; i < wp_cnt; i++) {
 		fd[i] = wp_event((void *)&the_var, &attr);
-		if (fd[i] == -1) {
-			pr_err("failed to create wp\n");
-			goto out;
-		}
+		TEST_ASSERT_VAL("failed to create wp\n", fd[i] != -1);
 	}
 
 	for (; i < (bp_cnt + wp_cnt); i++) {
@@ -178,11 +166,9 @@ static int detect_share(int wp_cnt, int bp_cnt)
 
 	ret = i != (bp_cnt + wp_cnt);
 
-out:
 	while (i--)
 		close(fd[i]);
 
-	free(fd);
 	return ret;
 }
 

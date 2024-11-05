@@ -19,7 +19,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -38,8 +37,8 @@
 #define IMX8QXP_ADR_ADC_FCTRL		0x30
 #define IMX8QXP_ADR_ADC_SWTRIG		0x34
 #define IMX8QXP_ADR_ADC_TCTRL(tid)	(0xc0 + (tid) * 4)
-#define IMX8QXP_ADR_ADC_CMDL(cid)	(0x100 + (cid) * 8)
-#define IMX8QXP_ADR_ADC_CMDH(cid)	(0x104 + (cid) * 8)
+#define IMX8QXP_ADR_ADC_CMDH(cid)	(0x100 + (cid) * 8)
+#define IMX8QXP_ADR_ADC_CMDL(cid)	(0x104 + (cid) * 8)
 #define IMX8QXP_ADR_ADC_RESFIFO		0x300
 #define IMX8QXP_ADR_ADC_TST		0xffc
 
@@ -86,8 +85,6 @@
 
 #define IMX8QXP_ADC_TIMEOUT		msecs_to_jiffies(100)
 
-#define IMX8QXP_ADC_MAX_FIFO_SIZE		16
-
 struct imx8qxp_adc {
 	struct device *dev;
 	void __iomem *regs;
@@ -97,7 +94,6 @@ struct imx8qxp_adc {
 	/* Serialise ADC channel reads */
 	struct mutex lock;
 	struct completion completion;
-	u32 fifo[IMX8QXP_ADC_MAX_FIFO_SIZE];
 };
 
 #define IMX8QXP_ADC_CHAN(_idx) {				\
@@ -205,7 +201,7 @@ static int imx8qxp_adc_read_raw(struct iio_dev *indio_dev,
 	struct imx8qxp_adc *adc = iio_priv(indio_dev);
 	struct device *dev = adc->dev;
 
-	u32 ctrl;
+	u32 ctrl, vref_uv;
 	long ret;
 
 	switch (mask) {
@@ -241,16 +237,15 @@ static int imx8qxp_adc_read_raw(struct iio_dev *indio_dev,
 			return ret;
 		}
 
-		*val = adc->fifo[0];
+		*val = FIELD_GET(IMX8QXP_ADC_RESFIFO_VAL_MASK,
+				 readl(adc->regs + IMX8QXP_ADR_ADC_RESFIFO));
 
 		mutex_unlock(&adc->lock);
 		return IIO_VAL_INT;
 
 	case IIO_CHAN_INFO_SCALE:
-		ret = regulator_get_voltage(adc->vref);
-		if (ret < 0)
-			return ret;
-		*val = ret / 1000;
+		vref_uv = regulator_get_voltage(adc->vref);
+		*val = vref_uv / 1000;
 		*val2 = 12;
 		return IIO_VAL_FRACTIONAL_LOG2;
 
@@ -267,14 +262,9 @@ static irqreturn_t imx8qxp_adc_isr(int irq, void *dev_id)
 {
 	struct imx8qxp_adc *adc = dev_id;
 	u32 fifo_count;
-	int i;
 
 	fifo_count = FIELD_GET(IMX8QXP_ADC_FCTRL_FCOUNT_MASK,
 			       readl(adc->regs + IMX8QXP_ADR_ADC_FCTRL));
-
-	for (i = 0; i < fifo_count; i++)
-		adc->fifo[i] = FIELD_GET(IMX8QXP_ADC_RESFIFO_VAL_MASK,
-				readl_relaxed(adc->regs + IMX8QXP_ADR_ADC_RESFIFO));
 
 	if (fifo_count)
 		complete(&adc->completion);
@@ -404,7 +394,7 @@ error_regulator_disable:
 	return ret;
 }
 
-static void imx8qxp_adc_remove(struct platform_device *pdev)
+static int imx8qxp_adc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct imx8qxp_adc *adc = iio_priv(indio_dev);
@@ -422,9 +412,11 @@ static void imx8qxp_adc_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(dev);
 	pm_runtime_put_noidle(dev);
+
+	return 0;
 }
 
-static int imx8qxp_adc_runtime_suspend(struct device *dev)
+static __maybe_unused int imx8qxp_adc_runtime_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct imx8qxp_adc *adc = iio_priv(indio_dev);
@@ -438,7 +430,7 @@ static int imx8qxp_adc_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int imx8qxp_adc_runtime_resume(struct device *dev)
+static __maybe_unused int imx8qxp_adc_runtime_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct imx8qxp_adc *adc = iio_priv(indio_dev);
@@ -475,9 +467,10 @@ err_disable_reg:
 	return ret;
 }
 
-static DEFINE_RUNTIME_DEV_PM_OPS(imx8qxp_adc_pm_ops,
-				 imx8qxp_adc_runtime_suspend,
-				 imx8qxp_adc_runtime_resume, NULL);
+static const struct dev_pm_ops imx8qxp_adc_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(imx8qxp_adc_runtime_suspend, imx8qxp_adc_runtime_resume, NULL)
+};
 
 static const struct of_device_id imx8qxp_adc_match[] = {
 	{ .compatible = "nxp,imx8qxp-adc", },
@@ -487,11 +480,11 @@ MODULE_DEVICE_TABLE(of, imx8qxp_adc_match);
 
 static struct platform_driver imx8qxp_adc_driver = {
 	.probe		= imx8qxp_adc_probe,
-	.remove_new	= imx8qxp_adc_remove,
+	.remove		= imx8qxp_adc_remove,
 	.driver		= {
 		.name	= ADC_DRIVER_NAME,
 		.of_match_table = imx8qxp_adc_match,
-		.pm	= pm_ptr(&imx8qxp_adc_pm_ops),
+		.pm	= &imx8qxp_adc_pm_ops,
 	},
 };
 

@@ -147,8 +147,7 @@ void rfkill_destroy(struct rfkill *rfkill);
  * Prefer to use rfkill_set_hw_state if you don't need any special reason.
  */
 bool rfkill_set_hw_state_reason(struct rfkill *rfkill,
-				bool blocked,
-				enum rfkill_hard_block_reasons reason);
+				bool blocked, unsigned long reason);
 /**
  * rfkill_set_hw_state - Set the internal rfkill hardware block state
  * @rfkill: pointer to the rfkill class to modify.
@@ -231,13 +230,6 @@ void rfkill_set_states(struct rfkill *rfkill, bool sw, bool hw);
 bool rfkill_blocked(struct rfkill *rfkill);
 
 /**
- * rfkill_soft_blocked - Query soft rfkill block state
- *
- * @rfkill: rfkill struct to query
- */
-bool rfkill_soft_blocked(struct rfkill *rfkill);
-
-/**
  * rfkill_find_type - Helper for finding rfkill type by name
  * @name: the name of the type
  *
@@ -281,7 +273,7 @@ static inline void rfkill_destroy(struct rfkill *rfkill)
 
 static inline bool rfkill_set_hw_state_reason(struct rfkill *rfkill,
 					      bool blocked,
-					      enum rfkill_hard_block_reasons reason)
+					      unsigned long reason)
 {
 	return blocked;
 }
@@ -305,11 +297,6 @@ static inline void rfkill_set_states(struct rfkill *rfkill, bool sw, bool hw)
 }
 
 static inline bool rfkill_blocked(struct rfkill *rfkill)
-{
-	return false;
-}
-
-static inline bool rfkill_soft_blocked(struct rfkill *rfkill)
 {
 	return false;
 }

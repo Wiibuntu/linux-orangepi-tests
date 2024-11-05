@@ -10,7 +10,54 @@
 #include <linux/device.h>
 #include <linux/of.h>
 #include <linux/printk.h>
-#include <linux/slab.h>
+
+#include "clk.h"
+
+static int __set_clk_flags(struct device_node *node)
+{
+	struct of_phandle_args clkspec;
+	struct property *prop;
+	int i, index = 0, rc;
+	const __be32 *cur;
+	struct clk *clk;
+	u32 nr_cells;
+
+	rc = of_property_read_u32(node, "#clock-cells", &nr_cells);
+	if (rc < 0) {
+		pr_err("clk: missing #clock-cells property on %pOF\n", node);
+		return rc;
+	}
+
+	clkspec.np         = node;
+	clkspec.args_count = nr_cells;
+
+	of_property_for_each_u32(node, "protected-clocks", prop, cur, clkspec.args[0]) {
+		/* read the remainder of the clock specifier */
+		for (i = 1; i < nr_cells; ++i) {
+			cur = of_prop_next_u32(prop, cur, &clkspec.args[i]);
+			if (!cur) {
+				pr_err("clk: invalid value of protected-clocks"
+				       " property at %pOF\n", node);
+				return -EINVAL;
+			}
+		}
+		clk = of_clk_get_from_provider(&clkspec);
+		if (IS_ERR(clk)) {
+			if (PTR_ERR(clk) != -EPROBE_DEFER)
+				pr_err("clk: couldn't get protected clock"
+				       " %u for %pOF\n", index, node);
+			return PTR_ERR(clk);
+		}
+
+		rc = __clk_protect(clk);
+		if (rc < 0)
+			pr_warn("clk: failed to protect %s: %d\n",
+				__clk_get_name(clk), rc);
+		clk_put(clk);
+		index++;
+	}
+	return 0;
+}
 
 static int __set_clk_parents(struct device_node *node, bool clk_supplier)
 {
@@ -34,12 +81,9 @@ static int __set_clk_parents(struct device_node *node, bool clk_supplier)
 			else
 				return rc;
 		}
-		if (clkspec.np == node && !clk_supplier) {
-			of_node_put(clkspec.np);
+		if (clkspec.np == node && !clk_supplier)
 			return 0;
-		}
 		pclk = of_clk_get_from_provider(&clkspec);
-		of_node_put(clkspec.np);
 		if (IS_ERR(pclk)) {
 			if (PTR_ERR(pclk) != -EPROBE_DEFER)
 				pr_warn("clk: couldn't get parent clock %d for %pOF\n",
@@ -52,12 +96,10 @@ static int __set_clk_parents(struct device_node *node, bool clk_supplier)
 		if (rc < 0)
 			goto err;
 		if (clkspec.np == node && !clk_supplier) {
-			of_node_put(clkspec.np);
 			rc = 0;
 			goto err;
 		}
 		clk = of_clk_get_from_provider(&clkspec);
-		of_node_put(clkspec.np);
 		if (IS_ERR(clk)) {
 			if (PTR_ERR(clk) != -EPROBE_DEFER)
 				pr_warn("clk: couldn't get assigned clock %d for %pOF\n",
@@ -82,44 +124,13 @@ err:
 static int __set_clk_rates(struct device_node *node, bool clk_supplier)
 {
 	struct of_phandle_args clkspec;
-	int rc, count, count_64, index;
+	struct property	*prop;
+	const __be32 *cur;
+	int rc, index = 0;
 	struct clk *clk;
-	u64 *rates_64 __free(kfree) = NULL;
-	u32 *rates __free(kfree) = NULL;
+	u32 rate;
 
-	count = of_property_count_u32_elems(node, "assigned-clock-rates");
-	count_64 = of_property_count_u64_elems(node, "assigned-clock-rates-u64");
-	if (count_64 > 0) {
-		count = count_64;
-		rates_64 = kcalloc(count, sizeof(*rates_64), GFP_KERNEL);
-		if (!rates_64)
-			return -ENOMEM;
-
-		rc = of_property_read_u64_array(node,
-						"assigned-clock-rates-u64",
-						rates_64, count);
-	} else if (count > 0) {
-		rates = kcalloc(count, sizeof(*rates), GFP_KERNEL);
-		if (!rates)
-			return -ENOMEM;
-
-		rc = of_property_read_u32_array(node, "assigned-clock-rates",
-						rates, count);
-	} else {
-		return 0;
-	}
-
-	if (rc)
-		return rc;
-
-	for (index = 0; index < count; index++) {
-		unsigned long rate;
-
-		if (rates_64)
-			rate = rates_64[index];
-		else
-			rate = rates[index];
-
+	of_property_for_each_u32(node, "assigned-clock-rates", prop, cur, rate) {
 		if (rate) {
 			rc = of_parse_phandle_with_args(node, "assigned-clocks",
 					"#clock-cells",	index, &clkspec);
@@ -130,13 +141,10 @@ static int __set_clk_rates(struct device_node *node, bool clk_supplier)
 				else
 					return rc;
 			}
-			if (clkspec.np == node && !clk_supplier) {
-				of_node_put(clkspec.np);
+			if (clkspec.np == node && !clk_supplier)
 				return 0;
-			}
 
 			clk = of_clk_get_from_provider(&clkspec);
-			of_node_put(clkspec.np);
 			if (IS_ERR(clk)) {
 				if (PTR_ERR(clk) != -EPROBE_DEFER)
 					pr_warn("clk: couldn't get clock %d for %pOF\n",
@@ -146,11 +154,12 @@ static int __set_clk_rates(struct device_node *node, bool clk_supplier)
 
 			rc = clk_set_rate(clk, rate);
 			if (rc < 0)
-				pr_err("clk: couldn't set %s clk rate to %lu (%d), current rate: %lu\n",
+				pr_err("clk: couldn't set %s clk rate to %u (%d), current rate: %lu\n",
 				       __clk_get_name(clk), rate, rc,
 				       clk_get_rate(clk));
 			clk_put(clk);
 		}
+		index++;
 	}
 	return 0;
 }
@@ -173,6 +182,12 @@ int of_clk_set_defaults(struct device_node *node, bool clk_supplier)
 
 	if (!node)
 		return 0;
+
+	if (clk_supplier) {
+		rc = __set_clk_flags(node);
+		if (rc < 0)
+			return rc;
+	}
 
 	rc = __set_clk_parents(node, clk_supplier);
 	if (rc < 0)

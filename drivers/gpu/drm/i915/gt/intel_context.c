@@ -6,7 +6,6 @@
 #include "gem/i915_gem_context.h"
 #include "gem/i915_gem_pm.h"
 
-#include "i915_drm_client.h"
 #include "i915_drv.h"
 #include "i915_trace.h"
 
@@ -27,8 +26,6 @@ static void rcu_context_free(struct rcu_head *rcu)
 	struct intel_context *ce = container_of(rcu, typeof(*ce), rcu);
 
 	trace_intel_context_free(ce);
-	if (intel_context_has_own_state(ce))
-		fput(ce->default_state);
 	kmem_cache_free(slab_ce, ce);
 }
 
@@ -53,7 +50,6 @@ intel_context_create(struct intel_engine_cs *engine)
 
 int intel_context_alloc_state(struct intel_context *ce)
 {
-	struct i915_gem_context *ctx;
 	int err = 0;
 
 	if (mutex_lock_interruptible(&ce->pin_mutex))
@@ -70,18 +66,6 @@ int intel_context_alloc_state(struct intel_context *ce)
 			goto unlock;
 
 		set_bit(CONTEXT_ALLOC_BIT, &ce->flags);
-
-		rcu_read_lock();
-		ctx = rcu_dereference(ce->gem_context);
-		if (ctx && !kref_get_unless_zero(&ctx->ref))
-			ctx = NULL;
-		rcu_read_unlock();
-		if (ctx) {
-			if (ctx->client)
-				i915_drm_client_add_context_objects(ctx->client,
-								    ce);
-			i915_gem_context_put(ctx);
-		}
 	}
 
 unlock:
@@ -95,8 +79,7 @@ static int intel_context_active_acquire(struct intel_context *ce)
 
 	__i915_active_acquire(&ce->active);
 
-	if (intel_context_is_barrier(ce) || intel_engine_uses_guc(ce->engine) ||
-	    intel_context_is_parallel(ce))
+	if (intel_context_is_barrier(ce) || intel_engine_uses_guc(ce->engine))
 		return 0;
 
 	/* Preallocate tracking nodes */
@@ -236,7 +219,7 @@ int __intel_context_do_pin_ww(struct intel_context *ce,
 	 */
 
 	err = i915_gem_object_lock(ce->timeline->hwsp_ggtt->obj, ww);
-	if (!err)
+	if (!err && ce->ring->vma->obj)
 		err = i915_gem_object_lock(ce->ring->vma->obj, ww);
 	if (!err && ce->state)
 		err = i915_gem_object_lock(ce->state->obj, ww);
@@ -245,17 +228,17 @@ int __intel_context_do_pin_ww(struct intel_context *ce,
 	if (err)
 		return err;
 
-	err = ce->ops->pre_pin(ce, ww, &vaddr);
+	err = i915_active_acquire(&ce->active);
 	if (err)
 		goto err_ctx_unpin;
 
-	err = i915_active_acquire(&ce->active);
+	err = ce->ops->pre_pin(ce, ww, &vaddr);
 	if (err)
-		goto err_post_unpin;
+		goto err_release;
 
 	err = mutex_lock_interruptible(&ce->pin_mutex);
 	if (err)
-		goto err_release;
+		goto err_post_unpin;
 
 	intel_engine_pm_might_get(ce->engine);
 
@@ -290,11 +273,11 @@ int __intel_context_do_pin_ww(struct intel_context *ce,
 
 err_unlock:
 	mutex_unlock(&ce->pin_mutex);
-err_release:
-	i915_active_release(&ce->active);
 err_post_unpin:
 	if (!handoff)
 		ce->ops->post_unpin(ce);
+err_release:
+	i915_active_release(&ce->active);
 err_ctx_unpin:
 	intel_context_post_unpin(ce);
 
@@ -381,7 +364,7 @@ static int __intel_context_active(struct i915_active *active)
 	return 0;
 }
 
-static int
+static int __i915_sw_fence_call
 sw_fence_dummy_notify(struct i915_sw_fence *sf,
 		      enum i915_sw_fence_notify state)
 {
@@ -402,7 +385,7 @@ intel_context_init(struct intel_context *ce, struct intel_engine_cs *engine)
 	ce->ring = NULL;
 	ce->ring_size = SZ_4K;
 
-	ewma_runtime_init(&ce->stats.runtime.avg);
+	ewma_runtime_init(&ce->runtime.avg);
 
 	ce->vm = i915_vm_get(engine->gt->vm);
 
@@ -416,7 +399,7 @@ intel_context_init(struct intel_context *ce, struct intel_engine_cs *engine)
 	INIT_LIST_HEAD(&ce->guc_state.fences);
 	INIT_LIST_HEAD(&ce->guc_state.requests);
 
-	ce->guc_id.id = GUC_INVALID_CONTEXT_ID;
+	ce->guc_id.id = GUC_INVALID_LRC_ID;
 	INIT_LIST_HEAD(&ce->guc_id.link);
 
 	INIT_LIST_HEAD(&ce->destroyed_link);
@@ -544,7 +527,7 @@ retry:
 	return rq;
 }
 
-struct i915_request *intel_context_get_active_request(struct intel_context *ce)
+struct i915_request *intel_context_find_active_request(struct intel_context *ce)
 {
 	struct intel_context *parent = intel_context_to_parent(ce);
 	struct i915_request *rq, *active = NULL;
@@ -568,8 +551,6 @@ struct i915_request *intel_context_get_active_request(struct intel_context *ce)
 
 		active = rq;
 	}
-	if (active)
-		active = i915_request_get_rcu(active);
 	spin_unlock_irqrestore(&parent->guc_state.lock, flags);
 
 	return active;
@@ -582,6 +563,7 @@ void intel_context_bind_parent_child(struct intel_context *parent,
 	 * Callers responsibility to validate that this function is used
 	 * correctly but we use GEM_BUG_ON here ensure that they do.
 	 */
+	GEM_BUG_ON(!intel_engine_uses_guc(parent->engine));
 	GEM_BUG_ON(intel_context_is_pinned(parent));
 	GEM_BUG_ON(intel_context_is_child(parent));
 	GEM_BUG_ON(intel_context_is_pinned(child));
@@ -592,57 +574,6 @@ void intel_context_bind_parent_child(struct intel_context *parent,
 	list_add_tail(&child->parallel.child_link,
 		      &parent->parallel.child_list);
 	child->parallel.parent = parent;
-}
-
-u64 intel_context_get_total_runtime_ns(struct intel_context *ce)
-{
-	u64 total, active;
-
-	if (ce->ops->update_stats)
-		ce->ops->update_stats(ce);
-
-	total = ce->stats.runtime.total;
-	if (ce->ops->flags & COPS_RUNTIME_CYCLES)
-		total *= ce->engine->gt->clock_period_ns;
-
-	active = READ_ONCE(ce->stats.active);
-	if (active)
-		active = intel_context_clock() - active;
-
-	return total + active;
-}
-
-u64 intel_context_get_avg_runtime_ns(struct intel_context *ce)
-{
-	u64 avg = ewma_runtime_read(&ce->stats.runtime.avg);
-
-	if (ce->ops->flags & COPS_RUNTIME_CYCLES)
-		avg *= ce->engine->gt->clock_period_ns;
-
-	return avg;
-}
-
-bool intel_context_ban(struct intel_context *ce, struct i915_request *rq)
-{
-	bool ret = intel_context_set_banned(ce);
-
-	trace_intel_context_ban(ce);
-
-	if (ce->ops->revoke)
-		ce->ops->revoke(ce, rq,
-				INTEL_CONTEXT_BANNED_PREEMPT_TIMEOUT_MS);
-
-	return ret;
-}
-
-bool intel_context_revoke(struct intel_context *ce)
-{
-	bool ret = intel_context_set_exiting(ce);
-
-	if (ce->ops->revoke)
-		ce->ops->revoke(ce, NULL, ce->engine->props.preempt_timeout_ms);
-
-	return ret;
 }
 
 #if IS_ENABLED(CONFIG_DRM_I915_SELFTEST)

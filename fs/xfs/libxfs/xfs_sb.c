@@ -25,84 +25,36 @@
 #include "xfs_da_format.h"
 #include "xfs_health.h"
 #include "xfs_ag.h"
-#include "xfs_rtbitmap.h"
-#include "xfs_exchrange.h"
 
 /*
  * Physical superblock buffer manipulations. Shared with libxfs in userspace.
  */
 
 /*
- * Check that all the V4 feature bits that the V5 filesystem format requires are
- * correctly set.
- */
-static bool
-xfs_sb_validate_v5_features(
-	struct xfs_sb	*sbp)
-{
-	/* We must not have any unknown V4 feature bits set */
-	if (sbp->sb_versionnum & ~XFS_SB_VERSION_OKBITS)
-		return false;
-
-	/*
-	 * The CRC bit is considered an invalid V4 flag, so we have to add it
-	 * manually to the OKBITS mask.
-	 */
-	if (sbp->sb_features2 & ~(XFS_SB_VERSION2_OKBITS |
-				  XFS_SB_VERSION2_CRCBIT))
-		return false;
-
-	/* Now check all the required V4 feature flags are set. */
-
-#define V5_VERS_FLAGS	(XFS_SB_VERSION_NLINKBIT	| \
-			XFS_SB_VERSION_ALIGNBIT		| \
-			XFS_SB_VERSION_LOGV2BIT		| \
-			XFS_SB_VERSION_EXTFLGBIT	| \
-			XFS_SB_VERSION_DIRV2BIT		| \
-			XFS_SB_VERSION_MOREBITSBIT)
-
-#define V5_FEAT_FLAGS	(XFS_SB_VERSION2_LAZYSBCOUNTBIT	| \
-			XFS_SB_VERSION2_ATTR2BIT	| \
-			XFS_SB_VERSION2_PROJID32BIT	| \
-			XFS_SB_VERSION2_CRCBIT)
-
-	if ((sbp->sb_versionnum & V5_VERS_FLAGS) != V5_VERS_FLAGS)
-		return false;
-	if ((sbp->sb_features2 & V5_FEAT_FLAGS) != V5_FEAT_FLAGS)
-		return false;
-	return true;
-}
-
-/*
- * We current support XFS v5 formats with known features and v4 superblocks with
- * at least V2 directories.
+ * We support all XFS versions newer than a v4 superblock with V2 directories.
  */
 bool
 xfs_sb_good_version(
 	struct xfs_sb	*sbp)
 {
-	/*
-	 * All v5 filesystems are supported, but we must check that all the
-	 * required v4 feature flags are enabled correctly as the code checks
-	 * those flags and not for v5 support.
-	 */
+	/* all v5 filesystems are supported */
 	if (xfs_sb_is_v5(sbp))
-		return xfs_sb_validate_v5_features(sbp);
+		return true;
 
 	/* versions prior to v4 are not supported */
-	if (XFS_SB_VERSION_NUM(sbp) != XFS_SB_VERSION_4)
-		return false;
-
-	/* We must not have any unknown v4 feature bits set */
-	if ((sbp->sb_versionnum & ~XFS_SB_VERSION_OKBITS) ||
-	    ((sbp->sb_versionnum & XFS_SB_VERSION_MOREBITSBIT) &&
-	     (sbp->sb_features2 & ~XFS_SB_VERSION2_OKBITS)))
+	if (XFS_SB_VERSION_NUM(sbp) < XFS_SB_VERSION_4)
 		return false;
 
 	/* V4 filesystems need v2 directories and unwritten extents */
 	if (!(sbp->sb_versionnum & XFS_SB_VERSION_DIRV2BIT))
 		return false;
 	if (!(sbp->sb_versionnum & XFS_SB_VERSION_EXTFLGBIT))
+		return false;
+
+	/* And must not have any unknown v4 feature bits set */
+	if ((sbp->sb_versionnum & ~XFS_SB_VERSION_OKBITS) ||
+	    ((sbp->sb_versionnum & XFS_SB_VERSION_MOREBITSBIT) &&
+	     (sbp->sb_features2 & ~XFS_SB_VERSION2_OKBITS)))
 		return false;
 
 	/* It's a supported v4 filesystem */
@@ -118,8 +70,6 @@ xfs_sb_version_to_features(
 	/* optional V4 features */
 	if (sbp->sb_rblocks > 0)
 		features |= XFS_FEAT_REALTIME;
-	if (sbp->sb_versionnum & XFS_SB_VERSION_NLINKBIT)
-		features |= XFS_FEAT_NLINK;
 	if (sbp->sb_versionnum & XFS_SB_VERSION_ATTRBIT)
 		features |= XFS_FEAT_ATTR;
 	if (sbp->sb_versionnum & XFS_SB_VERSION_QUOTABIT)
@@ -174,13 +124,6 @@ xfs_sb_version_to_features(
 		features |= XFS_FEAT_BIGTIME;
 	if (sbp->sb_features_incompat & XFS_SB_FEAT_INCOMPAT_NEEDSREPAIR)
 		features |= XFS_FEAT_NEEDSREPAIR;
-	if (sbp->sb_features_incompat & XFS_SB_FEAT_INCOMPAT_NREXT64)
-		features |= XFS_FEAT_NREXT64;
-	if (sbp->sb_features_incompat & XFS_SB_FEAT_INCOMPAT_EXCHRANGE)
-		features |= XFS_FEAT_EXCHANGE_RANGE;
-	if (sbp->sb_features_incompat & XFS_SB_FEAT_INCOMPAT_PARENT)
-		features |= XFS_FEAT_PARENT;
-
 	return features;
 }
 
@@ -232,38 +175,6 @@ xfs_validate_sb_read(
 	return 0;
 }
 
-static uint64_t
-xfs_sb_calc_rbmblocks(
-	struct xfs_sb		*sbp)
-{
-	return howmany_64(sbp->sb_rextents, NBBY * sbp->sb_blocksize);
-}
-
-/* Validate the realtime geometry */
-bool
-xfs_validate_rt_geometry(
-	struct xfs_sb		*sbp)
-{
-	if (sbp->sb_rextsize * sbp->sb_blocksize > XFS_MAX_RTEXTSIZE ||
-	    sbp->sb_rextsize * sbp->sb_blocksize < XFS_MIN_RTEXTSIZE)
-		return false;
-
-	if (sbp->sb_rblocks == 0) {
-		if (sbp->sb_rextents != 0 || sbp->sb_rbmblocks != 0 ||
-		    sbp->sb_rextslog != 0 || sbp->sb_frextents != 0)
-			return false;
-		return true;
-	}
-
-	if (sbp->sb_rextents == 0 ||
-	    sbp->sb_rextents != div_u64(sbp->sb_rblocks, sbp->sb_rextsize) ||
-	    sbp->sb_rextslog != xfs_compute_rextslog(sbp->sb_rextents) ||
-	    sbp->sb_rbmblocks != xfs_sb_calc_rbmblocks(sbp))
-		return false;
-
-	return true;
-}
-
 /* Check all the superblock fields we care about when writing one out. */
 STATIC int
 xfs_validate_sb_write(
@@ -304,8 +215,7 @@ xfs_validate_sb_write(
 		return -EFSCORRUPTED;
 	}
 
-	if (!xfs_is_readonly(mp) &&
-	    xfs_sb_has_ro_compat_feature(sbp, XFS_SB_FEAT_RO_COMPAT_UNKNOWN)) {
+	if (xfs_sb_has_ro_compat_feature(sbp, XFS_SB_FEAT_RO_COMPAT_UNKNOWN)) {
 		xfs_alert(mp,
 "Corruption detected in superblock read-only compatible features (0x%x)!",
 			(sbp->sb_features_ro_compat &
@@ -352,15 +262,12 @@ xfs_validate_sb_common(
 	bool			has_dalign;
 
 	if (!xfs_verify_magic(bp, dsb->sb_magicnum)) {
-		xfs_warn(mp,
-"Superblock has bad magic number 0x%x. Not an XFS filesystem?",
-			be32_to_cpu(dsb->sb_magicnum));
+		xfs_warn(mp, "bad magic number");
 		return -EWRONGFS;
 	}
 
 	if (!xfs_sb_good_version(sbp)) {
-		xfs_warn(mp,
-"Superblock has unknown features enabled or corrupted feature masks.");
+		xfs_warn(mp, "bad version");
 		return -EWRONGFS;
 	}
 
@@ -451,6 +358,7 @@ xfs_validate_sb_common(
 	    sbp->sb_inodelog < XFS_DINODE_MIN_LOG			||
 	    sbp->sb_inodelog > XFS_DINODE_MAX_LOG			||
 	    sbp->sb_inodesize != (1 << sbp->sb_inodelog)		||
+	    sbp->sb_logsunit > XLOG_MAX_RECORD_BSIZE			||
 	    sbp->sb_inopblock != howmany(sbp->sb_blocksize,sbp->sb_inodesize) ||
 	    XFS_FSB_TO_B(mp, sbp->sb_agblocks) < XFS_MIN_AG_BYTES	||
 	    XFS_FSB_TO_B(mp, sbp->sb_agblocks) > XFS_MAX_AG_BYTES	||
@@ -468,66 +376,36 @@ xfs_validate_sb_common(
 		return -EFSCORRUPTED;
 	}
 
-	/*
-	 * Logs that are too large are not supported at all. Reject them
-	 * outright. Logs that are too small are tolerated on v4 filesystems,
-	 * but we can only check that when mounting the log. Hence we skip
-	 * those checks here.
-	 */
-	if (sbp->sb_logblocks > XFS_MAX_LOG_BLOCKS) {
+	/* Validate the realtime geometry; stolen from xfs_repair */
+	if (sbp->sb_rextsize * sbp->sb_blocksize > XFS_MAX_RTEXTSIZE ||
+	    sbp->sb_rextsize * sbp->sb_blocksize < XFS_MIN_RTEXTSIZE) {
 		xfs_notice(mp,
-		"Log size 0x%x blocks too large, maximum size is 0x%llx blocks",
-			 sbp->sb_logblocks, XFS_MAX_LOG_BLOCKS);
+			"realtime extent sanity check failed");
 		return -EFSCORRUPTED;
 	}
 
-	if (XFS_FSB_TO_B(mp, sbp->sb_logblocks) > XFS_MAX_LOG_BYTES) {
-		xfs_warn(mp,
-		"log size 0x%llx bytes too large, maximum size is 0x%llx bytes",
-			 XFS_FSB_TO_B(mp, sbp->sb_logblocks),
-			 XFS_MAX_LOG_BYTES);
-		return -EFSCORRUPTED;
-	}
-
-	/*
-	 * Do not allow filesystems with corrupted log sector or stripe units to
-	 * be mounted. We cannot safely size the iclogs or write to the log if
-	 * the log stripe unit is not valid.
-	 */
-	if (sbp->sb_versionnum & XFS_SB_VERSION_SECTORBIT) {
-		if (sbp->sb_logsectsize != (1U << sbp->sb_logsectlog)) {
+	if (sbp->sb_rblocks == 0) {
+		if (sbp->sb_rextents != 0 || sbp->sb_rbmblocks != 0 ||
+		    sbp->sb_rextslog != 0 || sbp->sb_frextents != 0) {
 			xfs_notice(mp,
-			"log sector size in bytes/log2 (0x%x/0x%x) must match",
-				sbp->sb_logsectsize, 1U << sbp->sb_logsectlog);
+				"realtime zeroed geometry check failed");
 			return -EFSCORRUPTED;
 		}
-	} else if (sbp->sb_logsectsize || sbp->sb_logsectlog) {
-		xfs_notice(mp,
-		"log sector size in bytes/log2 (0x%x/0x%x) are not zero",
-			sbp->sb_logsectsize, sbp->sb_logsectlog);
-		return -EFSCORRUPTED;
-	}
+	} else {
+		uint64_t	rexts;
+		uint64_t	rbmblocks;
 
-	if (sbp->sb_logsunit > 1) {
-		if (sbp->sb_logsunit % sbp->sb_blocksize) {
+		rexts = div_u64(sbp->sb_rblocks, sbp->sb_rextsize);
+		rbmblocks = howmany_64(sbp->sb_rextents,
+				       NBBY * sbp->sb_blocksize);
+
+		if (sbp->sb_rextents != rexts ||
+		    sbp->sb_rextslog != xfs_highbit32(sbp->sb_rextents) ||
+		    sbp->sb_rbmblocks != rbmblocks) {
 			xfs_notice(mp,
-		"log stripe unit 0x%x bytes must be a multiple of block size",
-				sbp->sb_logsunit);
+				"realtime geometry sanity check failed");
 			return -EFSCORRUPTED;
 		}
-		if (sbp->sb_logsunit > XLOG_MAX_RECORD_BSIZE) {
-			xfs_notice(mp,
-		"log stripe unit 0x%x bytes over maximum size (0x%x bytes)",
-				sbp->sb_logsunit, XLOG_MAX_RECORD_BSIZE);
-			return -EFSCORRUPTED;
-		}
-	}
-
-	if (!xfs_validate_rt_geometry(sbp)) {
-		xfs_notice(mp,
-			"realtime %sgeometry check failed",
-			sbp->sb_rblocks ? "" : "zeroed ");
-		return -EFSCORRUPTED;
 	}
 
 	/*
@@ -541,8 +419,7 @@ xfs_validate_sb_common(
 	}
 
 	if (!xfs_validate_stripe_geometry(mp, XFS_FSB_TO_B(mp, sbp->sb_unit),
-			XFS_FSB_TO_B(mp, sbp->sb_width), 0,
-			xfs_buf_daddr(bp) == XFS_SB_DADDR, false))
+			XFS_FSB_TO_B(mp, sbp->sb_width), 0, false))
 		return -EFSCORRUPTED;
 
 	/*
@@ -965,15 +842,6 @@ const struct xfs_buf_ops xfs_sb_quiet_buf_ops = {
 	.verify_write = xfs_sb_write_verify,
 };
 
-void
-xfs_mount_sb_set_rextsize(
-	struct xfs_mount	*mp,
-	struct xfs_sb		*sbp)
-{
-	mp->m_rtxblklog = log2_if_power2(sbp->sb_rextsize);
-	mp->m_rtxblkmask = mask64_if_power2(sbp->sb_rextsize);
-}
-
 /*
  * xfs_mount_common
  *
@@ -988,8 +856,7 @@ xfs_sb_mount_common(
 	struct xfs_mount	*mp,
 	struct xfs_sb		*sbp)
 {
-	mp->m_agfrotor = 0;
-	atomic_set(&mp->m_agirotor, 0);
+	mp->m_agfrotor = mp->m_agirotor = 0;
 	mp->m_maxagi = mp->m_sb.sb_agcount;
 	mp->m_blkbit_log = sbp->sb_blocklog + XFS_NBBYLOG;
 	mp->m_blkbb_log = sbp->sb_blocklog - BBSHIFT;
@@ -998,25 +865,24 @@ xfs_sb_mount_common(
 	mp->m_blockmask = sbp->sb_blocksize - 1;
 	mp->m_blockwsize = sbp->sb_blocksize >> XFS_WORDLOG;
 	mp->m_blockwmask = mp->m_blockwsize - 1;
-	xfs_mount_sb_set_rextsize(mp, sbp);
 
-	mp->m_alloc_mxr[0] = xfs_allocbt_maxrecs(mp, sbp->sb_blocksize, true);
-	mp->m_alloc_mxr[1] = xfs_allocbt_maxrecs(mp, sbp->sb_blocksize, false);
+	mp->m_alloc_mxr[0] = xfs_allocbt_maxrecs(mp, sbp->sb_blocksize, 1);
+	mp->m_alloc_mxr[1] = xfs_allocbt_maxrecs(mp, sbp->sb_blocksize, 0);
 	mp->m_alloc_mnr[0] = mp->m_alloc_mxr[0] / 2;
 	mp->m_alloc_mnr[1] = mp->m_alloc_mxr[1] / 2;
 
-	mp->m_bmap_dmxr[0] = xfs_bmbt_maxrecs(mp, sbp->sb_blocksize, true);
-	mp->m_bmap_dmxr[1] = xfs_bmbt_maxrecs(mp, sbp->sb_blocksize, false);
+	mp->m_bmap_dmxr[0] = xfs_bmbt_maxrecs(mp, sbp->sb_blocksize, 1);
+	mp->m_bmap_dmxr[1] = xfs_bmbt_maxrecs(mp, sbp->sb_blocksize, 0);
 	mp->m_bmap_dmnr[0] = mp->m_bmap_dmxr[0] / 2;
 	mp->m_bmap_dmnr[1] = mp->m_bmap_dmxr[1] / 2;
 
-	mp->m_rmap_mxr[0] = xfs_rmapbt_maxrecs(mp, sbp->sb_blocksize, true);
-	mp->m_rmap_mxr[1] = xfs_rmapbt_maxrecs(mp, sbp->sb_blocksize, false);
+	mp->m_rmap_mxr[0] = xfs_rmapbt_maxrecs(sbp->sb_blocksize, 1);
+	mp->m_rmap_mxr[1] = xfs_rmapbt_maxrecs(sbp->sb_blocksize, 0);
 	mp->m_rmap_mnr[0] = mp->m_rmap_mxr[0] / 2;
 	mp->m_rmap_mnr[1] = mp->m_rmap_mxr[1] / 2;
 
-	mp->m_refc_mxr[0] = xfs_refcountbt_maxrecs(mp, sbp->sb_blocksize, true);
-	mp->m_refc_mxr[1] = xfs_refcountbt_maxrecs(mp, sbp->sb_blocksize, false);
+	mp->m_refc_mxr[0] = xfs_refcountbt_maxrecs(sbp->sb_blocksize, true);
+	mp->m_refc_mxr[1] = xfs_refcountbt_maxrecs(sbp->sb_blocksize, false);
 	mp->m_refc_mnr[0] = mp->m_refc_mxr[0] / 2;
 	mp->m_refc_mnr[1] = mp->m_refc_mxr[1] / 2;
 
@@ -1045,19 +911,11 @@ xfs_log_sb(
 	 * reservations that have been taken out percpu counters. If we have an
 	 * unclean shutdown, this will be corrected by log recovery rebuilding
 	 * the counters from the AGF block counts.
-	 *
-	 * Do not update sb_frextents here because it is not part of the lazy
-	 * sb counters, despite having a percpu counter. It is always kept
-	 * consistent with the ondisk rtbitmap by xfs_trans_apply_sb_deltas()
-	 * and hence we don't need have to update it here.
 	 */
 	if (xfs_has_lazysbcount(mp)) {
-		mp->m_sb.sb_icount = percpu_counter_sum_positive(&mp->m_icount);
-		mp->m_sb.sb_ifree = min_t(uint64_t,
-				percpu_counter_sum_positive(&mp->m_ifree),
-				mp->m_sb.sb_icount);
-		mp->m_sb.sb_fdblocks =
-				percpu_counter_sum_positive(&mp->m_fdblocks);
+		mp->m_sb.sb_icount = percpu_counter_sum(&mp->m_icount);
+		mp->m_sb.sb_ifree = percpu_counter_sum(&mp->m_ifree);
+		mp->m_sb.sb_fdblocks = percpu_counter_sum(&mp->m_fdblocks);
 	}
 
 	xfs_sb_to_disk(bp->b_addr, &mp->m_sb);
@@ -1271,18 +1129,12 @@ xfs_fs_geometry(
 		geo->flags |= XFS_FSOP_GEOM_FLAGS_BIGTIME;
 	if (xfs_has_inobtcounts(mp))
 		geo->flags |= XFS_FSOP_GEOM_FLAGS_INOBTCNT;
-	if (xfs_has_parent(mp))
-		geo->flags |= XFS_FSOP_GEOM_FLAGS_PARENT;
 	if (xfs_has_sector(mp)) {
 		geo->flags |= XFS_FSOP_GEOM_FLAGS_SECTOR;
 		geo->logsectsize = sbp->sb_logsectsize;
 	} else {
 		geo->logsectsize = BBSIZE;
 	}
-	if (xfs_has_large_extent_counts(mp))
-		geo->flags |= XFS_FSOP_GEOM_FLAGS_NREXT64;
-	if (xfs_has_exchange_range(mp))
-		geo->flags |= XFS_FSOP_GEOM_FLAGS_EXCHANGE_RANGE;
 	geo->rtsectsize = sbp->sb_blocksize;
 	geo->dirblocksize = xfs_dir2_dirblock_bytes(sbp);
 
@@ -1315,8 +1167,6 @@ xfs_sb_read_secondary(
 	error = xfs_trans_read_buf(mp, tp, mp->m_ddev_targp,
 			XFS_AG_DADDR(mp, agno, XFS_SB_BLOCK(mp)),
 			XFS_FSS_TO_BB(mp, 1), 0, &bp, &xfs_sb_buf_ops);
-	if (xfs_metadata_is_sick(error))
-		xfs_agno_mark_sick(mp, agno, XFS_SICK_AG_SB);
 	if (error)
 		return error;
 	xfs_buf_set_ref(bp, XFS_SSB_REF);
@@ -1348,10 +1198,8 @@ xfs_sb_get_secondary(
 }
 
 /*
- * sunit, swidth, sectorsize(optional with 0) should be all in bytes, so users
- * won't be confused by values in error messages.  This function returns false
- * if the stripe geometry is invalid and the caller is unable to repair the
- * stripe configuration later in the mount process.
+ * sunit, swidth, sectorsize(optional with 0) should be all in bytes,
+ * so users won't be confused by values in error messages.
  */
 bool
 xfs_validate_stripe_geometry(
@@ -1359,21 +1207,20 @@ xfs_validate_stripe_geometry(
 	__s64			sunit,
 	__s64			swidth,
 	int			sectorsize,
-	bool			may_repair,
 	bool			silent)
 {
 	if (swidth > INT_MAX) {
 		if (!silent)
 			xfs_notice(mp,
 "stripe width (%lld) is too large", swidth);
-		goto check_override;
+		return false;
 	}
 
 	if (sunit > swidth) {
 		if (!silent)
 			xfs_notice(mp,
 "stripe unit (%lld) is larger than the stripe width (%lld)", sunit, swidth);
-		goto check_override;
+		return false;
 	}
 
 	if (sectorsize && (int)sunit % sectorsize) {
@@ -1381,21 +1228,21 @@ xfs_validate_stripe_geometry(
 			xfs_notice(mp,
 "stripe unit (%lld) must be a multiple of the sector size (%d)",
 				   sunit, sectorsize);
-		goto check_override;
+		return false;
 	}
 
 	if (sunit && !swidth) {
 		if (!silent)
 			xfs_notice(mp,
 "invalid stripe unit (%lld) and stripe width of 0", sunit);
-		goto check_override;
+		return false;
 	}
 
 	if (!sunit && swidth) {
 		if (!silent)
 			xfs_notice(mp,
 "invalid stripe width (%lld) and stripe unit of 0", swidth);
-		goto check_override;
+		return false;
 	}
 
 	if (sunit && (int)swidth % (int)sunit) {
@@ -1403,39 +1250,7 @@ xfs_validate_stripe_geometry(
 			xfs_notice(mp,
 "stripe width (%lld) must be a multiple of the stripe unit (%lld)",
 				   swidth, sunit);
-		goto check_override;
+		return false;
 	}
 	return true;
-
-check_override:
-	if (!may_repair)
-		return false;
-	/*
-	 * During mount, mp->m_dalign will not be set unless the sunit mount
-	 * option was set. If it was set, ignore the bad stripe alignment values
-	 * and allow the validation and overwrite later in the mount process to
-	 * attempt to overwrite the bad stripe alignment values with the values
-	 * supplied by mount options.
-	 */
-	if (!mp->m_dalign)
-		return false;
-	if (!silent)
-		xfs_notice(mp,
-"Will try to correct with specified mount options sunit (%d) and swidth (%d)",
-			BBTOB(mp->m_dalign), BBTOB(mp->m_swidth));
-	return true;
-}
-
-/*
- * Compute the maximum level number of the realtime summary file, as defined by
- * mkfs.  The historic use of highbit32 on a 64-bit quantity prohibited correct
- * use of rt volumes with more than 2^32 extents.
- */
-uint8_t
-xfs_compute_rextslog(
-	xfs_rtbxlen_t		rtextents)
-{
-	if (!rtextents)
-		return 0;
-	return xfs_highbit64(rtextents);
 }

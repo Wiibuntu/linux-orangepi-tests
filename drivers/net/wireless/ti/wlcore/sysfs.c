@@ -19,8 +19,11 @@ static ssize_t bt_coex_state_show(struct device *dev,
 	struct wl1271 *wl = dev_get_drvdata(dev);
 	ssize_t len;
 
+	len = PAGE_SIZE;
+
 	mutex_lock(&wl->mutex);
-	len = sysfs_emit(buf, "%d\n\n0 - off\n1 - on\n", wl->sg_enabled);
+	len = snprintf(buf, len, "%d\n\n0 - off\n1 - on\n",
+		       wl->sg_enabled);
 	mutex_unlock(&wl->mutex);
 
 	return len;
@@ -53,9 +56,11 @@ static ssize_t bt_coex_state_store(struct device *dev,
 	if (unlikely(wl->state != WLCORE_STATE_ON))
 		goto out;
 
-	ret = pm_runtime_resume_and_get(wl->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(wl->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(wl->dev);
 		goto out;
+	}
 
 	wl1271_acx_sg_enable(wl, wl->sg_enabled);
 	pm_runtime_mark_last_busy(wl->dev);
@@ -75,11 +80,13 @@ static ssize_t hw_pg_ver_show(struct device *dev,
 	struct wl1271 *wl = dev_get_drvdata(dev);
 	ssize_t len;
 
+	len = PAGE_SIZE;
+
 	mutex_lock(&wl->mutex);
 	if (wl->hw_pg_ver >= 0)
-		len = sysfs_emit(buf, "%d\n", wl->hw_pg_ver);
+		len = snprintf(buf, len, "%d\n", wl->hw_pg_ver);
 	else
-		len = sysfs_emit(buf, "n/a\n");
+		len = snprintf(buf, len, "n/a\n");
 	mutex_unlock(&wl->mutex);
 
 	return len;

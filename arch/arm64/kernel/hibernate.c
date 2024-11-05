@@ -7,6 +7,10 @@
  * Ubuntu project, hibernation support for mach-dove
  * Copyright (C) 2010 Nokia Corporation (Hiroshi Doyu)
  * Copyright (C) 2010 Texas Instruments, Inc. (Teerth Reddy et al.)
+ *  https://lkml.org/lkml/2010/6/18/4
+ *  https://lists.linux-foundation.org/pipermail/linux-pm/2010-June/027422.html
+ *  https://patchwork.kernel.org/patch/96442/
+ *
  * Copyright (C) 2006 Rafael J. Wysocki <rjw@sisk.pl>
  */
 #define pr_fmt(x) "hibernate: " x
@@ -99,6 +103,7 @@ int pfn_is_nosave(unsigned long pfn)
 
 void notrace save_processor_state(void)
 {
+	WARN_ON(num_online_cpus() != 1);
 }
 
 void notrace restore_processor_state(void)
@@ -270,7 +275,7 @@ static int swsusp_mte_save_tags(void)
 			if (!page)
 				continue;
 
-			if (!page_mte_tagged(page))
+			if (!test_bit(PG_mte_tagged, &page->flags))
 				continue;
 
 			ret = save_tags(page, pfn);
@@ -299,6 +304,11 @@ static void swsusp_mte_restore_tags(void)
 		unsigned long pfn = xa_state.xa_index;
 		struct page *page = pfn_to_online_page(pfn);
 
+		/*
+		 * It is not required to invoke page_kasan_tag_reset(page)
+		 * at this point since the tags stored in page->flags are
+		 * already restored.
+		 */
 		mte_restore_page_tags(page_address(page), tags);
 
 		mte_free_tag_storage(tags);
@@ -407,7 +417,7 @@ int swsusp_arch_resume(void)
 					  void *, phys_addr_t, phys_addr_t);
 	struct trans_pgd_info trans_info = {
 		.trans_alloc_page	= hibernate_page_alloc,
-		.trans_alloc_arg	= (__force void *)GFP_ATOMIC,
+		.trans_alloc_arg	= (void *)GFP_ATOMIC,
 	};
 
 	/*
@@ -421,7 +431,7 @@ int swsusp_arch_resume(void)
 		return rc;
 
 	/*
-	 * We need a zero page that is zero before & after resume in order
+	 * We need a zero page that is zero before & after resume in order to
 	 * to break before make on the ttbr1 page tables.
 	 */
 	zero_page = (void *)get_safe_page(GFP_ATOMIC);

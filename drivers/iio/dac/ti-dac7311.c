@@ -52,7 +52,7 @@ struct ti_dac_chip {
 	bool powerdown;
 	u8 powerdown_mode;
 	u8 resolution;
-	u8 buf[2] __aligned(IIO_DMA_MINALIGN);
+	u8 buf[2] ____cacheline_aligned;
 };
 
 static u8 ti_dac_get_power(struct ti_dac_chip *ti_dac, bool powerdown)
@@ -123,7 +123,7 @@ static ssize_t ti_dac_write_powerdown(struct iio_dev *indio_dev,
 	u8 power;
 	int ret;
 
-	ret = kstrtobool(buf, &powerdown);
+	ret = strtobool(buf, &powerdown);
 	if (ret)
 		return ret;
 
@@ -146,7 +146,7 @@ static const struct iio_chan_spec_ext_info ti_dac_ext_info[] = {
 		.shared	   = IIO_SHARED_BY_TYPE,
 	},
 	IIO_ENUM("powerdown_mode", IIO_SHARED_BY_TYPE, &ti_dac_powerdown_mode),
-	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ti_dac_powerdown_mode),
+	IIO_ENUM_AVAILABLE("powerdown_mode", &ti_dac_powerdown_mode),
 	{ },
 };
 
@@ -249,9 +249,7 @@ static int ti_dac_probe(struct spi_device *spi)
 
 	spi->mode = SPI_MODE_1;
 	spi->bits_per_word = 16;
-	ret = spi_setup(spi);
-	if (ret < 0)
-		return dev_err_probe(dev, ret, "spi_setup failed\n");
+	spi_setup(spi);
 
 	indio_dev->info = &ti_dac_info;
 	indio_dev->name = spi_get_device_id(spi)->name;
@@ -294,7 +292,7 @@ err:
 	return ret;
 }
 
-static void ti_dac_remove(struct spi_device *spi)
+static int ti_dac_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ti_dac_chip *ti_dac = iio_priv(indio_dev);
@@ -302,6 +300,7 @@ static void ti_dac_remove(struct spi_device *spi)
 	iio_device_unregister(indio_dev);
 	mutex_destroy(&ti_dac->lock);
 	regulator_disable(ti_dac->vref);
+	return 0;
 }
 
 static const struct of_device_id ti_dac_of_id[] = {

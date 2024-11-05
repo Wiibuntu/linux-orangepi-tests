@@ -95,7 +95,6 @@
 #include <linux/kallsyms.h>
 
 #include <asm/sections.h>
-#include <asm/rwonce.h>
 
 #define v1printk(a...) do {		\
 	if (verbose)			\
@@ -127,6 +126,7 @@ static int final_ack;
 static int force_hwbrks;
 static int hwbreaks_ok;
 static int hw_break_val;
+static int hw_break_val2;
 static int cont_instead_of_sstep;
 static unsigned long cont_thread_id;
 static unsigned long sstep_thread_id;
@@ -284,7 +284,7 @@ static void hw_rem_access_break(char *arg)
 
 static void hw_break_val_access(void)
 {
-	READ_ONCE(hw_break_val);
+	hw_break_val2 = hw_break_val;
 }
 
 static void hw_break_val_write(void)
@@ -1070,10 +1070,10 @@ static int kgdbts_option_setup(char *opt)
 {
 	if (strlen(opt) >= MAX_CONFIG_LEN) {
 		printk(KERN_ERR "kgdbts: config string too long\n");
-		return 1;
+		return -ENOSPC;
 	}
 	strcpy(config, opt);
-	return 1;
+	return 0;
 }
 
 __setup("kgdbts=", kgdbts_option_setup);

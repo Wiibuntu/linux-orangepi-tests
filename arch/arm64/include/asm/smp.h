@@ -25,11 +25,22 @@
 
 #ifndef __ASSEMBLY__
 
+#include <asm/percpu.h>
+
 #include <linux/threads.h>
 #include <linux/cpumask.h>
 #include <linux/thread_info.h>
 
-#define raw_smp_processor_id() (current_thread_info()->cpu)
+DECLARE_PER_CPU_READ_MOSTLY(int, cpu_number);
+
+/*
+ * We don't use this_cpu_read(cpu_number) as that has implicit writes to
+ * preempt_count, and associated (compiler) barriers, that we'd like to avoid
+ * the expense of. If we're preemptible, the value can be stale at use anyway.
+ * And we can't use this_cpu_ptr() either, as that winds up recursing back
+ * here under CONFIG_DEBUG_PREEMPT=y.
+ */
+#define raw_smp_processor_id() (*raw_cpu_ptr(&cpu_number))
 
 /*
  * Logical CPU mapping.
@@ -78,9 +89,9 @@ extern void arch_send_call_function_single_ipi(int cpu);
 extern void arch_send_call_function_ipi_mask(const struct cpumask *mask);
 
 #ifdef CONFIG_ARM64_ACPI_PARKING_PROTOCOL
-extern void arch_send_wakeup_ipi(unsigned int cpu);
+extern void arch_send_wakeup_ipi_mask(const struct cpumask *mask);
 #else
-static inline void arch_send_wakeup_ipi(unsigned int cpu)
+static inline void arch_send_wakeup_ipi_mask(const struct cpumask *mask)
 {
 	BUILD_BUG();
 }
@@ -88,11 +99,11 @@ static inline void arch_send_wakeup_ipi(unsigned int cpu)
 
 extern int __cpu_disable(void);
 
-static inline void __cpu_die(unsigned int cpu) { }
-extern void __noreturn cpu_die(void);
-extern void __noreturn cpu_die_early(void);
+extern void __cpu_die(unsigned int cpu);
+extern void cpu_die(void);
+extern void cpu_die_early(void);
 
-static inline void __noreturn cpu_park_loop(void)
+static inline void cpu_park_loop(void)
 {
 	for (;;) {
 		wfe();
@@ -112,7 +123,7 @@ static inline void update_cpu_boot_status(int val)
  * which calls for a kernel panic. Update the boot status and park the calling
  * CPU.
  */
-static inline void __noreturn cpu_panic_kernel(void)
+static inline void cpu_panic_kernel(void)
 {
 	update_cpu_boot_status(CPU_PANIC_KERNEL);
 	cpu_park_loop();
@@ -132,6 +143,7 @@ bool cpus_are_stuck_in_kernel(void);
 
 extern void crash_smp_send_stop(void);
 extern bool smp_crash_stop_failed(void);
+extern void panic_smp_self_stop(void);
 
 #endif /* ifndef __ASSEMBLY__ */
 

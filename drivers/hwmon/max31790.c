@@ -49,9 +49,6 @@
 
 #define NR_CHANNEL			6
 
-#define PWM_INPUT_SCALE	255
-#define MAX31790_REG_PWMOUT_SCALE	511
-
 /*
  * Client data (each client gets its own)
  */
@@ -205,9 +202,6 @@ static int max31790_read_fan(struct device *dev, u32 attr, int channel,
 		}
 		mutex_unlock(&data->update_lock);
 		return 0;
-	case hwmon_fan_enable:
-		*val = !!(data->fan_config[channel] & MAX31790_FAN_CFG_TACH_INPUT_EN);
-		return 0;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -220,7 +214,7 @@ static int max31790_write_fan(struct device *dev, u32 attr, int channel,
 	struct i2c_client *client = data->client;
 	int target_count;
 	int err = 0;
-	u8 bits, fan_config;
+	u8 bits;
 	int sr;
 
 	mutex_lock(&data->update_lock);
@@ -249,23 +243,6 @@ static int max31790_write_fan(struct device *dev, u32 attr, int channel,
 					MAX31790_REG_TARGET_COUNT(channel),
 					data->target_count[channel]);
 		break;
-	case hwmon_fan_enable:
-		fan_config = data->fan_config[channel];
-		if (val == 0) {
-			fan_config &= ~MAX31790_FAN_CFG_TACH_INPUT_EN;
-		} else if (val == 1) {
-			fan_config |= MAX31790_FAN_CFG_TACH_INPUT_EN;
-		} else {
-			err = -EINVAL;
-			break;
-		}
-		if (fan_config != data->fan_config[channel]) {
-			err = i2c_smbus_write_byte_data(client, MAX31790_REG_FAN_CONFIG(channel),
-							fan_config);
-			if (!err)
-				data->fan_config[channel] = fan_config;
-		}
-		break;
 	default:
 		err = -EOPNOTSUPP;
 		break;
@@ -291,10 +268,6 @@ static umode_t max31790_fan_is_visible(const void *_data, u32 attr, int channel)
 	case hwmon_fan_target:
 		if (channel < NR_CHANNEL &&
 		    !(fan_config & MAX31790_FAN_CFG_TACH_INPUT))
-			return 0644;
-		return 0;
-	case hwmon_fan_enable:
-		if (channel < NR_CHANNEL)
 			return 0644;
 		return 0;
 	default:
@@ -346,13 +319,10 @@ static int max31790_write_pwm(struct device *dev, u32 attr, int channel,
 			err = -EINVAL;
 			break;
 		}
-
-		val = DIV_ROUND_CLOSEST(val * MAX31790_REG_PWMOUT_SCALE,
-					PWM_INPUT_SCALE);
 		data->valid = false;
 		err = i2c_smbus_write_word_swapped(client,
 						   MAX31790_REG_PWMOUT(channel),
-						   val << 7);
+						   val << 8);
 		break;
 	case hwmon_pwm_enable:
 		fan_config = data->fan_config[channel];
@@ -451,14 +421,14 @@ static umode_t max31790_is_visible(const void *data,
 	}
 }
 
-static const struct hwmon_channel_info * const max31790_info[] = {
+static const struct hwmon_channel_info *max31790_info[] = {
 	HWMON_CHANNEL_INFO(fan,
-			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT | HWMON_F_ENABLE,
-			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT | HWMON_F_ENABLE,
-			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT | HWMON_F_ENABLE,
-			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT | HWMON_F_ENABLE,
-			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT | HWMON_F_ENABLE,
-			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT | HWMON_F_ENABLE,
+			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT,
+			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT,
+			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT,
+			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT,
+			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT,
+			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_FAULT,
 			   HWMON_F_INPUT | HWMON_F_FAULT,
 			   HWMON_F_INPUT | HWMON_F_FAULT,
 			   HWMON_F_INPUT | HWMON_F_FAULT,
@@ -543,13 +513,14 @@ static int max31790_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max31790_id[] = {
-	{ "max31790" },
+	{ "max31790", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max31790_id);
 
 static struct i2c_driver max31790_driver = {
-	.probe		= max31790_probe,
+	.class		= I2C_CLASS_HWMON,
+	.probe_new	= max31790_probe,
 	.driver = {
 		.name	= "max31790",
 	},

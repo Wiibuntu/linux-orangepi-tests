@@ -44,7 +44,12 @@ static inline void smp_send_all_nop(void) { return; }
 
 #define NO_PROC_ID		0xFF		/* No processor magic marker */
 #define ANY_PROC_ID		0xFF		/* Any processor magic marker */
-int __cpu_disable(void);
-void __cpu_die(unsigned int cpu);
+static inline int __cpu_disable (void) {
+  return 0;
+}
+static inline void __cpu_die (unsigned int cpu) {
+  while(1)
+    ;
+}
 
 #endif /*  __ASM_SMP_H */

@@ -16,7 +16,7 @@ description: |
   maximum throughput of 1.2Gbps/lane.
 
 allOf:
-  - $ref: /schemas/media/video-interface-devices.yaml#
+  - $ref: ../video-interface-devices.yaml#
 
 properties:
   compatible:
@@ -91,13 +91,13 @@ required:
   - vddd-supply
   - port
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |
     #include <dt-bindings/gpio/gpio.h>
 
-    i2c {
+    i2c0 {
         #address-cells = <1>;
         #size-cells = <0>;
 

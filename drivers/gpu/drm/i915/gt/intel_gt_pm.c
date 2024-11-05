@@ -3,21 +3,18 @@
  * Copyright © 2019 Intel Corporation
  */
 
-#include <linux/string_helpers.h>
 #include <linux/suspend.h>
 
 #include "i915_drv.h"
-#include "i915_irq.h"
 #include "i915_params.h"
 #include "intel_context.h"
 #include "intel_engine_pm.h"
 #include "intel_gt.h"
 #include "intel_gt_clock_utils.h"
-#include "intel_gt_mcr.h"
 #include "intel_gt_pm.h"
-#include "intel_gt_print.h"
 #include "intel_gt_requests.h"
 #include "intel_llc.h"
+#include "intel_pm.h"
 #include "intel_rc6.h"
 #include "intel_rps.h"
 #include "intel_wakeref.h"
@@ -28,20 +25,19 @@
 static void user_forcewake(struct intel_gt *gt, bool suspend)
 {
 	int count = atomic_read(&gt->user_wakeref);
-	intel_wakeref_t wakeref;
 
 	/* Inside suspend/resume so single threaded, no races to worry about. */
 	if (likely(!count))
 		return;
 
-	wakeref = intel_gt_pm_get(gt);
+	intel_gt_pm_get(gt);
 	if (suspend) {
 		GEM_BUG_ON(count > atomic_read(&gt->wakeref.count));
 		atomic_sub(count, &gt->wakeref.count);
 	} else {
 		atomic_add(count, &gt->wakeref.count);
 	}
-	intel_gt_pm_put(gt, wakeref);
+	intel_gt_pm_put(gt);
 }
 
 static void runtime_begin(struct intel_gt *gt)
@@ -89,8 +85,7 @@ static int __gt_unpark(struct intel_wakeref *wf)
 
 	intel_rc6_unpark(&gt->rc6);
 	intel_rps_unpark(&gt->rps);
-	i915_pmu_gt_unparked(gt);
-	intel_guc_busyness_unpark(gt);
+	i915_pmu_gt_unparked(i915);
 
 	intel_gt_unpark_requests(gt);
 	runtime_begin(gt);
@@ -109,9 +104,8 @@ static int __gt_park(struct intel_wakeref *wf)
 	runtime_end(gt);
 	intel_gt_park_requests(gt);
 
-	intel_guc_busyness_park(gt);
 	i915_vma_parked(gt);
-	i915_pmu_gt_parked(gt);
+	i915_pmu_gt_parked(i915);
 	intel_rps_park(&gt->rps);
 	intel_rc6_park(&gt->rc6);
 
@@ -132,14 +126,7 @@ static const struct intel_wakeref_ops wf_ops = {
 
 void intel_gt_pm_init_early(struct intel_gt *gt)
 {
-	/*
-	 * We access the runtime_pm structure via gt->i915 here rather than
-	 * gt->uncore as we do elsewhere in the file because gt->uncore is not
-	 * yet initialized for all tiles at this point in the driver startup.
-	 * runtime_pm is per-device rather than per-tile, so this is still the
-	 * correct structure.
-	 */
-	intel_wakeref_init(&gt->wakeref, gt->i915, &wf_ops, "GT");
+	intel_wakeref_init(&gt->wakeref, gt->uncore->rpm, &wf_ops);
 	seqcount_mutex_init(&gt->stats.lock, &gt->wakeref.mutex);
 }
 
@@ -159,7 +146,7 @@ static bool reset_engines(struct intel_gt *gt)
 	if (INTEL_INFO(gt->i915)->gpu_reset_clobbers_display)
 		return false;
 
-	return intel_gt_reset_all_engines(gt) == 0;
+	return __intel_gt_reset(gt, ALL_ENGINES) == 0;
 }
 
 static void gt_sanitize(struct intel_gt *gt, bool force)
@@ -168,7 +155,7 @@ static void gt_sanitize(struct intel_gt *gt, bool force)
 	enum intel_engine_id id;
 	intel_wakeref_t wakeref;
 
-	GT_TRACE(gt, "force:%s\n", str_yes_no(force));
+	GT_TRACE(gt, "force:%s", yesno(force));
 
 	/* Use a raw wakeref to avoid calling intel_display_power_get early */
 	wakeref = intel_runtime_pm_get(gt->uncore->rpm);
@@ -185,16 +172,15 @@ static void gt_sanitize(struct intel_gt *gt, bool force)
 	if (intel_gt_is_wedged(gt))
 		intel_gt_unset_wedged(gt);
 
-	/* For GuC mode, ensure submission is disabled before stopping ring */
-	intel_uc_reset_prepare(&gt->uc);
-
-	for_each_engine(engine, gt, id) {
+	for_each_engine(engine, gt, id)
 		if (engine->reset.prepare)
 			engine->reset.prepare(engine);
 
+	intel_uc_reset_prepare(&gt->uc);
+
+	for_each_engine(engine, gt, id)
 		if (engine->sanitize)
 			engine->sanitize(engine);
-	}
 
 	if (reset_engines(gt) || force) {
 		for_each_engine(engine, gt, id)
@@ -218,26 +204,10 @@ void intel_gt_pm_fini(struct intel_gt *gt)
 	intel_rc6_fini(&gt->rc6);
 }
 
-void intel_gt_resume_early(struct intel_gt *gt)
-{
-	/*
-	 * Sanitize steer semaphores during driver resume. This is necessary
-	 * to address observed cases of steer semaphores being
-	 * held after a suspend operation. Confirmation from the hardware team
-	 * assures the safety of this operation, as no lock acquisitions
-	 * by other agents occur during driver load/resume process.
-	 */
-	intel_gt_mcr_lock_sanitize(gt);
-
-	intel_uncore_resume_early(gt->uncore);
-	intel_gt_check_and_clear_faults(gt);
-}
-
 int intel_gt_resume(struct intel_gt *gt)
 {
 	struct intel_engine_cs *engine;
 	enum intel_engine_id id;
-	intel_wakeref_t wakeref;
 	int err;
 
 	err = intel_gt_has_unrecoverable_error(gt);
@@ -254,7 +224,7 @@ int intel_gt_resume(struct intel_gt *gt)
 	 */
 	gt_sanitize(gt, true);
 
-	wakeref = intel_gt_pm_get(gt);
+	intel_gt_pm_get(gt);
 
 	intel_uncore_forcewake_get(gt->uncore, FORCEWAKE_ALL);
 	intel_rc6_sanitize(&gt->rc6);
@@ -266,7 +236,8 @@ int intel_gt_resume(struct intel_gt *gt)
 	/* Only when the HW is re-initialised, can we replay the requests */
 	err = intel_gt_init_hw(gt);
 	if (err) {
-		gt_probe_error(gt, "Failed to initialize GPU, declaring it wedged!\n");
+		i915_probe_error(gt->i915,
+				 "Failed to initialize GPU, declaring it wedged!\n");
 		goto err_wedged;
 	}
 
@@ -283,8 +254,9 @@ int intel_gt_resume(struct intel_gt *gt)
 
 		intel_engine_pm_put(engine);
 		if (err) {
-			gt_err(gt, "Failed to restart %s (%d)\n",
-			       engine->name, err);
+			drm_err(&gt->i915->drm,
+				"Failed to restart %s (%d)\n",
+				engine->name, err);
 			goto err_wedged;
 		}
 	}
@@ -293,12 +265,13 @@ int intel_gt_resume(struct intel_gt *gt)
 
 	intel_uc_resume(&gt->uc);
 
+	intel_pxp_resume(&gt->pxp);
+
 	user_forcewake(gt, false);
 
 out_fw:
 	intel_uncore_forcewake_put(gt->uncore, FORCEWAKE_ALL);
-	intel_gt_pm_put(gt, wakeref);
-	intel_gt_bind_context_set_ready(gt);
+	intel_gt_pm_put(gt);
 	return err;
 
 err_wedged:
@@ -325,9 +298,10 @@ static void wait_for_suspend(struct intel_gt *gt)
 
 void intel_gt_suspend_prepare(struct intel_gt *gt)
 {
-	intel_gt_bind_context_set_unready(gt);
 	user_forcewake(gt, true);
 	wait_for_suspend(gt);
+
+	intel_pxp_suspend_prepare(&gt->pxp);
 }
 
 static suspend_state_t pm_suspend_target(void)
@@ -352,6 +326,7 @@ void intel_gt_suspend_late(struct intel_gt *gt)
 	GEM_BUG_ON(gt->awake);
 
 	intel_uc_suspend(&gt->uc);
+	intel_pxp_suspend(&gt->pxp);
 
 	/*
 	 * On disabling the device, we want to turn off HW access to memory
@@ -379,7 +354,7 @@ void intel_gt_suspend_late(struct intel_gt *gt)
 
 void intel_gt_runtime_suspend(struct intel_gt *gt)
 {
-	intel_gt_bind_context_set_unready(gt);
+	intel_pxp_runtime_suspend(&gt->pxp);
 	intel_uc_runtime_suspend(&gt->uc);
 
 	GT_TRACE(gt, "\n");
@@ -397,7 +372,8 @@ int intel_gt_runtime_resume(struct intel_gt *gt)
 	if (ret)
 		return ret;
 
-	intel_gt_bind_context_set_ready(gt);
+	intel_pxp_runtime_resume(&gt->pxp);
+
 	return 0;
 }
 

@@ -13,7 +13,9 @@
 #include <linux/pagemap.h>
 #include <linux/stat.h>
 #include <linux/string.h>
+#include <linux/inet.h>
 #include <linux/namei.h>
+#include <linux/idr.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <net/9p/9p.h>
@@ -48,17 +50,12 @@ static int v9fs_cached_dentry_delete(const struct dentry *dentry)
 static void v9fs_dentry_release(struct dentry *dentry)
 {
 	struct hlist_node *p, *n;
-	struct hlist_head head;
 
 	p9_debug(P9_DEBUG_VFS, " dentry: %pd (%p)\n",
 		 dentry, dentry);
-
-	spin_lock(&dentry->d_lock);
-	hlist_move_list((struct hlist_head *)&dentry->d_fsdata, &head);
-	spin_unlock(&dentry->d_lock);
-
-	hlist_for_each_safe(p, n, &head)
-		p9_fid_put(hlist_entry(p, struct p9_fid, dlist));
+	hlist_for_each_safe(p, n, (struct hlist_head *)&dentry->d_fsdata)
+		p9_client_clunk(hlist_entry(p, struct p9_fid, dlist));
+	dentry->d_fsdata = NULL;
 }
 
 static int v9fs_lookup_revalidate(struct dentry *dentry, unsigned int flags)
@@ -88,7 +85,7 @@ static int v9fs_lookup_revalidate(struct dentry *dentry, unsigned int flags)
 			retval = v9fs_refresh_inode_dotl(fid, inode);
 		else
 			retval = v9fs_refresh_inode(fid, inode);
-		p9_fid_put(fid);
+		p9_client_clunk(fid);
 
 		if (retval == -ENOENT)
 			return 0;

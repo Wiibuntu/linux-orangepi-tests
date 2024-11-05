@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * NXP Wireless LAN device driver: 802.11n
  *
  * Copyright 2011-2020 NXP
+ *
+ * This software file (the "File") is distributed by NXP
+ * under the terms of the GNU General Public License Version 2, June 1991
+ * (the "License").  You may use, redistribute and/or modify this File in
+ * accordance with the terms and conditions of the License, a copy of which
+ * is available by writing to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+ * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *
+ * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+ * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+ * this warranty disclaimer.
  */
 
 #include "decl.h"
@@ -392,10 +404,12 @@ mwifiex_cmd_append_11n_tlv(struct mwifiex_private *priv,
 
 		chan_list =
 			(struct mwifiex_ie_types_chan_list_param_set *) *buffer;
-		memset(chan_list, 0, struct_size(chan_list, chan_scan_param, 1));
+		memset(chan_list, 0,
+		       sizeof(struct mwifiex_ie_types_chan_list_param_set));
 		chan_list->header.type = cpu_to_le16(TLV_TYPE_CHANLIST);
-		chan_list->header.len =
-			cpu_to_le16(sizeof(struct mwifiex_chan_scan_param_set));
+		chan_list->header.len = cpu_to_le16(
+			sizeof(struct mwifiex_ie_types_chan_list_param_set) -
+			sizeof(struct mwifiex_ie_types_header));
 		chan_list->chan_scan_param[0].chan_number =
 			bss_desc->bcn_ht_oper->primary_chan;
 		chan_list->chan_scan_param[0].radio_type =
@@ -409,8 +423,8 @@ mwifiex_cmd_append_11n_tlv(struct mwifiex_private *priv,
 					  (bss_desc->bcn_ht_oper->ht_param &
 					  IEEE80211_HT_PARAM_CHA_SEC_OFFSET));
 
-		*buffer += struct_size(chan_list, chan_scan_param, 1);
-		ret_len += struct_size(chan_list, chan_scan_param, 1);
+		*buffer += sizeof(struct mwifiex_ie_types_chan_list_param_set);
+		ret_len += sizeof(struct mwifiex_ie_types_chan_list_param_set);
 	}
 
 	if (bss_desc->bcn_bss_co_2040) {
@@ -876,11 +890,13 @@ mwifiex_send_delba_txbastream_tbl(struct mwifiex_private *priv, u8 tid)
  */
 void mwifiex_update_ampdu_txwinsize(struct mwifiex_adapter *adapter)
 {
-	u8 i, j;
+	u8 i;
 	u32 tx_win_size;
 	struct mwifiex_private *priv;
 
 	for (i = 0; i < adapter->priv_num; i++) {
+		if (!adapter->priv[i])
+			continue;
 		priv = adapter->priv[i];
 		tx_win_size = priv->add_ba_param.tx_win_size;
 
@@ -905,8 +921,8 @@ void mwifiex_update_ampdu_txwinsize(struct mwifiex_adapter *adapter)
 		if (tx_win_size != priv->add_ba_param.tx_win_size) {
 			if (!priv->media_connected)
 				continue;
-			for (j = 0; j < MAX_NUM_TID; j++)
-				mwifiex_send_delba_txbastream_tbl(priv, j);
+			for (i = 0; i < MAX_NUM_TID; i++)
+				mwifiex_send_delba_txbastream_tbl(priv, i);
 		}
 	}
 }

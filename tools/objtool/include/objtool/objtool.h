@@ -21,17 +21,12 @@ struct pv_state {
 
 struct objtool_file {
 	struct elf *elf;
+	struct list_head insn_list;
 	DECLARE_HASHTABLE(insn_hash, 20);
 	struct list_head retpoline_call_list;
-	struct list_head return_thunk_list;
 	struct list_head static_call_list;
 	struct list_head mcount_loc_list;
-	struct list_head endbr_list;
-	struct list_head call_list;
-	bool ignore_unreachables, hints, rodata;
-
-	unsigned int nr_endbr;
-	unsigned int nr_endbr_int;
+	bool ignore_unreachables, c_file, hints, rodata;
 
 	unsigned long jl_short, jl_long;
 	unsigned long jl_nop_short, jl_nop_long;

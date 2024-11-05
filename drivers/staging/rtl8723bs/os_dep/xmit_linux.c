@@ -5,6 +5,7 @@
  *
  ******************************************************************************/
 #include <drv_types.h>
+#include <rtw_debug.h>
 
 
 uint rtw_remainder_len(struct pkt_file *pfile)
@@ -143,8 +144,9 @@ static int rtw_mlcst2unicst(struct adapter *padapter, struct sk_buff *skb)
 		psta = list_entry(plist, struct sta_info, asoc_list);
 
 		stainfo_offset = rtw_stainfo_offset(pstapriv, psta);
-		if (stainfo_offset_valid(stainfo_offset))
+		if (stainfo_offset_valid(stainfo_offset)) {
 			chk_alive_list[chk_alive_num++] = stainfo_offset;
+		}
 	}
 	spin_unlock_bh(&pstapriv->asoc_list_lock);
 
@@ -179,7 +181,7 @@ static int rtw_mlcst2unicst(struct adapter *padapter, struct sk_buff *skb)
 	return true;
 }
 
-void _rtw_xmit_entry(struct sk_buff *pkt, struct net_device *pnetdev)
+int _rtw_xmit_entry(struct sk_buff *pkt, struct net_device *pnetdev)
 {
 	struct adapter *padapter = rtw_netdev_priv(pnetdev);
 	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
@@ -200,7 +202,7 @@ void _rtw_xmit_entry(struct sk_buff *pkt, struct net_device *pnetdev)
 		if (pxmitpriv->free_xmitframe_cnt > (NR_XMITFRAME / 4)) {
 			res = rtw_mlcst2unicst(padapter, pkt);
 			if (res)
-				return;
+				goto exit;
 		}
 	}
 
@@ -208,17 +210,22 @@ void _rtw_xmit_entry(struct sk_buff *pkt, struct net_device *pnetdev)
 	if (res < 0)
 		goto drop_packet;
 
-	return;
+	goto exit;
 
 drop_packet:
 	pxmitpriv->tx_drop++;
 	dev_kfree_skb_any(pkt);
+
+exit:
+	return 0;
 }
 
-netdev_tx_t rtw_xmit_entry(struct sk_buff *pkt, struct net_device *pnetdev)
+int rtw_xmit_entry(struct sk_buff *pkt, struct net_device *pnetdev)
 {
-	if (pkt)
-		_rtw_xmit_entry(pkt, pnetdev);
+	int ret = 0;
 
-	return NETDEV_TX_OK;
+	if (pkt)
+		ret = _rtw_xmit_entry(pkt, pnetdev);
+
+	return ret;
 }

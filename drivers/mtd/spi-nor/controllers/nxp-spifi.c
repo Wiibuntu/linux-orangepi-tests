@@ -17,6 +17,7 @@
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/spi-nor.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 
@@ -202,7 +203,7 @@ static ssize_t nxp_spifi_write(struct spi_nor *nor, loff_t to, size_t len,
 	      SPIFI_CMD_DATALEN(len) |
 	      SPIFI_CMD_FIELDFORM_ALL_SERIAL |
 	      SPIFI_CMD_OPCODE(nor->program_opcode) |
-	      SPIFI_CMD_FRAMEFORM(spifi->nor.addr_nbytes + 1);
+	      SPIFI_CMD_FRAMEFORM(spifi->nor.addr_width + 1);
 	writel(cmd, spifi->io_base + SPIFI_CMD);
 
 	for (i = 0; i < len; i++)
@@ -229,7 +230,7 @@ static int nxp_spifi_erase(struct spi_nor *nor, loff_t offs)
 
 	cmd = SPIFI_CMD_FIELDFORM_ALL_SERIAL |
 	      SPIFI_CMD_OPCODE(nor->erase_opcode) |
-	      SPIFI_CMD_FRAMEFORM(spifi->nor.addr_nbytes + 1);
+	      SPIFI_CMD_FRAMEFORM(spifi->nor.addr_width + 1);
 	writel(cmd, spifi->io_base + SPIFI_CMD);
 
 	return nxp_spifi_wait_for_cmd(spifi);
@@ -251,12 +252,12 @@ static int nxp_spifi_setup_memory_cmd(struct nxp_spifi *spifi)
 	}
 
 	/* Memory mode supports address length between 1 and 4 */
-	if (spifi->nor.addr_nbytes < 1 || spifi->nor.addr_nbytes > 4)
+	if (spifi->nor.addr_width < 1 || spifi->nor.addr_width > 4)
 		return -EINVAL;
 
 	spifi->mcmd |= SPIFI_CMD_OPCODE(spifi->nor.read_opcode) |
 		       SPIFI_CMD_INTLEN(spifi->nor.read_dummy / 8) |
-		       SPIFI_CMD_FRAMEFORM(spifi->nor.addr_nbytes + 1);
+		       SPIFI_CMD_FRAMEFORM(spifi->nor.addr_width + 1);
 
 	return 0;
 }
@@ -304,10 +305,10 @@ static int nxp_spifi_setup_flash(struct nxp_spifi *spifi,
 		}
 	}
 
-	if (of_property_read_bool(np, "spi-cpha"))
+	if (of_find_property(np, "spi-cpha", NULL))
 		mode |= SPI_CPHA;
 
-	if (of_property_read_bool(np, "spi-cpol"))
+	if (of_find_property(np, "spi-cpol", NULL))
 		mode |= SPI_CPOL;
 
 	/* Setup control register defaults */
@@ -394,16 +395,28 @@ static int nxp_spifi_probe(struct platform_device *pdev)
 	if (IS_ERR(spifi->flash_base))
 		return PTR_ERR(spifi->flash_base);
 
-	spifi->clk_spifi = devm_clk_get_enabled(&pdev->dev, "spifi");
+	spifi->clk_spifi = devm_clk_get(&pdev->dev, "spifi");
 	if (IS_ERR(spifi->clk_spifi)) {
-		dev_err(&pdev->dev, "spifi clock not found or unable to enable\n");
+		dev_err(&pdev->dev, "spifi clock not found\n");
 		return PTR_ERR(spifi->clk_spifi);
 	}
 
-	spifi->clk_reg = devm_clk_get_enabled(&pdev->dev, "reg");
+	spifi->clk_reg = devm_clk_get(&pdev->dev, "reg");
 	if (IS_ERR(spifi->clk_reg)) {
-		dev_err(&pdev->dev, "reg clock not found or unable to enable\n");
+		dev_err(&pdev->dev, "reg clock not found\n");
 		return PTR_ERR(spifi->clk_reg);
+	}
+
+	ret = clk_prepare_enable(spifi->clk_reg);
+	if (ret) {
+		dev_err(&pdev->dev, "unable to enable reg clock\n");
+		return ret;
+	}
+
+	ret = clk_prepare_enable(spifi->clk_spifi);
+	if (ret) {
+		dev_err(&pdev->dev, "unable to enable spifi clock\n");
+		goto dis_clk_reg;
 	}
 
 	spifi->dev = &pdev->dev;
@@ -418,24 +431,35 @@ static int nxp_spifi_probe(struct platform_device *pdev)
 	flash_np = of_get_next_available_child(pdev->dev.of_node, NULL);
 	if (!flash_np) {
 		dev_err(&pdev->dev, "no SPI flash device to configure\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto dis_clks;
 	}
 
 	ret = nxp_spifi_setup_flash(spifi, flash_np);
 	of_node_put(flash_np);
 	if (ret) {
 		dev_err(&pdev->dev, "unable to setup flash chip\n");
-		return ret;
+		goto dis_clks;
 	}
 
 	return 0;
+
+dis_clks:
+	clk_disable_unprepare(spifi->clk_spifi);
+dis_clk_reg:
+	clk_disable_unprepare(spifi->clk_reg);
+	return ret;
 }
 
-static void nxp_spifi_remove(struct platform_device *pdev)
+static int nxp_spifi_remove(struct platform_device *pdev)
 {
 	struct nxp_spifi *spifi = platform_get_drvdata(pdev);
 
 	mtd_device_unregister(&spifi->nor.mtd);
+	clk_disable_unprepare(spifi->clk_spifi);
+	clk_disable_unprepare(spifi->clk_reg);
+
+	return 0;
 }
 
 static const struct of_device_id nxp_spifi_match[] = {
@@ -446,7 +470,7 @@ MODULE_DEVICE_TABLE(of, nxp_spifi_match);
 
 static struct platform_driver nxp_spifi_driver = {
 	.probe	= nxp_spifi_probe,
-	.remove_new = nxp_spifi_remove,
+	.remove	= nxp_spifi_remove,
 	.driver	= {
 		.name = "nxp-spifi",
 		.of_match_table = nxp_spifi_match,

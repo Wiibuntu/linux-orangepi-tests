@@ -665,9 +665,6 @@ static struct packet_type bootp_packet_type __initdata = {
 	.func =	ic_bootp_recv,
 };
 
-/* DHCPACK can overwrite DNS if fallback was set upon first BOOTP reply */
-static int ic_nameservers_fallback __initdata;
-
 /*
  *  Initialize DHCP/BOOTP extension fields in the request.
  */
@@ -941,8 +938,7 @@ static void __init ic_do_bootp_ext(u8 *ext)
 		if (servers > CONF_NAMESERVERS_MAX)
 			servers = CONF_NAMESERVERS_MAX;
 		for (i = 0; i < servers; i++) {
-			if (ic_nameservers[i] == NONE ||
-			    ic_nameservers_fallback)
+			if (ic_nameservers[i] == NONE)
 				memcpy(&ic_nameservers[i], ext+1+4*i, 4);
 		}
 		break;
@@ -1162,10 +1158,8 @@ static int __init ic_bootp_recv(struct sk_buff *skb, struct net_device *dev, str
 	ic_addrservaddr = b->iph.saddr;
 	if (ic_gateway == NONE && b->relay_ip)
 		ic_gateway = b->relay_ip;
-	if (ic_nameservers[0] == NONE) {
+	if (ic_nameservers[0] == NONE)
 		ic_nameservers[0] = ic_servaddr;
-		ic_nameservers_fallback = 1;
-	}
 	ic_got_reply = IC_BOOTP;
 
 drop_unlock:
@@ -1440,7 +1434,6 @@ __be32 __init root_nfs_parse_addr(char *name)
 static int __init wait_for_devices(void)
 {
 	int i;
-	bool try_init_devs = true;
 
 	for (i = 0; i < DEVICE_WAIT_MAX; i++) {
 		struct net_device *dev;
@@ -1459,11 +1452,6 @@ static int __init wait_for_devices(void)
 		rtnl_unlock();
 		if (found)
 			return 0;
-		if (try_init_devs &&
-		    (ROOT_DEV == Root_NFS || ROOT_DEV == Root_CIFS)) {
-			try_init_devs = false;
-			wait_for_init_devices_probe();
-		}
 		ssleep(1);
 	}
 	return -ENODEV;
@@ -1771,15 +1759,15 @@ static int __init ip_auto_config_setup(char *addrs)
 			case 4:
 				if ((dp = strchr(ip, '.'))) {
 					*dp++ = '\0';
-					strscpy(utsname()->domainname, dp,
+					strlcpy(utsname()->domainname, dp,
 						sizeof(utsname()->domainname));
 				}
-				strscpy(utsname()->nodename, ip,
+				strlcpy(utsname()->nodename, ip,
 					sizeof(utsname()->nodename));
 				ic_host_name_set = 1;
 				break;
 			case 5:
-				strscpy(user_dev_name, ip, sizeof(user_dev_name));
+				strlcpy(user_dev_name, ip, sizeof(user_dev_name));
 				break;
 			case 6:
 				if (ic_proto_name(ip) == 0 &&
@@ -1826,7 +1814,7 @@ __setup("nfsaddrs=", nfsaddrs_config_setup);
 
 static int __init vendor_class_identifier_setup(char *addrs)
 {
-	if (strscpy(vendor_class_identifier, addrs,
+	if (strlcpy(vendor_class_identifier, addrs,
 		    sizeof(vendor_class_identifier))
 	    >= sizeof(vendor_class_identifier))
 		pr_warn("DHCP: vendorclass too long, truncated to \"%s\"\n",

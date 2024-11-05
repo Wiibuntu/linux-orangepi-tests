@@ -448,7 +448,7 @@ static __always_inline int process_packet(void *data, __u64 off, void *data_end,
 	return bpf_redirect(ifindex, 0);
 }
 
-SEC("tc")
+SEC("l4lb-demo")
 int balancer_ingress(struct __sk_buff *ctx)
 {
 	void *data_end = (void *)(long)ctx->data_end;

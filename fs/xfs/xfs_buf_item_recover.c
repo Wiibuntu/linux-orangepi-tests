@@ -22,18 +22,6 @@
 #include "xfs_inode.h"
 #include "xfs_dir2.h"
 #include "xfs_quota.h"
-#include "xfs_alloc.h"
-#include "xfs_ag.h"
-#include "xfs_sb.h"
-
-/*
- * This is the number of entries in the l_buf_cancel_table used during
- * recovery.
- */
-#define	XLOG_BC_TABLE_SIZE	64
-
-#define XLOG_BUF_CANCEL_BUCKET(log, blkno) \
-	((log)->l_buf_cancel_table + ((uint64_t)blkno % XLOG_BC_TABLE_SIZE))
 
 /*
  * This structure is used during recovery to record the buf log items which
@@ -88,7 +76,7 @@ xlog_add_buffer_cancelled(
 		return false;
 	}
 
-	bcp = kmalloc(sizeof(struct xfs_buf_cancel), GFP_KERNEL | __GFP_NOFAIL);
+	bcp = kmem_alloc(sizeof(struct xfs_buf_cancel), 0);
 	bcp->bc_blkno = blkno;
 	bcp->bc_len = len;
 	bcp->bc_refcount = 1;
@@ -132,7 +120,7 @@ xlog_put_buffer_cancelled(
 
 	if (--bcp->bc_refcount == 0) {
 		list_del(&bcp->bc_list);
-		kfree(bcp);
+		kmem_free(bcp);
 	}
 	return true;
 }
@@ -688,67 +676,6 @@ xlog_recover_do_inode_buffer(
 }
 
 /*
- * Update the in-memory superblock and perag structures from the primary SB
- * buffer.
- *
- * This is required because transactions running after growfs may require the
- * updated values to be set in a previous fully commit transaction.
- */
-static int
-xlog_recover_do_primary_sb_buffer(
-	struct xfs_mount		*mp,
-	struct xlog_recover_item	*item,
-	struct xfs_buf			*bp,
-	struct xfs_buf_log_format	*buf_f,
-	xfs_lsn_t			current_lsn)
-{
-	struct xfs_dsb			*dsb = bp->b_addr;
-	xfs_agnumber_t			orig_agcount = mp->m_sb.sb_agcount;
-	int				error;
-
-	xlog_recover_do_reg_buffer(mp, item, bp, buf_f, current_lsn);
-
-	if (orig_agcount == 0) {
-		xfs_alert(mp, "Trying to grow file system without AGs");
-		return -EFSCORRUPTED;
-	}
-
-	/*
-	 * Update the in-core super block from the freshly recovered on-disk one.
-	 */
-	xfs_sb_from_disk(&mp->m_sb, dsb);
-
-	if (mp->m_sb.sb_agcount < orig_agcount) {
-		xfs_alert(mp, "Shrinking AG count in log recovery not supported");
-		return -EFSCORRUPTED;
-	}
-
-	/*
-	 * Growfs can also grow the last existing AG.  In this case we also need
-	 * to update the length in the in-core perag structure and values
-	 * depending on it.
-	 */
-	error = xfs_update_last_ag_size(mp, orig_agcount);
-	if (error)
-		return error;
-
-	/*
-	 * Initialize the new perags, and also update various block and inode
-	 * allocator setting based off the number of AGs or total blocks.
-	 * Because of the latter this also needs to happen if the agcount did
-	 * not change.
-	 */
-	error = xfs_initialize_perag(mp, orig_agcount, mp->m_sb.sb_agcount,
-			mp->m_sb.sb_dblocks, &mp->m_maxagi);
-	if (error) {
-		xfs_warn(mp, "Failed recovery per-ag init: %d", error);
-		return error;
-	}
-	mp->m_alloc_set_aside = xfs_alloc_set_aside(mp);
-	return 0;
-}
-
-/*
  * V5 filesystems know the age of the buffer on disk being recovered. We can
  * have newer objects on disk than we are replaying, and so for these cases we
  * don't want to replay the current change as that will make the buffer contents
@@ -889,7 +816,7 @@ xlog_recover_get_buf_lsn(
 	}
 
 	if (lsn != (xfs_lsn_t)-1) {
-		if (!uuid_equal(&mp->m_sb.sb_meta_uuid, uuid))
+		if (!uuid_equal(&mp->m_sb.sb_uuid, uuid))
 			goto recover_immediately;
 		return lsn;
 	}
@@ -1007,16 +934,6 @@ xlog_recover_buf_commit_pass2(
 	if (lsn && lsn != -1 && XFS_LSN_CMP(lsn, current_lsn) >= 0) {
 		trace_xfs_log_recover_buf_skip(log, buf_f);
 		xlog_recover_validate_buf_type(mp, bp, buf_f, NULLCOMMITLSN);
-
-		/*
-		 * We're skipping replay of this buffer log item due to the log
-		 * item LSN being behind the ondisk buffer.  Verify the buffer
-		 * contents since we aren't going to run the write verifier.
-		 */
-		if (bp->b_ops) {
-			bp->b_ops->verify_read(bp);
-			error = bp->b_error;
-		}
 		goto out_release;
 	}
 
@@ -1030,12 +947,6 @@ xlog_recover_buf_commit_pass2(
 
 		dirty = xlog_recover_do_dquot_buffer(mp, log, item, bp, buf_f);
 		if (!dirty)
-			goto out_release;
-	} else if ((xfs_blft_from_flags(buf_f) & XFS_BLFT_SB_BUF) &&
-			xfs_buf_daddr(bp) == 0) {
-		error = xlog_recover_do_primary_sb_buffer(mp, item, bp, buf_f,
-				current_lsn);
-		if (error)
 			goto out_release;
 	} else {
 		xlog_recover_do_reg_buffer(mp, item, bp, buf_f, current_lsn);
@@ -1082,60 +993,3 @@ const struct xlog_recover_item_ops xlog_buf_item_ops = {
 	.commit_pass1		= xlog_recover_buf_commit_pass1,
 	.commit_pass2		= xlog_recover_buf_commit_pass2,
 };
-
-#ifdef DEBUG
-void
-xlog_check_buf_cancel_table(
-	struct xlog	*log)
-{
-	int		i;
-
-	for (i = 0; i < XLOG_BC_TABLE_SIZE; i++)
-		ASSERT(list_empty(&log->l_buf_cancel_table[i]));
-}
-#endif
-
-int
-xlog_alloc_buf_cancel_table(
-	struct xlog	*log)
-{
-	void		*p;
-	int		i;
-
-	ASSERT(log->l_buf_cancel_table == NULL);
-
-	p = kmalloc_array(XLOG_BC_TABLE_SIZE, sizeof(struct list_head),
-			  GFP_KERNEL);
-	if (!p)
-		return -ENOMEM;
-
-	log->l_buf_cancel_table = p;
-	for (i = 0; i < XLOG_BC_TABLE_SIZE; i++)
-		INIT_LIST_HEAD(&log->l_buf_cancel_table[i]);
-
-	return 0;
-}
-
-void
-xlog_free_buf_cancel_table(
-	struct xlog	*log)
-{
-	int		i;
-
-	if (!log->l_buf_cancel_table)
-		return;
-
-	for (i = 0; i < XLOG_BC_TABLE_SIZE; i++) {
-		struct xfs_buf_cancel	*bc;
-
-		while ((bc = list_first_entry_or_null(
-				&log->l_buf_cancel_table[i],
-				struct xfs_buf_cancel, bc_list))) {
-			list_del(&bc->bc_list);
-			kfree(bc);
-		}
-	}
-
-	kfree(log->l_buf_cancel_table);
-	log->l_buf_cancel_table = NULL;
-}

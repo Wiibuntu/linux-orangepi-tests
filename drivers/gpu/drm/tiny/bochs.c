@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <linux/module.h>
+#include <linux/console.h>
 #include <linux/pci.h>
 
 #include <drm/drm_aperture.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_edid.h>
-#include <drm/drm_fbdev_ttm.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_managed.h>
-#include <drm/drm_module.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
@@ -85,7 +82,7 @@ struct bochs_device {
 	u16 yres_virtual;
 	u32 stride;
 	u32 bpp;
-	const struct drm_edid *drm_edid;
+	struct edid *edid;
 
 	/* drm */
 	struct drm_device *dev;
@@ -199,10 +196,10 @@ static int bochs_hw_load_edid(struct bochs_device *bochs)
 	if (drm_edid_header_is_valid(header) != 8)
 		return -1;
 
-	drm_edid_free(bochs->drm_edid);
-	bochs->drm_edid = drm_edid_read_custom(&bochs->connector,
-					       bochs_get_edid_block, bochs);
-	if (!bochs->drm_edid)
+	kfree(bochs->edid);
+	bochs->edid = drm_do_get_edid(&bochs->connector,
+				      bochs_get_edid_block, bochs);
+	if (bochs->edid == NULL)
 		return -1;
 
 	return 0;
@@ -303,14 +300,12 @@ static void bochs_hw_fini(struct drm_device *dev)
 	if (bochs->fb_map)
 		iounmap(bochs->fb_map);
 	pci_release_regions(to_pci_dev(dev->dev));
-	drm_edid_free(bochs->drm_edid);
+	kfree(bochs->edid);
 }
 
 static void bochs_hw_blank(struct bochs_device *bochs, bool blank)
 {
 	DRM_DEBUG_DRIVER("hw_blank %d\n", blank);
-	/* enable color bit (so VGA_IS1_RC access works) */
-	bochs_vga_writeb(bochs, VGA_MIS_W, VGA_MIS_COLOR);
 	/* discard ar_flip_flop */
 	(void)bochs_vga_readb(bochs, VGA_IS1_RC);
 	/* blank or unblank; we need only update index and set 0x20 */
@@ -471,9 +466,12 @@ static const struct drm_simple_display_pipe_funcs bochs_pipe_funcs = {
 
 static int bochs_connector_get_modes(struct drm_connector *connector)
 {
-	int count;
+	struct bochs_device *bochs =
+		container_of(connector, struct bochs_device, connector);
+	int count = 0;
 
-	count = drm_edid_connector_add_modes(connector);
+	if (bochs->edid)
+		count = drm_add_edid_modes(connector, bochs->edid);
 
 	if (!count) {
 		count = drm_add_modes_noedid(connector, 8192, 8192);
@@ -504,10 +502,10 @@ static void bochs_connector_init(struct drm_device *dev)
 	drm_connector_helper_add(connector, &bochs_connector_connector_helper_funcs);
 
 	bochs_hw_load_edid(bochs);
-	if (bochs->drm_edid) {
+	if (bochs->edid) {
 		DRM_INFO("Found EDID data blob.\n");
 		drm_connector_attach_edid_property(connector);
-		drm_edid_connector_update(&bochs->connector, bochs->drm_edid);
+		drm_connector_update_edid_property(connector, bochs->edid);
 	}
 }
 
@@ -540,8 +538,10 @@ static int bochs_kms_init(struct bochs_device *bochs)
 	bochs->dev->mode_config.max_width = 8192;
 	bochs->dev->mode_config.max_height = 8192;
 
+	bochs->dev->mode_config.fb_base = bochs->fb_base;
 	bochs->dev->mode_config.preferred_depth = 24;
 	bochs->dev->mode_config.prefer_shadow = 0;
+	bochs->dev->mode_config.prefer_shadow_fbdev = 1;
 	bochs->dev->mode_config.quirk_addfb_prefer_host_byte_order = true;
 
 	bochs->dev->mode_config.funcs = &bochs_mode_funcs;
@@ -580,17 +580,13 @@ static int bochs_load(struct drm_device *dev)
 
 	ret = drmm_vram_helper_init(dev, bochs->fb_base, bochs->fb_size);
 	if (ret)
-		goto err_hw_fini;
+		return ret;
 
 	ret = bochs_kms_init(bochs);
 	if (ret)
-		goto err_hw_fini;
+		return ret;
 
 	return 0;
-
-err_hw_fini:
-	bochs_hw_fini(dev);
-	return ret;
 }
 
 DEFINE_DRM_GEM_FOPS(bochs_fops);
@@ -665,13 +661,11 @@ static int bochs_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent
 
 	ret = drm_dev_register(dev, 0);
 	if (ret)
-		goto err_hw_fini;
+		goto err_free_dev;
 
-	drm_fbdev_ttm_setup(dev, 32);
+	drm_fbdev_generic_setup(dev, 32);
 	return ret;
 
-err_hw_fini:
-	bochs_hw_fini(dev);
 err_free_dev:
 	drm_dev_put(dev);
 	return ret;
@@ -685,11 +679,6 @@ static void bochs_pci_remove(struct pci_dev *pdev)
 	drm_atomic_helper_shutdown(dev);
 	bochs_hw_fini(dev);
 	drm_dev_put(dev);
-}
-
-static void bochs_pci_shutdown(struct pci_dev *pdev)
-{
-	drm_atomic_helper_shutdown(pci_get_drvdata(pdev));
 }
 
 static const struct pci_device_id bochs_pci_tbl[] = {
@@ -722,16 +711,31 @@ static struct pci_driver bochs_pci_driver = {
 	.id_table =	bochs_pci_tbl,
 	.probe =	bochs_pci_probe,
 	.remove =	bochs_pci_remove,
-	.shutdown =	bochs_pci_shutdown,
 	.driver.pm =    &bochs_pm_ops,
 };
 
 /* ---------------------------------------------------------------------- */
 /* module init/exit                                                       */
 
-drm_module_pci_driver_if_modeset(bochs_pci_driver, bochs_modeset);
+static int __init bochs_init(void)
+{
+	if (vgacon_text_force() && bochs_modeset == -1)
+		return -EINVAL;
+
+	if (bochs_modeset == 0)
+		return -EINVAL;
+
+	return pci_register_driver(&bochs_pci_driver);
+}
+
+static void __exit bochs_exit(void)
+{
+	pci_unregister_driver(&bochs_pci_driver);
+}
+
+module_init(bochs_init);
+module_exit(bochs_exit);
 
 MODULE_DEVICE_TABLE(pci, bochs_pci_tbl);
 MODULE_AUTHOR("Gerd Hoffmann <kraxel@redhat.com>");
-MODULE_DESCRIPTION("DRM Support for bochs dispi vga interface (qemu stdvga)");
 MODULE_LICENSE("GPL");

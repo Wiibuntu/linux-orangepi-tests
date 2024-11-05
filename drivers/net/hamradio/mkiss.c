@@ -806,8 +806,8 @@ static void mkiss_close(struct tty_struct *tty)
 }
 
 /* Perform I/O control on an active ax25 channel. */
-static int mkiss_ioctl(struct tty_struct *tty, unsigned int cmd,
-		unsigned long arg)
+static int mkiss_ioctl(struct tty_struct *tty, struct file *file,
+	unsigned int cmd, unsigned long arg)
 {
 	struct mkiss *ax = mkiss_get(tty);
 	struct net_device *dev;
@@ -874,8 +874,8 @@ static int mkiss_ioctl(struct tty_struct *tty, unsigned int cmd,
  * a block of data has been received, which can now be decapsulated
  * and sent on to the AX.25 layer for further processing.
  */
-static void mkiss_receive_buf(struct tty_struct *tty, const u8 *cp,
-			      const u8 *fp, size_t count)
+static void mkiss_receive_buf(struct tty_struct *tty, const unsigned char *cp,
+	const char *fp, int count)
 {
 	struct mkiss *ax = mkiss_get(tty);
 

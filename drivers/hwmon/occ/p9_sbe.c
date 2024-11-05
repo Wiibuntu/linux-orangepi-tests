@@ -7,15 +7,12 @@
 #include <linux/fsi-occ.h>
 #include <linux/mm.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/string.h>
 #include <linux/sysfs.h>
 
 #include "common.h"
-
-#define OCC_CHECKSUM_RETRIES	3
 
 struct p9_sbe_occ {
 	struct occ occ;
@@ -58,7 +55,8 @@ static bool p9_sbe_occ_save_ffdc(struct p9_sbe_occ *ctx, const void *resp,
 	mutex_lock(&ctx->sbe_error_lock);
 	if (!ctx->sbe_error) {
 		if (resp_len > ctx->ffdc_size) {
-			kvfree(ctx->ffdc);
+			if (ctx->ffdc)
+				kvfree(ctx->ffdc);
 			ctx->ffdc = kvmalloc(resp_len, GFP_KERNEL);
 			if (!ctx->ffdc) {
 				ctx->ffdc_len = 0;
@@ -80,29 +78,25 @@ done:
 	return notify;
 }
 
-static int p9_sbe_occ_send_cmd(struct occ *occ, u8 *cmd, size_t len,
-			       void *resp, size_t resp_len)
+static int p9_sbe_occ_send_cmd(struct occ *occ, u8 *cmd, size_t len)
 {
-	size_t original_resp_len = resp_len;
+	struct occ_response *resp = &occ->resp;
 	struct p9_sbe_occ *ctx = to_p9_sbe_occ(occ);
-	int rc, i;
+	size_t resp_len = sizeof(*resp);
+	int rc;
 
-	for (i = 0; i < OCC_CHECKSUM_RETRIES; ++i) {
-		rc = fsi_occ_submit(ctx->sbe, cmd, len, resp, &resp_len);
-		if (rc >= 0)
-			break;
+	rc = fsi_occ_submit(ctx->sbe, cmd, len, resp, &resp_len);
+	if (rc < 0) {
 		if (resp_len) {
 			if (p9_sbe_occ_save_ffdc(ctx, resp, resp_len))
 				sysfs_notify(&occ->bus_dev->kobj, NULL,
 					     bin_attr_ffdc.attr.name);
-			return rc;
 		}
-		if (rc != -EBADE)
-			return rc;
-		resp_len = original_resp_len;
+
+		return rc;
 	}
 
-	switch (((struct occ_response *)resp)->return_status) {
+	switch (resp->return_status) {
 	case OCC_RESP_CMD_IN_PRG:
 		rc = -ETIMEDOUT;
 		break;
@@ -151,7 +145,7 @@ static int p9_sbe_occ_probe(struct platform_device *pdev)
 	occ->poll_cmd_data = 0x20;		/* P9 OCC poll data */
 	occ->send_cmd = p9_sbe_occ_send_cmd;
 
-	rc = occ_setup(occ);
+	rc = occ_setup(occ, "p9_occ");
 	if (rc == -ESHUTDOWN)
 		rc = -ENODEV;	/* Host is shutdown, don't spew errors */
 
@@ -167,7 +161,7 @@ static int p9_sbe_occ_probe(struct platform_device *pdev)
 	return rc;
 }
 
-static void p9_sbe_occ_remove(struct platform_device *pdev)
+static int p9_sbe_occ_remove(struct platform_device *pdev)
 {
 	struct occ *occ = platform_get_drvdata(pdev);
 	struct p9_sbe_occ *ctx = to_p9_sbe_occ(occ);
@@ -177,23 +171,18 @@ static void p9_sbe_occ_remove(struct platform_device *pdev)
 	ctx->sbe = NULL;
 	occ_shutdown(occ);
 
-	kvfree(ctx->ffdc);
-}
+	if (ctx->ffdc)
+		kvfree(ctx->ffdc);
 
-static const struct of_device_id p9_sbe_occ_of_match[] = {
-	{ .compatible = "ibm,p9-occ-hwmon" },
-	{ .compatible = "ibm,p10-occ-hwmon" },
-	{}
-};
-MODULE_DEVICE_TABLE(of, p9_sbe_occ_of_match);
+	return 0;
+}
 
 static struct platform_driver p9_sbe_occ_driver = {
 	.driver = {
 		.name = "occ-hwmon",
-		.of_match_table = p9_sbe_occ_of_match,
 	},
 	.probe	= p9_sbe_occ_probe,
-	.remove_new = p9_sbe_occ_remove,
+	.remove = p9_sbe_occ_remove,
 };
 
 module_platform_driver(p9_sbe_occ_driver);

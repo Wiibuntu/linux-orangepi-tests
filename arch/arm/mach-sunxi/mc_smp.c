@@ -19,6 +19,7 @@
 #include <linux/irqchip/arm-gic.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/smp.h>
 
 #include <asm/cacheflush.h>
@@ -146,6 +147,9 @@ static int sunxi_cpu_power_switch_set(unsigned int cpu, unsigned int cluster,
 
 static void sunxi_cpu0_hotplug_support_set(bool enable)
 {
+	if (is_a83t)
+		return;
+
 	if (enable) {
 		writel(CPU0_SUPPORT_HOTPLUG_MAGIC0, sram_b_smp_base);
 		writel(CPU0_SUPPORT_HOTPLUG_MAGIC1, sram_b_smp_base + 0x4);
@@ -803,15 +807,15 @@ static int __init sunxi_mc_smp_init(void)
 	for (i = 0; i < ARRAY_SIZE(sunxi_mc_smp_data); i++) {
 		ret = of_property_match_string(node, "enable-method",
 					       sunxi_mc_smp_data[i].enable_method);
-		if (ret >= 0)
+		if (!ret)
 			break;
 	}
 
-	of_node_put(node);
-	if (ret < 0)
-		return -ENODEV;
-
 	is_a83t = sunxi_mc_smp_data[i].is_a83t;
+
+	of_node_put(node);
+	if (ret)
+		return -ENODEV;
 
 	if (!sunxi_mc_smp_cpu_table_init())
 		return -EINVAL;

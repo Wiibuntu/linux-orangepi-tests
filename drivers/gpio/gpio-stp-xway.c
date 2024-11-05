@@ -4,12 +4,11 @@
  *  Copyright (C) 2012 John Crispin <john@phrozen.org>
  */
 
-#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/types.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/mutex.h>
 #include <linux/gpio/driver.h>
 #include <linux/io.h>
@@ -293,20 +292,26 @@ static int xway_stp_probe(struct platform_device *pdev)
 	}
 
 	/* check which edge trigger we should use, default to a falling edge */
-	if (!of_property_read_bool(pdev->dev.of_node, "lantiq,rising"))
+	if (!of_find_property(pdev->dev.of_node, "lantiq,rising", NULL))
 		chip->edge = XWAY_STP_FALLING;
 
-	clk = devm_clk_get_enabled(&pdev->dev, NULL);
+	clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "Failed to get clock\n");
 		return PTR_ERR(clk);
 	}
 
+	ret = clk_prepare_enable(clk);
+	if (ret)
+		return ret;
+
 	xway_stp_hw_init(chip);
 
 	ret = devm_gpiochip_add_data(&pdev->dev, &chip->gc, chip);
-	if (ret)
+	if (ret) {
+		clk_disable_unprepare(clk);
 		return ret;
+	}
 
 	dev_info(&pdev->dev, "Init done\n");
 

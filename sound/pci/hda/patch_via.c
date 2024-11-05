@@ -379,6 +379,7 @@ static void via_free(struct hda_codec *codec)
 	snd_hda_gen_free(codec);
 }
 
+#ifdef CONFIG_PM
 static int via_suspend(struct hda_codec *codec)
 {
 	struct via_spec *spec = codec->spec;
@@ -399,7 +400,9 @@ static int via_resume(struct hda_codec *codec)
 	snd_hda_regmap_sync(codec);
 	return 0;
 }
+#endif
 
+#ifdef CONFIG_PM
 static int via_check_power_status(struct hda_codec *codec, hda_nid_t nid)
 {
 	struct via_spec *spec = codec->spec;
@@ -407,6 +410,7 @@ static int via_check_power_status(struct hda_codec *codec, hda_nid_t nid)
 	vt1708_update_hp_work(codec);
 	return snd_hda_check_amp_list_power(codec, &spec->gen.loopback, nid);
 }
+#endif
 
 /*
  */
@@ -419,9 +423,11 @@ static const struct hda_codec_ops via_patch_ops = {
 	.init = via_init,
 	.free = via_free,
 	.unsol_event = snd_hda_jack_unsol_event,
+#ifdef CONFIG_PM
 	.suspend = via_suspend,
 	.resume = via_resume,
 	.check_power_status = via_check_power_status,
+#endif
 };
 
 
@@ -443,6 +449,8 @@ static void vt1708_set_pinconfig_connect(struct hda_codec *codec, hda_nid_t nid)
 		def_conf = def_conf & (~(AC_JACK_PORT_BOTH << 30));
 		snd_hda_codec_set_pincfg(codec, nid, def_conf);
 	}
+
+	return;
 }
 
 static int vt1708_jack_detect_get(struct snd_kcontrol *kcontrol,
@@ -512,11 +520,11 @@ static int via_parse_auto_config(struct hda_codec *codec)
 	if (err < 0)
 		return err;
 
-	err = auto_parse_beep(codec);
+	err = snd_hda_gen_parse_auto_config(codec, &spec->gen.autocfg);
 	if (err < 0)
 		return err;
 
-	err = snd_hda_gen_parse_auto_config(codec, &spec->gen.autocfg);
+	err = auto_parse_beep(codec);
 	if (err < 0)
 		return err;
 
@@ -813,9 +821,6 @@ static int add_secret_dac_path(struct hda_codec *codec)
 		return 0;
 	nums = snd_hda_get_connections(codec, spec->gen.mixer_nid, conn,
 				       ARRAY_SIZE(conn) - 1);
-	if (nums < 0)
-		return nums;
-
 	for (i = 0; i < nums; i++) {
 		if (get_wcaps_type(get_wcaps(codec, conn[i])) == AC_WID_AUD_OUT)
 			return 0;

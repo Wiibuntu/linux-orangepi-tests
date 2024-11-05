@@ -852,8 +852,8 @@ static void alps_process_packet_v6(struct psmouse *psmouse)
 			x = y = z = 0;
 
 		/* Divide 4 since trackpoint's speed is too fast */
-		input_report_rel(dev2, REL_X, (s8)x / 4);
-		input_report_rel(dev2, REL_Y, -((s8)y / 4));
+		input_report_rel(dev2, REL_X, (char)x / 4);
+		input_report_rel(dev2, REL_Y, -((char)y / 4));
 
 		psmouse_report_standard_buttons(dev2, packet[3]);
 
@@ -1104,8 +1104,8 @@ static void alps_process_trackstick_packet_v7(struct psmouse *psmouse)
 	    ((packet[3] & 0x20) << 1);
 	z = (packet[5] & 0x3f) | ((packet[3] & 0x80) >> 1);
 
-	input_report_rel(dev2, REL_X, (s8)x);
-	input_report_rel(dev2, REL_Y, -((s8)y));
+	input_report_rel(dev2, REL_X, (char)x);
+	input_report_rel(dev2, REL_Y, -((char)y));
 	input_report_abs(dev2, ABS_PRESSURE, z);
 
 	psmouse_report_standard_buttons(dev2, packet[1]);
@@ -1396,16 +1396,24 @@ static bool alps_is_valid_package_ss4_v2(struct psmouse *psmouse)
 
 static DEFINE_MUTEX(alps_mutex);
 
-static int alps_do_register_bare_ps2_mouse(struct alps_data *priv)
+static void alps_register_bare_ps2_mouse(struct work_struct *work)
 {
+	struct alps_data *priv =
+		container_of(work, struct alps_data, dev3_register_work.work);
 	struct psmouse *psmouse = priv->psmouse;
 	struct input_dev *dev3;
-	int error;
+	int error = 0;
+
+	mutex_lock(&alps_mutex);
+
+	if (priv->dev3)
+		goto out;
 
 	dev3 = input_allocate_device();
 	if (!dev3) {
 		psmouse_err(psmouse, "failed to allocate secondary device\n");
-		return -ENOMEM;
+		error = -ENOMEM;
+		goto out;
 	}
 
 	snprintf(priv->phys3, sizeof(priv->phys3), "%s/%s",
@@ -1438,35 +1446,21 @@ static int alps_do_register_bare_ps2_mouse(struct alps_data *priv)
 		psmouse_err(psmouse,
 			    "failed to register secondary device: %d\n",
 			    error);
-		goto err_free_input;
+		input_free_device(dev3);
+		goto out;
 	}
 
 	priv->dev3 = dev3;
-	return 0;
 
-err_free_input:
-	input_free_device(dev3);
-	return error;
-}
+out:
+	/*
+	 * Save the error code so that we can detect that we
+	 * already tried to create the device.
+	 */
+	if (error)
+		priv->dev3 = ERR_PTR(error);
 
-static void alps_register_bare_ps2_mouse(struct work_struct *work)
-{
-	struct alps_data *priv = container_of(work, struct alps_data,
-					      dev3_register_work.work);
-	int error;
-
-	guard(mutex)(&alps_mutex);
-
-	if (!priv->dev3) {
-		error = alps_do_register_bare_ps2_mouse(priv);
-		if (error) {
-			/*
-			 * Save the error code so that we can detect that we
-			 * already tried to create the device.
-			 */
-			priv->dev3 = ERR_PTR(error);
-		}
-	}
+	mutex_unlock(&alps_mutex);
 }
 
 static void alps_report_bare_ps2_packet(struct psmouse *psmouse,
@@ -2300,20 +2294,20 @@ static int alps_get_v3_v7_resolution(struct psmouse *psmouse, int reg_pitch)
 	if (reg < 0)
 		return reg;
 
-	x_pitch = (s8)(reg << 4) >> 4; /* sign extend lower 4 bits */
+	x_pitch = (char)(reg << 4) >> 4; /* sign extend lower 4 bits */
 	x_pitch = 50 + 2 * x_pitch; /* In 0.1 mm units */
 
-	y_pitch = (s8)reg >> 4; /* sign extend upper 4 bits */
+	y_pitch = (char)reg >> 4; /* sign extend upper 4 bits */
 	y_pitch = 36 + 2 * y_pitch; /* In 0.1 mm units */
 
 	reg = alps_command_mode_read_reg(psmouse, reg_pitch + 1);
 	if (reg < 0)
 		return reg;
 
-	x_electrode = (s8)(reg << 4) >> 4; /* sign extend lower 4 bits */
+	x_electrode = (char)(reg << 4) >> 4; /* sign extend lower 4 bits */
 	x_electrode = 17 + x_electrode;
 
-	y_electrode = (s8)reg >> 4; /* sign extend upper 4 bits */
+	y_electrode = (char)reg >> 4; /* sign extend upper 4 bits */
 	y_electrode = 13 + y_electrode;
 
 	x_phys = x_pitch * (x_electrode - 1); /* In 0.1 mm units */
@@ -2976,7 +2970,7 @@ static void alps_disconnect(struct psmouse *psmouse)
 	struct alps_data *priv = psmouse->private;
 
 	psmouse_reset(psmouse);
-	timer_shutdown_sync(&priv->timer);
+	del_timer_sync(&priv->timer);
 	if (priv->dev2)
 		input_unregister_device(priv->dev2);
 	if (!IS_ERR_OR_NULL(priv->dev3))
@@ -3207,7 +3201,7 @@ int alps_detect(struct psmouse *psmouse, bool set_properties)
 	 */
 	psmouse_reset(psmouse);
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc(sizeof(struct alps_data), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 

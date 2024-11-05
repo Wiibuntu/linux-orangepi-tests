@@ -434,10 +434,8 @@ struct nau8824 {
 	struct snd_soc_jack *jack;
 	struct work_struct jdet_work;
 	struct semaphore jd_sem;
-	struct clk *mclk;
 	int fs;
 	int irq;
-	int resume_lock;
 	int micbias_voltage;
 	int vref_impedance;
 	int jkdet_polarity;

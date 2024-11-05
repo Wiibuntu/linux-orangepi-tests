@@ -18,6 +18,7 @@
 #include <linux/ipv6.h>
 #include <linux/inetdevice.h>
 #include <linux/sysfs.h>
+#include <linux/aer.h>
 
 MODULE_DESCRIPTION("QLogic/NetXen (1/10) GbE Intelligent Ethernet Driver");
 MODULE_LICENSE("GPL");
@@ -172,7 +173,8 @@ netxen_napi_add(struct netxen_adapter *adapter, struct net_device *netdev)
 
 	for (ring = 0; ring < adapter->max_sds_rings; ring++) {
 		sds_ring = &recv_ctx->sds_rings[ring];
-		netif_napi_add(netdev, &sds_ring->napi, netxen_nic_poll);
+		netif_napi_add(netdev, &sds_ring->napi,
+				netxen_nic_poll, NAPI_POLL_WEIGHT);
 	}
 
 	return 0;
@@ -233,7 +235,9 @@ static int nx_set_dma_mask(struct netxen_adapter *adapter)
 	cmask = DMA_BIT_MASK(32);
 
 	if (NX_IS_REVISION_P2(adapter->ahw.revision_id)) {
+#ifndef CONFIG_IA64
 		mask = DMA_BIT_MASK(35);
+#endif
 	} else {
 		mask = DMA_BIT_MASK(39);
 		cmask = mask;
@@ -1461,6 +1465,9 @@ netxen_nic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if ((err = pci_request_regions(pdev, netxen_nic_driver_name)))
 		goto err_out_disable_pdev;
 
+	if (NX_IS_REVISION_P3(pdev->revision))
+		pci_enable_pcie_error_reporting(pdev);
+
 	pci_set_master(pdev);
 
 	netdev = alloc_etherdev(sizeof(struct netxen_adapter));
@@ -1597,6 +1604,8 @@ err_out_free_netdev:
 	free_netdev(netdev);
 
 err_out_free_res:
+	if (NX_IS_REVISION_P3(pdev->revision))
+		pci_disable_pcie_error_reporting(pdev);
 	pci_release_regions(pdev);
 
 err_out_disable_pdev:
@@ -1651,8 +1660,10 @@ static void netxen_nic_remove(struct pci_dev *pdev)
 
 	netxen_release_firmware(adapter);
 
-	if (NX_IS_REVISION_P3(pdev->revision))
+	if (NX_IS_REVISION_P3(pdev->revision)) {
 		netxen_cleanup_minidump(adapter);
+		pci_disable_pcie_error_reporting(pdev);
+	}
 
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
@@ -1852,7 +1863,7 @@ netxen_tso_check(struct net_device *netdev,
 
 	if (protocol == cpu_to_be16(ETH_P_8021Q)) {
 
-		vh = skb_vlan_eth_hdr(skb);
+		vh = (struct vlan_ethhdr *)skb->data;
 		protocol = vh->h_vlan_encapsulated_proto;
 		flags = FLAGS_VLAN_TAGGED;
 
@@ -1866,7 +1877,7 @@ netxen_tso_check(struct net_device *netdev,
 	if ((netdev->features & (NETIF_F_TSO | NETIF_F_TSO6)) &&
 			skb_shinfo(skb)->gso_size > 0) {
 
-		hdr_len = skb_tcp_all_headers(skb);
+		hdr_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
 
 		first_desc->mss = cpu_to_le16(skb_shinfo(skb)->gso_size);
 		first_desc->total_hdr_length = hdr_len;
@@ -3185,7 +3196,8 @@ netxen_list_config_ip(struct netxen_adapter *adapter,
 	struct list_head *head;
 	bool ret = false;
 
-	dev = ifa->ifa_dev->dev;
+	dev = ifa->ifa_dev ? ifa->ifa_dev->dev : NULL;
+
 	if (dev == NULL)
 		goto out;
 
@@ -3378,7 +3390,7 @@ netxen_inetaddr_event(struct notifier_block *this,
 	struct in_ifaddr *ifa = (struct in_ifaddr *)ptr;
 	unsigned long ip_event;
 
-	dev = ifa->ifa_dev->dev;
+	dev = ifa->ifa_dev ? ifa->ifa_dev->dev : NULL;
 	ip_event = (event == NETDEV_UP) ? NX_IP_UP : NX_IP_DOWN;
 recheck:
 	if (dev == NULL)

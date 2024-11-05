@@ -465,10 +465,11 @@ static irqreturn_t si1145_trigger_handler(int irq, void *private)
 			goto done;
 	}
 
-	iio_for_each_active_channel(indio_dev, i) {
+	for_each_set_bit(i, indio_dev->active_scan_mask,
+		indio_dev->masklength) {
 		int run = 1;
 
-		while (i + run < iio_get_masklength(indio_dev)) {
+		while (i + run < indio_dev->masklength) {
 			if (!test_bit(i + run, indio_dev->active_scan_mask))
 				break;
 			if (indio_dev->channels[i + run].address !=
@@ -513,7 +514,7 @@ static int si1145_set_chlist(struct iio_dev *indio_dev, unsigned long scan_mask)
 	if (data->scan_mask == scan_mask)
 		return 0;
 
-	for_each_set_bit(i, &scan_mask, iio_get_masklength(indio_dev)) {
+	for_each_set_bit(i, &scan_mask, indio_dev->masklength) {
 		switch (indio_dev->channels[i].address) {
 		case SI1145_REG_ALSVIS_DATA:
 			reg |= SI1145_CHLIST_EN_ALSVIS;
@@ -1268,9 +1269,9 @@ static int si1145_probe_trigger(struct iio_dev *indio_dev)
 	return 0;
 }
 
-static int si1145_probe(struct i2c_client *client)
+static int si1145_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
-	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct si1145_data *data;
 	struct iio_dev *indio_dev;
 	u8 part_id, rev_id, seq_id;
@@ -1351,7 +1352,7 @@ static struct i2c_driver si1145_driver = {
 	.driver = {
 		.name   = "si1145",
 	},
-	.probe = si1145_probe,
+	.probe  = si1145_probe,
 	.id_table = si1145_ids,
 };
 

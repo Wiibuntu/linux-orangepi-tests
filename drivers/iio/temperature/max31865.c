@@ -12,13 +12,11 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/init.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
-#include <linux/property.h>
 #include <linux/spi/spi.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /*
  * The MSB of the register value determines whether the following byte will
@@ -55,7 +53,7 @@ struct max31865_data {
 	struct mutex lock;
 	bool filter_50hz;
 	bool three_wire;
-	u8 buf[2] __aligned(IIO_DMA_MINALIGN);
+	u8 buf[2] ____cacheline_aligned;
 };
 
 static int max31865_read(struct max31865_data *data, u8 reg,
@@ -210,7 +208,7 @@ static ssize_t show_fault(struct device *dev, u8 faultbit, char *buf)
 
 	fault = data->buf[0] & faultbit;
 
-	return sysfs_emit(buf, "%d\n", fault);
+	return sprintf(buf, "%d\n", fault);
 }
 
 static ssize_t show_fault_ovuv(struct device *dev,
@@ -227,7 +225,7 @@ static ssize_t show_filter(struct device *dev,
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct max31865_data *data = iio_priv(indio_dev);
 
-	return sysfs_emit(buf, "%d\n", data->filter_50hz ? 50 : 60);
+	return sprintf(buf, "%d\n", data->filter_50hz ? 50 : 60);
 }
 
 static ssize_t set_filter(struct device *dev,
@@ -307,7 +305,7 @@ static int max31865_probe(struct spi_device *spi)
 	indio_dev->channels = max31865_channels;
 	indio_dev->num_channels = ARRAY_SIZE(max31865_channels);
 
-	if (device_property_read_bool(&spi->dev, "maxim,3-wire")) {
+	if (of_property_read_bool(spi->dev.of_node, "maxim,3-wire")) {
 		/* select 3 wire */
 		data->three_wire = 1;
 	} else {

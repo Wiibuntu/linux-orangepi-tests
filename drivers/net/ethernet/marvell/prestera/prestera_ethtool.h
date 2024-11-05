@@ -11,4 +11,7 @@ struct prestera_port;
 
 extern const struct ethtool_ops prestera_ethtool_ops;
 
+void prestera_ethtool_port_state_changed(struct prestera_port *port,
+					 struct prestera_port_event *evt);
+
 #endif /* _PRESTERA_ETHTOOL_H_ */

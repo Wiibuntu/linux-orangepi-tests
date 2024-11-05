@@ -26,6 +26,7 @@
 #include <linux/utsname.h>
 #include <linux/vmalloc.h>
 #include <linux/atomic.h>
+#include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/mm.h>
 #include <linux/init.h>
@@ -44,7 +45,6 @@
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
-#include <linux/security.h>
 #include "kdb_private.h"
 
 #undef	MODULE_PARAM_PREFIX
@@ -155,63 +155,21 @@ static char *__env[31] = {
 
 static const int __nenv = ARRAY_SIZE(__env);
 
-/*
- * Update the permissions flags (kdb_cmd_enabled) to match the
- * current lockdown state.
- *
- * Within this function the calls to security_locked_down() are "lazy". We
- * avoid calling them if the current value of kdb_cmd_enabled already excludes
- * flags that might be subject to lockdown. Additionally we deliberately check
- * the lockdown flags independently (even though read lockdown implies write
- * lockdown) since that results in both simpler code and clearer messages to
- * the user on first-time debugger entry.
- *
- * The permission masks during a read+write lockdown permits the following
- * flags: INSPECT, SIGNAL, REBOOT (and ALWAYS_SAFE).
- *
- * The INSPECT commands are not blocked during lockdown because they are
- * not arbitrary memory reads. INSPECT covers the backtrace family (sometimes
- * forcing them to have no arguments) and lsmod. These commands do expose
- * some kernel state but do not allow the developer seated at the console to
- * choose what state is reported. SIGNAL and REBOOT should not be controversial,
- * given these are allowed for root during lockdown already.
- */
-static void kdb_check_for_lockdown(void)
+struct task_struct *kdb_curr_task(int cpu)
 {
-	const int write_flags = KDB_ENABLE_MEM_WRITE |
-				KDB_ENABLE_REG_WRITE |
-				KDB_ENABLE_FLOW_CTRL;
-	const int read_flags = KDB_ENABLE_MEM_READ |
-			       KDB_ENABLE_REG_READ;
-
-	bool need_to_lockdown_write = false;
-	bool need_to_lockdown_read = false;
-
-	if (kdb_cmd_enabled & (KDB_ENABLE_ALL | write_flags))
-		need_to_lockdown_write =
-			security_locked_down(LOCKDOWN_DBG_WRITE_KERNEL);
-
-	if (kdb_cmd_enabled & (KDB_ENABLE_ALL | read_flags))
-		need_to_lockdown_read =
-			security_locked_down(LOCKDOWN_DBG_READ_KERNEL);
-
-	/* De-compose KDB_ENABLE_ALL if required */
-	if (need_to_lockdown_write || need_to_lockdown_read)
-		if (kdb_cmd_enabled & KDB_ENABLE_ALL)
-			kdb_cmd_enabled = KDB_ENABLE_MASK & ~KDB_ENABLE_ALL;
-
-	if (need_to_lockdown_write)
-		kdb_cmd_enabled &= ~write_flags;
-
-	if (need_to_lockdown_read)
-		kdb_cmd_enabled &= ~read_flags;
+	struct task_struct *p = curr_task(cpu);
+#ifdef	_TIF_MCA_INIT
+	if ((task_thread_info(p)->flags & _TIF_MCA_INIT) && KDB_TSK(cpu))
+		p = krp->p;
+#endif
+	return p;
 }
 
 /*
- * Check whether the flags of the current command, the permissions of the kdb
- * console and the lockdown state allow a command to be run.
+ * Check whether the flags of the current command and the permissions
+ * of the kdb console has allow a command to be run.
  */
-static bool kdb_check_flags(kdb_cmdflags_t flags, int permissions,
+static inline bool kdb_check_flags(kdb_cmdflags_t flags, int permissions,
 				   bool no_args)
 {
 	/* permissions comes from userspace so needs massaging slightly */
@@ -262,10 +220,11 @@ char *kdbgetenv(const char *match)
  * kdballocenv - This function is used to allocate bytes for
  *	environment entries.
  * Parameters:
- *	bytes	The number of bytes to allocate in the static buffer.
+ *	match	A character string representing a numeric value
+ * Outputs:
+ *	*value  the unsigned long representation of the env variable 'match'
  * Returns:
- *	A pointer to the allocated space in the buffer on success.
- *	NULL if bytes > size available in the envbuffer.
+ *	Zero on success, a kdb diagnostic on failure.
  * Remarks:
  *	We use a static environment buffer (envbuffer) to hold the values
  *	of dynamically generated environment variables (see kdb_set).  Buffer
@@ -1218,12 +1177,9 @@ static int kdb_local(kdb_reason_t reason, int error, struct pt_regs *regs,
 	char *cmdbuf;
 	int diag;
 	struct task_struct *kdb_current =
-		curr_task(raw_smp_processor_id());
+		kdb_curr_task(raw_smp_processor_id());
 
 	KDB_DEBUG_STATE("kdb_local 1", reason);
-
-	kdb_check_for_lockdown();
-
 	kdb_go_count = 0;
 	if (reason == KDB_REASON_DEBUG) {
 		/* special case below */
@@ -1338,6 +1294,8 @@ do_full_getstr:
 		/* PROMPT can only be set if we have MEM_READ permission. */
 		snprintf(kdb_prompt_str, CMD_BUFLEN, kdbgetenv("PROMPT"),
 			 raw_smp_processor_id());
+		if (defcmd_in_progress)
+			strncat(kdb_prompt_str, "[defcmd]", CMD_BUFLEN);
 
 		/*
 		 * Fetch command from keyboard
@@ -2046,6 +2004,54 @@ static int kdb_ef(int argc, const char **argv)
 	return 0;
 }
 
+#if defined(CONFIG_MODULES)
+/*
+ * kdb_lsmod - This function implements the 'lsmod' command.  Lists
+ *	currently loaded kernel modules.
+ *	Mostly taken from userland lsmod.
+ */
+static int kdb_lsmod(int argc, const char **argv)
+{
+	struct module *mod;
+
+	if (argc != 0)
+		return KDB_ARGCOUNT;
+
+	kdb_printf("Module                  Size  modstruct     Used by\n");
+	list_for_each_entry(mod, kdb_modules, list) {
+		if (mod->state == MODULE_STATE_UNFORMED)
+			continue;
+
+		kdb_printf("%-20s%8u  0x%px ", mod->name,
+			   mod->core_layout.size, (void *)mod);
+#ifdef CONFIG_MODULE_UNLOAD
+		kdb_printf("%4d ", module_refcount(mod));
+#endif
+		if (mod->state == MODULE_STATE_GOING)
+			kdb_printf(" (Unloading)");
+		else if (mod->state == MODULE_STATE_COMING)
+			kdb_printf(" (Loading)");
+		else
+			kdb_printf(" (Live)");
+		kdb_printf(" 0x%px", mod->core_layout.base);
+
+#ifdef CONFIG_MODULE_UNLOAD
+		{
+			struct module_use *use;
+			kdb_printf(" [ ");
+			list_for_each_entry(use, &mod->source_list,
+					    source_list)
+				kdb_printf("%s ", use->target->name);
+			kdb_printf("]\n");
+		}
+#endif
+	}
+
+	return 0;
+}
+
+#endif	/* CONFIG_MODULES */
+
 /*
  * kdb_env - This function implements the 'env' command.  Display the
  *	current environment variables.
@@ -2268,7 +2274,7 @@ void kdb_ps_suppressed(void)
 	unsigned long cpu;
 	const struct task_struct *p, *g;
 	for_each_online_cpu(cpu) {
-		p = curr_task(cpu);
+		p = kdb_curr_task(cpu);
 		if (kdb_task_state(p, "-"))
 			++idle;
 	}
@@ -2304,7 +2310,7 @@ void kdb_ps1(const struct task_struct *p)
 		   kdb_task_has_cpu(p), kdb_process_cpu(p),
 		   kdb_task_state_char(p),
 		   (void *)(&p->thread),
-		   p == curr_task(raw_smp_processor_id()) ? '*' : ' ',
+		   p == kdb_curr_task(raw_smp_processor_id()) ? '*' : ' ',
 		   p->comm);
 	if (kdb_task_has_cpu(p)) {
 		if (!KDB_TSK(cpu)) {
@@ -2340,7 +2346,7 @@ static int kdb_ps(int argc, const char **argv)
 	for_each_online_cpu(cpu) {
 		if (KDB_FLAG(CMD_INTERRUPT))
 			return 0;
-		p = curr_task(cpu);
+		p = kdb_curr_task(cpu);
 		if (kdb_task_state(p, mask))
 			kdb_ps1(p);
 	}
@@ -2507,7 +2513,7 @@ static int kdb_summary(int argc, const char **argv)
 	if (val.uptime > (24*60*60)) {
 		int days = val.uptime / (24*60*60);
 		val.uptime %= (24*60*60);
-		kdb_printf("%d day%s ", days, str_plural(days));
+		kdb_printf("%d day%s ", days, days == 1 ? "" : "s");
 	}
 	kdb_printf("%02ld:%02ld\n", val.uptime/(60*60), (val.uptime/60)%60);
 

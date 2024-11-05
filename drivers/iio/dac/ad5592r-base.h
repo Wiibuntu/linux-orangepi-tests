@@ -14,8 +14,6 @@
 #include <linux/mutex.h>
 #include <linux/gpio/driver.h>
 
-#include <linux/iio/iio.h>
-
 struct device;
 struct ad5592r_state;
 
@@ -67,7 +65,7 @@ struct ad5592r_state {
 	u8 gpio_in;
 	u8 gpio_val;
 
-	__be16 spi_msg __aligned(IIO_DMA_MINALIGN);
+	__be16 spi_msg ____cacheline_aligned;
 	__be16 spi_msg_nop;
 };
 

@@ -33,7 +33,7 @@ MODULE_IMPORT_NS(USB_STORAGE);
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
   .driver_info = (flags) }
 
-static const struct usb_device_id cypress_usb_ids[] = {
+static struct usb_device_id cypress_usb_ids[] = {
 #	include "unusual_cypress.h"
 	{ }		/* Terminating entry */
 };
@@ -55,7 +55,7 @@ MODULE_DEVICE_TABLE(usb, cypress_usb_ids);
 	.initFunction = init_function,	\
 }
 
-static const struct us_unusual_dev cypress_unusual_dev_list[] = {
+static struct us_unusual_dev cypress_unusual_dev_list[] = {
 #	include "unusual_cypress.h"
 	{ }		/* Terminating entry */
 };
@@ -177,6 +177,7 @@ static void cypress_atacb_passthrough(struct scsi_cmnd *srb, struct us_data *us)
 		 * but reading register selected in srb->cmnd[4]
 		 */
 		srb->cmd_len = 16;
+		srb->cmnd = ses.cmnd;
 		srb->cmnd[2] = 1;
 
 		usb_stor_transparent_scsi_command(srb, us);

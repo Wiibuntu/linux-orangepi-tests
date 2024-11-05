@@ -7,6 +7,9 @@
  * Magellan and Space Mouse 6dof controller driver for Linux
  */
 
+/*
+ */
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -132,7 +135,7 @@ static int magellan_connect(struct serio *serio, struct serio_driver *drv)
 	int err = -ENOMEM;
 	int i;
 
-	magellan = kzalloc(sizeof(*magellan), GFP_KERNEL);
+	magellan = kzalloc(sizeof(struct magellan), GFP_KERNEL);
 	input_dev = input_allocate_device();
 	if (!magellan || !input_dev)
 		goto fail1;

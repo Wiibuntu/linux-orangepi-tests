@@ -10,6 +10,9 @@
  * Atari, Amstrad, Commodore, Amiga, Sega, etc. joystick driver for Linux
  */
 
+/*
+ */
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/delay.h>
@@ -587,7 +590,7 @@ static void db9_attach(struct parport *pp)
 		return;
 	}
 
-	db9 = kzalloc(sizeof(*db9), GFP_KERNEL);
+	db9 = kzalloc(sizeof(struct db9), GFP_KERNEL);
 	if (!db9)
 		goto err_unreg_pardev;
 
@@ -673,6 +676,7 @@ static struct parport_driver db9_parport_driver = {
 	.name = "db9",
 	.match_port = db9_attach,
 	.detach = db9_detach,
+	.devmodel = true,
 };
 
 static int __init db9_init(void)

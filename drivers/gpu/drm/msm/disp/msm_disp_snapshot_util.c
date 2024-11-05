@@ -5,8 +5,6 @@
 
 #define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 
-#include <generated/utsrelease.h>
-
 #include "msm_disp_snapshot.h"
 
 static void msm_disp_state_dump_regs(u32 **reg, u32 aligned_len, void __iomem *base_addr)
@@ -26,7 +24,7 @@ static void msm_disp_state_dump_regs(u32 **reg, u32 aligned_len, void __iomem *b
 	end_addr = base_addr + aligned_len;
 
 	if (!(*reg))
-		*reg = kvzalloc(len_padded, GFP_KERNEL);
+		*reg = kzalloc(len_padded, GFP_KERNEL);
 
 	if (*reg)
 		dump_addr = *reg;
@@ -48,20 +46,19 @@ static void msm_disp_state_dump_regs(u32 **reg, u32 aligned_len, void __iomem *b
 	}
 }
 
-static void msm_disp_state_print_regs(const u32 *dump_addr, u32 len,
-		void __iomem *base_addr, struct drm_printer *p)
+static void msm_disp_state_print_regs(u32 **reg, u32 len, void __iomem *base_addr,
+		struct drm_printer *p)
 {
 	int i;
+	u32 *dump_addr = NULL;
 	void __iomem *addr;
 	u32 num_rows;
 
-	if (!dump_addr) {
-		drm_printf(p, "Registers not stored\n");
-		return;
-	}
-
 	addr = base_addr;
 	num_rows = len / REG_DUMP_ALIGN;
+
+	if (*reg)
+		dump_addr = *reg;
 
 	for (i = 0; i < num_rows; i++) {
 		drm_printf(p, "0x%lx : %08x %08x %08x %08x\n",
@@ -82,15 +79,14 @@ void msm_disp_state_print(struct msm_disp_state *state, struct drm_printer *p)
 	}
 
 	drm_printf(p, "---\n");
-	drm_printf(p, "kernel: " UTS_RELEASE "\n");
+
 	drm_printf(p, "module: " KBUILD_MODNAME "\n");
 	drm_printf(p, "dpu devcoredump\n");
-	drm_printf(p, "time: %lld.%09ld\n",
-		state->time.tv_sec, state->time.tv_nsec);
+	drm_printf(p, "timestamp %lld\n", ktime_to_ns(state->timestamp));
 
 	list_for_each_entry_safe(block, tmp, &state->blocks, node) {
 		drm_printf(p, "====================%s================\n", block->name);
-		msm_disp_state_print_regs(block->state, block->size, block->base_addr, p);
+		msm_disp_state_print_regs(&block->state, block->size, block->base_addr, p);
 	}
 
 	drm_printf(p, "===================dpu drm state================\n");
@@ -104,7 +100,7 @@ static void msm_disp_capture_atomic_state(struct msm_disp_state *disp_state)
 	struct drm_device *ddev;
 	struct drm_modeset_acquire_ctx ctx;
 
-	ktime_get_real_ts64(&disp_state->time);
+	disp_state->timestamp = ktime_get();
 
 	ddev = disp_state->drm_dev;
 
@@ -162,7 +158,7 @@ void msm_disp_state_free(void *data)
 
 	list_for_each_entry_safe(block, tmp, &disp_state->blocks, node) {
 		list_del(&block->node);
-		kvfree(block->state);
+		kfree(block->state);
 		kfree(block);
 	}
 
@@ -177,8 +173,6 @@ void msm_disp_snapshot_add_block(struct msm_disp_state *disp_state, u32 len,
 	va_list va;
 
 	new_blk = kzalloc(sizeof(struct msm_disp_state_block), GFP_KERNEL);
-	if (!new_blk)
-		return;
 
 	va_start(va, fmt);
 
@@ -193,5 +187,5 @@ void msm_disp_snapshot_add_block(struct msm_disp_state *disp_state, u32 len,
 	new_blk->base_addr = base_addr;
 
 	msm_disp_state_dump_regs(&new_blk->state, new_blk->size, base_addr);
-	list_add_tail(&new_blk->node, &disp_state->blocks);
+	list_add(&new_blk->node, &disp_state->blocks);
 }

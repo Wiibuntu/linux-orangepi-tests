@@ -1,10 +1,10 @@
 .. SPDX-License-Identifier: GPL-2.0
 
-==========================
-DAMON: Data Access MONitor
-==========================
+========================
+Monitoring Data Accesses
+========================
 
-:doc:`DAMON </mm/damon/index>` allows light-weight data access monitoring.
+:doc:`DAMON </vm/damon/index>` allows light-weight data access monitoring.
 Using DAMON, users can analyze the memory access patterns of their systems and
 optimize those.
 
@@ -14,4 +14,3 @@ optimize those.
    start
    usage
    reclaim
-   lru_sort

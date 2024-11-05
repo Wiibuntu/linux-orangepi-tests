@@ -10,6 +10,7 @@
 #include <linux/mfd/rk808.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <sound/core.h>
@@ -443,6 +444,7 @@ static const struct snd_soc_component_driver soc_codec_dev_rk817 = {
 	.idle_bias_on = 1,
 	.use_pmdown_time = 1,
 	.endianness = 1,
+	.non_legacy_dai_naming = 1,
 	.controls = rk817_volume_controls,
 	.num_controls = ARRAY_SIZE(rk817_volume_controls),
 	.dapm_routes = rk817_dapm_routes,
@@ -487,7 +489,7 @@ static int rk817_platform_probe(struct platform_device *pdev)
 
 	rk817_codec_parse_dt_property(&pdev->dev, rk817_codec_data);
 
-	rk817_codec_data->mclk = devm_clk_get(pdev->dev.parent, "mclk");
+	rk817_codec_data->mclk = clk_get(pdev->dev.parent, "mclk");
 	if (IS_ERR(rk817_codec_data->mclk)) {
 		dev_dbg(&pdev->dev, "Unable to get mclk\n");
 		ret = -ENXIO;
@@ -506,22 +508,22 @@ static int rk817_platform_probe(struct platform_device *pdev)
 	if (ret < 0) {
 		dev_err(&pdev->dev, "%s() register codec error %d\n",
 			__func__, ret);
-		goto err_clk;
+		goto err_;
 	}
 
 	return 0;
-
-err_clk:
-	clk_disable_unprepare(rk817_codec_data->mclk);
 err_:
+
 	return ret;
 }
 
-static void rk817_platform_remove(struct platform_device *pdev)
+static int rk817_platform_remove(struct platform_device *pdev)
 {
 	struct rk817_codec_priv *rk817 = platform_get_drvdata(pdev);
 
 	clk_disable_unprepare(rk817->mclk);
+
+	return 0;
 }
 
 static struct platform_driver rk817_codec_driver = {

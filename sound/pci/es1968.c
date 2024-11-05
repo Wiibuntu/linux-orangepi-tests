@@ -473,7 +473,9 @@ struct esschan {
 	/* linked list */
 	struct list_head list;
 
+#ifdef CONFIG_PM_SLEEP
 	u16 wc_map[4];
+#endif
 };
 
 struct es1968 {
@@ -524,7 +526,9 @@ struct es1968 {
 	struct list_head substream_list;
 	spinlock_t substream_lock;
 
+#ifdef CONFIG_PM_SLEEP
 	u16 apu_map[NR_APUS][NR_APU_REGS];
+#endif
 
 #ifdef SUPPORT_JOYSTICK
 	struct gameport *gameport;
@@ -685,7 +689,9 @@ static void __apu_set_register(struct es1968 *chip, u16 channel, u8 reg, u16 dat
 {
 	if (snd_BUG_ON(channel >= NR_APUS))
 		return;
+#ifdef CONFIG_PM_SLEEP
 	chip->apu_map[channel][reg] = data;
+#endif
 	reg |= (channel << 4);
 	apu_index_set(chip, reg);
 	apu_data_set(chip, data);
@@ -970,7 +976,9 @@ static void snd_es1968_program_wavecache(struct es1968 *chip, struct esschan *es
 	/* set the wavecache control reg */
 	wave_set_register(chip, es->apu[channel] << 3, tmpval);
 
+#ifdef CONFIG_PM_SLEEP
 	es->wc_map[channel] = tmpval;
+#endif
 }
 
 
@@ -1997,6 +2005,9 @@ snd_es1968_mixer(struct es1968 *chip)
 {
 	struct snd_ac97_bus *pbus;
 	struct snd_ac97_template ac97;
+#ifndef CONFIG_SND_ES1968_INPUT
+	struct snd_ctl_elem_id elem_id;
+#endif
 	int err;
 	static const struct snd_ac97_bus_ops ops = {
 		.write = snd_es1968_ac97_write,
@@ -2016,10 +2027,14 @@ snd_es1968_mixer(struct es1968 *chip)
 
 #ifndef CONFIG_SND_ES1968_INPUT
 	/* attach master switch / volumes for h/w volume control */
-	chip->master_switch = snd_ctl_find_id_mixer(chip->card,
-						    "Master Playback Switch");
-	chip->master_volume = snd_ctl_find_id_mixer(chip->card,
-						    "Master Playback Volume");
+	memset(&elem_id, 0, sizeof(elem_id));
+	elem_id.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
+	strcpy(elem_id.name, "Master Playback Switch");
+	chip->master_switch = snd_ctl_find_id(chip->card, &elem_id);
+	memset(&elem_id, 0, sizeof(elem_id));
+	elem_id.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
+	strcpy(elem_id.name, "Master Playback Volume");
+	chip->master_volume = snd_ctl_find_id(chip->card, &elem_id);
 #endif
 
 	return 0;
@@ -2348,6 +2363,7 @@ static void snd_es1968_start_irq(struct es1968 *chip)
 	outw(w, chip->io_port + ESM_PORT_HOST_IRQ);
 }
 
+#ifdef CONFIG_PM_SLEEP
 /*
  * PM support
  */
@@ -2409,7 +2425,11 @@ static int es1968_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(es1968_pm, es1968_suspend, es1968_resume);
+static SIMPLE_DEV_PM_OPS(es1968_pm, es1968_suspend, es1968_resume);
+#define ES1968_PM_OPS	&es1968_pm
+#else
+#define ES1968_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
 
 #ifdef SUPPORT_JOYSTICK
 #define JOYSTICK_ADDR	0x200
@@ -2721,8 +2741,8 @@ static int snd_es1968_create(struct snd_card *card,
 
 /*
  */
-static int __snd_es1968_probe(struct pci_dev *pci,
-			      const struct pci_device_id *pci_id)
+static int snd_es1968_probe(struct pci_dev *pci,
+			    const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -2828,18 +2848,12 @@ static int __snd_es1968_probe(struct pci_dev *pci,
 	return 0;
 }
 
-static int snd_es1968_probe(struct pci_dev *pci,
-			    const struct pci_device_id *pci_id)
-{
-	return snd_card_free_on_error(&pci->dev, __snd_es1968_probe(pci, pci_id));
-}
-
 static struct pci_driver es1968_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = snd_es1968_ids,
 	.probe = snd_es1968_probe,
 	.driver = {
-		.pm = &es1968_pm,
+		.pm = ES1968_PM_OPS,
 	},
 };
 

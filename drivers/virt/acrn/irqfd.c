@@ -17,6 +17,7 @@
 #include "acrn_drv.h"
 
 static LIST_HEAD(acrn_irqfd_clients);
+static DEFINE_MUTEX(acrn_irqfds_mutex);
 
 /**
  * struct hsm_irqfd - Properties of HSM irqfd
@@ -125,12 +126,12 @@ static int acrn_irqfd_assign(struct acrn_vm *vm, struct acrn_irqfd *args)
 	INIT_WORK(&irqfd->shutdown, hsm_irqfd_shutdown_work);
 
 	f = fdget(args->fd);
-	if (!fd_file(f)) {
+	if (!f.file) {
 		ret = -EBADF;
 		goto out;
 	}
 
-	eventfd = eventfd_ctx_fileget(fd_file(f));
+	eventfd = eventfd_ctx_fileget(f.file);
 	if (IS_ERR(eventfd)) {
 		ret = PTR_ERR(eventfd);
 		goto fail;
@@ -157,7 +158,7 @@ static int acrn_irqfd_assign(struct acrn_vm *vm, struct acrn_irqfd *args)
 	mutex_unlock(&vm->irqfds_lock);
 
 	/* Check the pending event in this stage */
-	events = vfs_poll(fd_file(f), &irqfd->pt);
+	events = vfs_poll(f.file, &irqfd->pt);
 
 	if (events & EPOLLIN)
 		acrn_irqfd_inject(irqfd);

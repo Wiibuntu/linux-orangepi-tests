@@ -4,11 +4,11 @@
 #include <sys/resource.h>
 #include "test_send_signal_kern.skel.h"
 
-static int sigusr1_received;
+int sigusr1_received = 0;
 
 static void sigusr1_handler(int signum)
 {
-	sigusr1_received = 1;
+	sigusr1_received++;
 }
 
 static void test_send_signal_common(struct perf_event_attr *attr,
@@ -40,10 +40,9 @@ static void test_send_signal_common(struct perf_event_attr *attr,
 
 	if (pid == 0) {
 		int old_prio;
-		volatile int j = 0;
 
 		/* install signal handler and notify parent */
-		ASSERT_NEQ(signal(SIGUSR1, sigusr1_handler), SIG_ERR, "signal");
+		signal(SIGUSR1, sigusr1_handler);
 
 		close(pipe_c2p[0]); /* close read */
 		close(pipe_p2c[1]); /* close write */
@@ -64,15 +63,9 @@ static void test_send_signal_common(struct perf_event_attr *attr,
 		ASSERT_EQ(read(pipe_p2c[0], buf, 1), 1, "pipe_read");
 
 		/* wait a little for signal handler */
-		for (int i = 0; i < 1000000000 && !sigusr1_received; i++) {
-			j /= i + j + 1;
-			if (!attr)
-				/* trigger the nanosleep tracepoint program. */
-				usleep(1);
-		}
+		sleep(1);
 
 		buf[0] = sigusr1_received ? '2' : '0';
-		ASSERT_EQ(sigusr1_received, 1, "sigusr1_received");
 		ASSERT_EQ(write(pipe_c2p[1], buf, 1), 1, "pipe_write");
 
 		/* wait for parent notification and exit */
@@ -100,7 +93,7 @@ static void test_send_signal_common(struct perf_event_attr *attr,
 			goto destroy_skel;
 		}
 	} else {
-		pmu_fd = syscall(__NR_perf_event_open, attr, pid, -1 /* cpu */,
+		pmu_fd = syscall(__NR_perf_event_open, attr, pid, -1,
 				 -1 /* group id */, 0 /* flags */);
 		if (!ASSERT_GE(pmu_fd, 0, "perf_event_open")) {
 			err = -1;
@@ -117,9 +110,9 @@ static void test_send_signal_common(struct perf_event_attr *attr,
 	ASSERT_EQ(read(pipe_c2p[0], buf, 1), 1, "pipe_read");
 
 	/* trigger the bpf send_signal */
-	skel->bss->signal_thread = signal_thread;
-	skel->bss->sig = SIGUSR1;
 	skel->bss->pid = pid;
+	skel->bss->sig = SIGUSR1;
+	skel->bss->signal_thread = signal_thread;
 
 	/* notify child that bpf program can send_signal now */
 	ASSERT_EQ(write(pipe_p2c[1], buf, 1), 1, "pipe_write");
@@ -156,8 +149,7 @@ static void test_send_signal_tracepoint(bool signal_thread)
 static void test_send_signal_perf(bool signal_thread)
 {
 	struct perf_event_attr attr = {
-		.freq = 1,
-		.sample_freq = 1000,
+		.sample_period = 1,
 		.type = PERF_TYPE_SOFTWARE,
 		.config = PERF_COUNT_SW_CPU_CLOCK,
 	};
@@ -180,7 +172,7 @@ static void test_send_signal_nmi(bool signal_thread)
 	pmu_fd = syscall(__NR_perf_event_open, &attr, 0 /* pid */,
 			 -1 /* cpu */, -1 /* group_fd */, 0 /* flags */);
 	if (pmu_fd == -1) {
-		if (errno == ENOENT || errno == EOPNOTSUPP) {
+		if (errno == ENOENT) {
 			printf("%s:SKIP:no PERF_COUNT_HW_CPU_CYCLES\n",
 			       __func__);
 			test__skip();

@@ -299,7 +299,8 @@ static int ipmb_slave_cb(struct i2c_client *client,
 	return 0;
 }
 
-static int ipmb_probe(struct i2c_client *client)
+static int ipmb_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct ipmb_dev *ipmb_dev;
 	int ret;
@@ -341,17 +342,19 @@ static int ipmb_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void ipmb_remove(struct i2c_client *client)
+static int ipmb_remove(struct i2c_client *client)
 {
 	struct ipmb_dev *ipmb_dev = i2c_get_clientdata(client);
 
 	i2c_slave_unregister(client);
 	misc_deregister(&ipmb_dev->miscdev);
+
+	return 0;
 }
 
 static const struct i2c_device_id ipmb_id[] = {
-	{ "ipmb-dev" },
-	{}
+	{ "ipmb-dev", 0 },
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, ipmb_id);
 

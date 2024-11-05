@@ -110,28 +110,23 @@ void __init add_static_vm_early(struct static_vm *svm)
 int ioremap_page(unsigned long virt, unsigned long phys,
 		 const struct mem_type *mtype)
 {
-	return vmap_page_range(virt, virt + PAGE_SIZE, phys,
-			       __pgprot(mtype->prot_pte));
+	return ioremap_page_range(virt, virt + PAGE_SIZE, phys,
+				  __pgprot(mtype->prot_pte));
 }
 EXPORT_SYMBOL(ioremap_page);
 
 void __check_vmalloc_seq(struct mm_struct *mm)
 {
-	int seq;
+	unsigned int seq;
 
 	do {
-		seq = atomic_read(&init_mm.context.vmalloc_seq);
+		seq = init_mm.context.vmalloc_seq;
 		memcpy(pgd_offset(mm, VMALLOC_START),
 		       pgd_offset_k(VMALLOC_START),
 		       sizeof(pgd_t) * (pgd_index(VMALLOC_END) -
 					pgd_index(VMALLOC_START)));
-		/*
-		 * Use a store-release so that other CPUs that observe the
-		 * counter's new value are guaranteed to see the results of the
-		 * memcpy as well.
-		 */
-		atomic_set_release(&mm->context.vmalloc_seq, seq);
-	} while (seq != atomic_read(&init_mm.context.vmalloc_seq));
+		mm->context.vmalloc_seq = seq;
+	} while (seq != init_mm.context.vmalloc_seq);
 }
 
 #if !defined(CONFIG_SMP) && !defined(CONFIG_ARM_LPAE)
@@ -162,7 +157,7 @@ static void unmap_area_sections(unsigned long virt, unsigned long size)
 			 * Note: this is still racy on SMP machines.
 			 */
 			pmd_clear(pmdp);
-			atomic_inc_return_release(&init_mm.context.vmalloc_seq);
+			init_mm.context.vmalloc_seq++;
 
 			/*
 			 * Free the page table, if there was one.
@@ -179,7 +174,8 @@ static void unmap_area_sections(unsigned long virt, unsigned long size)
 	 * Ensure that the active_mm is up to date - we want to
 	 * catch any use-after-iounmap cases.
 	 */
-	check_vmalloc_seq(current->active_mm);
+	if (current->active_mm->context.vmalloc_seq != init_mm.context.vmalloc_seq)
+		__check_vmalloc_seq(current->active_mm);
 
 	flush_tlb_kernel_range(virt, end);
 }
@@ -418,7 +414,7 @@ void *arch_memremap_wb(phys_addr_t phys_addr, size_t size)
 						   __builtin_return_address(0));
 }
 
-void iounmap(volatile void __iomem *io_addr)
+void __iounmap(volatile void __iomem *io_addr)
 {
 	void *addr = (void *)(PAGE_MASK & (unsigned long)io_addr);
 	struct static_vm *svm;
@@ -446,9 +442,16 @@ void iounmap(volatile void __iomem *io_addr)
 
 	vunmap(addr);
 }
+
+void (*arch_iounmap)(volatile void __iomem *) = __iounmap;
+
+void iounmap(volatile void __iomem *cookie)
+{
+	arch_iounmap(cookie);
+}
 EXPORT_SYMBOL(iounmap);
 
-#if defined(CONFIG_PCI) || IS_ENABLED(CONFIG_PCMCIA)
+#ifdef CONFIG_PCI
 static int pci_ioremap_mem_type = MT_DEVICE;
 
 void pci_ioremap_set_mem_type(int mem_type)
@@ -456,20 +459,16 @@ void pci_ioremap_set_mem_type(int mem_type)
 	pci_ioremap_mem_type = mem_type;
 }
 
-int pci_remap_iospace(const struct resource *res, phys_addr_t phys_addr)
+int pci_ioremap_io(unsigned int offset, phys_addr_t phys_addr)
 {
-	unsigned long vaddr = (unsigned long)PCI_IOBASE + res->start;
+	BUG_ON(offset + SZ_64K - 1 > IO_SPACE_LIMIT);
 
-	if (!(res->flags & IORESOURCE_IO))
-		return -EINVAL;
-
-	if (res->end > IO_SPACE_LIMIT)
-		return -EINVAL;
-
-	return vmap_page_range(vaddr, vaddr + resource_size(res), phys_addr,
-			       __pgprot(get_mem_type(pci_ioremap_mem_type)->prot_pte));
+	return ioremap_page_range(PCI_IO_VIRT_BASE + offset,
+				  PCI_IO_VIRT_BASE + offset + SZ_64K,
+				  phys_addr,
+				  __pgprot(get_mem_type(pci_ioremap_mem_type)->prot_pte));
 }
-EXPORT_SYMBOL(pci_remap_iospace);
+EXPORT_SYMBOL_GPL(pci_ioremap_io);
 
 void __iomem *pci_remap_cfgspace(resource_size_t res_cookie, size_t size)
 {
@@ -485,12 +484,4 @@ EXPORT_SYMBOL_GPL(pci_remap_cfgspace);
 void __init early_ioremap_init(void)
 {
 	early_ioremap_setup();
-}
-
-bool arch_memremap_can_ram_remap(resource_size_t offset, size_t size,
-				 unsigned long flags)
-{
-	unsigned long pfn = PHYS_PFN(offset);
-
-	return memblock_is_map_memory(pfn);
 }

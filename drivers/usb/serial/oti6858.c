@@ -119,8 +119,7 @@ struct oti6858_control_pkt {
 static int oti6858_open(struct tty_struct *tty, struct usb_serial_port *port);
 static void oti6858_close(struct usb_serial_port *port);
 static void oti6858_set_termios(struct tty_struct *tty,
-				struct usb_serial_port *port,
-				const struct ktermios *old_termios);
+			struct usb_serial_port *port, struct ktermios *old);
 static void oti6858_init_termios(struct tty_struct *tty);
 static void oti6858_read_int_callback(struct urb *urb);
 static void oti6858_read_bulk_callback(struct urb *urb);
@@ -138,6 +137,7 @@ static void oti6858_port_remove(struct usb_serial_port *port);
 /* device info */
 static struct usb_serial_driver oti6858_device = {
 	.driver = {
+		.owner =	THIS_MODULE,
 		.name =		"oti6858",
 	},
 	.id_table =		id_table,
@@ -395,8 +395,7 @@ static void oti6858_init_termios(struct tty_struct *tty)
 }
 
 static void oti6858_set_termios(struct tty_struct *tty,
-				struct usb_serial_port *port,
-				const struct ktermios *old_termios)
+		struct usb_serial_port *port, struct ktermios *old_termios)
 {
 	struct oti6858_private *priv = usb_get_serial_port_data(port);
 	unsigned long flags;
@@ -408,6 +407,7 @@ static void oti6858_set_termios(struct tty_struct *tty,
 	cflag = tty->termios.c_cflag;
 
 	spin_lock_irqsave(&priv->lock, flags);
+	divisor = priv->pending_setup.divisor;
 	frame_fmt = priv->pending_setup.frame_fmt;
 	control = priv->pending_setup.control;
 	spin_unlock_irqrestore(&priv->lock, flags);

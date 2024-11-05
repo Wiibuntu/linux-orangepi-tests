@@ -10,7 +10,7 @@
 #
 # Copyright (C) 1995-2001 by Russell King
 
-LDFLAGS_vmlinux	:=--no-undefined -X --pic-veneer
+LDFLAGS_vmlinux	:=--no-undefined -X
 
 ifeq ($(CONFIG_RELOCATABLE), y)
 # Pass --no-apply-dynamic-relocs to restore pre-binutils-2.27 behaviour
@@ -36,33 +36,17 @@ ifeq ($(CONFIG_BROKEN_GAS_INST),y)
 $(warning Detected assembler with broken .inst; disassembly will be unreliable)
 endif
 
-# The GCC option -ffreestanding is required in order to compile code containing
-# ARM/NEON intrinsics in a non C99-compliant environment (such as the kernel)
-CC_FLAGS_FPU	:= -ffreestanding
-# Enable <arm_neon.h>
-CC_FLAGS_FPU	+= -isystem $(shell $(CC) -print-file-name=include)
-CC_FLAGS_NO_FPU	:= -mgeneral-regs-only
-
-KBUILD_CFLAGS	+= $(CC_FLAGS_NO_FPU) \
+KBUILD_CFLAGS	+= -mgeneral-regs-only	\
 		   $(compat_vdso) $(cc_has_k_constraint)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, psabi)
 KBUILD_AFLAGS	+= $(compat_vdso)
-
-KBUILD_RUSTFLAGS += --target=aarch64-unknown-none -Ctarget-feature="-neon"
 
 KBUILD_CFLAGS	+= $(call cc-option,-mabi=lp64)
 KBUILD_AFLAGS	+= $(call cc-option,-mabi=lp64)
 
 # Avoid generating .eh_frame* sections.
-ifneq ($(CONFIG_UNWIND_TABLES),y)
 KBUILD_CFLAGS	+= -fno-asynchronous-unwind-tables -fno-unwind-tables
 KBUILD_AFLAGS	+= -fno-asynchronous-unwind-tables -fno-unwind-tables
-KBUILD_RUSTFLAGS += -Cforce-unwind-tables=n
-else
-KBUILD_CFLAGS	+= -fasynchronous-unwind-tables
-KBUILD_AFLAGS	+= -fasynchronous-unwind-tables
-KBUILD_RUSTFLAGS += -Cforce-unwind-tables=y -Zuse-sync-unwind=n
-endif
 
 ifeq ($(CONFIG_STACKPROTECTOR_PER_TASK),y)
 prepare: stack_protector_prepare
@@ -74,39 +58,39 @@ stack_protector_prepare: prepare0
 					include/generated/asm-offsets.h))
 endif
 
+# Ensure that if the compiler supports branch protection we default it
+# off, this will be overridden if we are using branch protection.
+branch-prot-flags-y += $(call cc-option,-mbranch-protection=none)
+
+ifeq ($(CONFIG_ARM64_PTR_AUTH_KERNEL),y)
+branch-prot-flags-$(CONFIG_CC_HAS_SIGN_RETURN_ADDRESS) := -msign-return-address=all
+# We enable additional protection for leaf functions as there is some
+# narrow potential for ROP protection benefits and no substantial
+# performance impact has been observed.
 ifeq ($(CONFIG_ARM64_BTI_KERNEL),y)
-  KBUILD_CFLAGS += -mbranch-protection=pac-ret+bti
-  KBUILD_RUSTFLAGS += -Zbranch-protection=bti,pac-ret
-else ifeq ($(CONFIG_ARM64_PTR_AUTH_KERNEL),y)
-  KBUILD_RUSTFLAGS += -Zbranch-protection=pac-ret
-  ifeq ($(CONFIG_CC_HAS_BRANCH_PROT_PAC_RET),y)
-    KBUILD_CFLAGS += -mbranch-protection=pac-ret
-  else
-    KBUILD_CFLAGS += -msign-return-address=non-leaf
-  endif
+branch-prot-flags-$(CONFIG_CC_HAS_BRANCH_PROT_PAC_RET_BTI) := -mbranch-protection=pac-ret+leaf+bti
 else
-  KBUILD_CFLAGS += $(call cc-option,-mbranch-protection=none)
+branch-prot-flags-$(CONFIG_CC_HAS_BRANCH_PROT_PAC_RET) := -mbranch-protection=pac-ret+leaf
+endif
+# -march=armv8.3-a enables the non-nops instructions for PAC, to avoid the
+# compiler to generate them and consequently to break the single image contract
+# we pass it only to the assembler. This option is utilized only in case of non
+# integrated assemblers.
+ifeq ($(CONFIG_AS_HAS_PAC), y)
+asm-arch := armv8.3-a
+endif
 endif
 
-# Tell the assembler to support instructions from the latest target
-# architecture.
-#
-# For non-integrated assemblers we'll pass this on the command line, and for
-# integrated assemblers we'll define ARM64_ASM_ARCH and ARM64_ASM_PREAMBLE for
-# inline usage.
-#
-# We cannot pass the same arch flag to the compiler as this would allow it to
-# freely generate instructions which are not supported by earlier architecture
-# versions, which would prevent a single kernel image from working on earlier
-# hardware.
+KBUILD_CFLAGS += $(branch-prot-flags-y)
+
+ifeq ($(CONFIG_AS_HAS_ARMV8_4), y)
+# make sure to pass the newest target architecture to -march.
+asm-arch := armv8.4-a
+endif
+
 ifeq ($(CONFIG_AS_HAS_ARMV8_5), y)
-  asm-arch := armv8.5-a
-else ifeq ($(CONFIG_AS_HAS_ARMV8_4), y)
-  asm-arch := armv8.4-a
-else ifeq ($(CONFIG_AS_HAS_ARMV8_3), y)
-  asm-arch := armv8.3-a
-else ifeq ($(CONFIG_AS_HAS_ARMV8_2), y)
-  asm-arch := armv8.2-a
+# make sure to pass the newest target architecture to -march.
+asm-arch := armv8.5-a
 endif
 
 ifdef asm-arch
@@ -116,7 +100,6 @@ endif
 
 ifeq ($(CONFIG_SHADOW_CALL_STACK), y)
 KBUILD_CFLAGS	+= -ffixed-x18
-KBUILD_RUSTFLAGS += -Zfixed-x18
 endif
 
 ifeq ($(CONFIG_CPU_BIG_ENDIAN), y)
@@ -140,13 +123,13 @@ endif
 
 CHECKFLAGS	+= -D__aarch64__
 
-ifeq ($(CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS),y)
-  KBUILD_CPPFLAGS += -DCC_USING_PATCHABLE_FUNCTION_ENTRY
-  CC_FLAGS_FTRACE := -fpatchable-function-entry=4,2
-else ifeq ($(CONFIG_DYNAMIC_FTRACE_WITH_ARGS),y)
+ifeq ($(CONFIG_DYNAMIC_FTRACE_WITH_REGS),y)
   KBUILD_CPPFLAGS += -DCC_USING_PATCHABLE_FUNCTION_ENTRY
   CC_FLAGS_FTRACE := -fpatchable-function-entry=2
 endif
+
+# Default value
+head-y		:= arch/arm64/kernel/head.o
 
 ifeq ($(CONFIG_KASAN_SW_TAGS), y)
 KASAN_SHADOW_SCALE_SHIFT := 4
@@ -163,37 +146,28 @@ libs-$(CONFIG_EFI_STUB) += $(objtree)/drivers/firmware/efi/libstub/lib.a
 
 # Default target when executing plain make
 boot		:= arch/arm64/boot
+KBUILD_IMAGE	:= $(boot)/Image
 
-BOOT_TARGETS	:= Image vmlinuz.efi image.fit
+all:	Image.gz
 
-PHONY += $(BOOT_TARGETS)
 
-ifeq ($(CONFIG_EFI_ZBOOT),)
-KBUILD_IMAGE	:= $(boot)/Image.gz
-else
-KBUILD_IMAGE	:= $(boot)/vmlinuz.efi
-endif
-
-all:	$(notdir $(KBUILD_IMAGE))
-
-image.fit: dtbs
-
-vmlinuz.efi image.fit: Image
-$(BOOT_TARGETS): vmlinux
+Image: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 
 Image.%: Image
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 
-ifeq ($(CONFIG_COMPRESSED_INSTALL),y)
- DEFAULT_KBUILD_IMAGE = $(KBUILD_IMAGE)
-else
- DEFAULT_KBUILD_IMAGE = $(boot)/Image
-endif
-
-install: KBUILD_IMAGE := $(DEFAULT_KBUILD_IMAGE)
+install: install-image := Image
+zinstall: install-image := Image.gz
 install zinstall:
-	$(call cmd,install)
+	$(CONFIG_SHELL) $(srctree)/$(boot)/install.sh $(KERNELRELEASE) \
+	$(boot)/$(install-image) System.map "$(INSTALL_PATH)"
+
+PHONY += vdso_install
+vdso_install:
+	$(Q)$(MAKE) $(build)=arch/arm64/kernel/vdso $@
+	$(if $(CONFIG_COMPAT_VDSO), \
+		$(Q)$(MAKE) $(build)=arch/arm64/kernel/vdso32 $@)
 
 archprepare:
 	$(Q)$(MAKE) $(build)=arch/arm64/tools kapi
@@ -221,24 +195,14 @@ vdso_prepare: prepare0
 	include/generated/vdso-offsets.h arch/arm64/kernel/vdso/vdso.so
 ifdef CONFIG_COMPAT_VDSO
 	$(Q)$(MAKE) $(build)=arch/arm64/kernel/vdso32 \
-	arch/arm64/kernel/vdso32/vdso.so
+	include/generated/vdso32-offsets.h arch/arm64/kernel/vdso32/vdso.so
 endif
 endif
-
-vdso-install-y				+= arch/arm64/kernel/vdso/vdso.so.dbg
-vdso-install-$(CONFIG_COMPAT_VDSO)	+= arch/arm64/kernel/vdso32/vdso32.so.dbg
-
-include $(srctree)/scripts/Makefile.defconf
-
-PHONY += virtconfig
-virtconfig:
-	$(call merge_into_defconfig_override,defconfig,virt)
 
 define archhelp
   echo  '* Image.gz      - Compressed kernel image (arch/$(ARCH)/boot/Image.gz)'
   echo  '  Image         - Uncompressed kernel image (arch/$(ARCH)/boot/Image)'
-  echo  '  image.fit     - Flat Image Tree (arch/$(ARCH)/boot/image.fit)'
-  echo  '  install       - Install kernel (compressed if COMPRESSED_INSTALL set)'
+  echo  '  install       - Install uncompressed kernel'
   echo  '  zinstall      - Install compressed kernel'
   echo  '                  Install using (your) ~/bin/installkernel or'
   echo  '                  (distribution) /sbin/installkernel or'

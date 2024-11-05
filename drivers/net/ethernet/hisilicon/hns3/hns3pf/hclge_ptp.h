@@ -8,9 +8,6 @@
 #include <linux/net_tstamp.h>
 #include <linux/types.h>
 
-struct hclge_dev;
-struct ifreq;
-
 #define HCLGE_PTP_REG_OFFSET	0x29000
 
 #define HCLGE_PTP_TX_TS_SEQID_REG	0x0
@@ -138,6 +135,6 @@ int hclge_ptp_set_cfg(struct hclge_dev *hdev, struct ifreq *ifr);
 int hclge_ptp_init(struct hclge_dev *hdev);
 void hclge_ptp_uninit(struct hclge_dev *hdev);
 int hclge_ptp_get_ts_info(struct hnae3_handle *handle,
-			  struct kernel_ethtool_ts_info *info);
+			  struct ethtool_ts_info *info);
 int hclge_ptp_cfg_qry(struct hclge_dev *hdev, u32 *cfg);
 #endif

@@ -26,12 +26,9 @@
 #include <linux/list.h>
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
 #include <linux/printk.h>
-#include <linux/property.h>
 #include <linux/pm_opp.h>
 #include <linux/scpi_protocol.h>
 #include <linux/slab.h>
@@ -187,6 +184,7 @@ enum scpi_drv_cmds {
 	CMD_SENSOR_VALUE,
 	CMD_SET_DEVICE_PWR_STATE,
 	CMD_GET_DEVICE_PWR_STATE,
+	CMD_SET_SYS_PWR_STATE,
 	CMD_MAX_COUNT,
 };
 
@@ -203,6 +201,7 @@ static int scpi_std_commands[CMD_MAX_COUNT] = {
 	SCPI_CMD_SENSOR_VALUE,
 	SCPI_CMD_SET_DEVICE_PWR_STATE,
 	SCPI_CMD_GET_DEVICE_PWR_STATE,
+	SCPI_CMD_SET_SYS_PWR_STATE,
 };
 
 static int scpi_legacy_commands[CMD_MAX_COUNT] = {
@@ -218,6 +217,7 @@ static int scpi_legacy_commands[CMD_MAX_COUNT] = {
 	LEGACY_SCPI_CMD_SENSOR_VALUE,
 	-1, /* SET_DEVICE_PWR_STATE */
 	-1, /* GET_DEVICE_PWR_STATE */
+	LEGACY_SCPI_CMD_SYS_PWR_STATE,
 };
 
 struct scpi_xfer {
@@ -234,7 +234,8 @@ struct scpi_xfer {
 
 struct scpi_chan {
 	struct mbox_client cl;
-	struct mbox_chan *chan;
+	struct mbox_chan *rx_chan;
+	struct mbox_chan *tx_chan;
 	void __iomem *tx_payload;
 	void __iomem *rx_payload;
 	struct list_head rx_pending;
@@ -508,7 +509,7 @@ static int scpi_send_message(u8 idx, void *tx_buf, unsigned int tx_len,
 	msg->rx_len = rx_len;
 	reinit_completion(&msg->done);
 
-	ret = mbox_send_message(scpi_chan->chan, msg);
+	ret = mbox_send_message(scpi_chan->tx_chan, msg);
 	if (ret < 0 || !rx_buf)
 		goto out;
 
@@ -782,6 +783,12 @@ static int scpi_device_set_power_state(u16 dev_id, u8 pstate)
 				 sizeof(dev_set), &stat, sizeof(stat));
 }
 
+static int scpi_sys_set_power_state(u8 pstate)
+{
+	return scpi_send_message(CMD_SET_SYS_PWR_STATE, &pstate,
+				 sizeof(pstate), NULL, 0);
+}
+
 static struct scpi_ops scpi_ops = {
 	.get_version = scpi_get_version,
 	.clk_get_range = scpi_clk_get_range,
@@ -798,6 +805,7 @@ static struct scpi_ops scpi_ops = {
 	.sensor_get_value = scpi_sensor_get_value,
 	.device_get_power_state = scpi_device_get_power_state,
 	.device_set_power_state = scpi_device_set_power_state,
+	.sys_set_power_state = scpi_sys_set_power_state,
 };
 
 struct scpi_ops *get_scpi_ops(void)
@@ -806,6 +814,7 @@ struct scpi_ops *get_scpi_ops(void)
 }
 EXPORT_SYMBOL_GPL(get_scpi_ops);
 
+__maybe_unused
 static int scpi_init_versions(struct scpi_drvinfo *info)
 {
 	int ret;
@@ -818,7 +827,7 @@ static int scpi_init_versions(struct scpi_drvinfo *info)
 		info->firmware_version = le32_to_cpu(caps.platform_version);
 	}
 	/* Ignore error if not implemented */
-	if (info->is_legacy && ret == -EOPNOTSUPP)
+	if (scpi_info->is_legacy && ret == -EOPNOTSUPP)
 		return 0;
 
 	return ret;
@@ -859,11 +868,16 @@ static void scpi_free_channels(void *data)
 	struct scpi_drvinfo *info = data;
 	int i;
 
-	for (i = 0; i < info->num_chans; i++)
-		mbox_free_channel(info->channels[i].chan);
+	for (i = 0; i < info->num_chans; i++) {
+		struct scpi_chan *pchan = &info->channels[i];
+
+		if (pchan->tx_chan != pchan->rx_chan)
+			mbox_free_channel(pchan->tx_chan);
+		mbox_free_channel(pchan->rx_chan);
+	}
 }
 
-static void scpi_remove(struct platform_device *pdev)
+static int scpi_remove(struct platform_device *pdev)
 {
 	int i;
 	struct scpi_drvinfo *info = platform_get_drvdata(pdev);
@@ -874,6 +888,8 @@ static void scpi_remove(struct platform_device *pdev)
 		kfree(info->dvfs[i]->opps);
 		kfree(info->dvfs[i]);
 	}
+
+	return 0;
 }
 
 #define MAX_SCPI_XFERS		10
@@ -895,6 +911,11 @@ static int scpi_alloc_xfer_list(struct device *dev, struct scpi_chan *ch)
 	return 0;
 }
 
+static const struct of_device_id legacy_scpi_of_match[] = {
+	{.compatible = "arm,scpi-pre-1.0"},
+	{},
+};
+
 static const struct of_device_id shmem_of_match[] __maybe_unused = {
 	{ .compatible = "amlogic,meson-gxbb-scp-shmem", },
 	{ .compatible = "amlogic,meson-axg-scp-shmem", },
@@ -909,33 +930,42 @@ static int scpi_probe(struct platform_device *pdev)
 	struct resource res;
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
-	struct scpi_drvinfo *scpi_drvinfo;
+	bool use_mbox_names = false;
 
-	scpi_drvinfo = devm_kzalloc(dev, sizeof(*scpi_drvinfo), GFP_KERNEL);
-	if (!scpi_drvinfo)
+	scpi_info = devm_kzalloc(dev, sizeof(*scpi_info), GFP_KERNEL);
+	if (!scpi_info)
 		return -ENOMEM;
 
-	scpi_drvinfo->is_legacy = !!device_get_match_data(dev);
+	if (of_match_device(legacy_scpi_of_match, &pdev->dev))
+		scpi_info->is_legacy = true;
 
 	count = of_count_phandle_with_args(np, "mboxes", "#mbox-cells");
 	if (count < 0) {
 		dev_err(dev, "no mboxes property in '%pOF'\n", np);
 		return -ENODEV;
 	}
+	if (of_get_property(dev->of_node, "mbox-names", NULL)) {
+		use_mbox_names = true;
+		if (count != 2) {
+			dev_err(dev, "need exactly 2 mboxes with mbox-names\n");
+			return -ENODEV;
+		}
+		count /= 2;
+	}
 
-	scpi_drvinfo->channels =
-		devm_kcalloc(dev, count, sizeof(struct scpi_chan), GFP_KERNEL);
-	if (!scpi_drvinfo->channels)
+	scpi_info->channels = devm_kcalloc(dev, count, sizeof(struct scpi_chan),
+					   GFP_KERNEL);
+	if (!scpi_info->channels)
 		return -ENOMEM;
 
-	ret = devm_add_action(dev, scpi_free_channels, scpi_drvinfo);
+	ret = devm_add_action(dev, scpi_free_channels, scpi_info);
 	if (ret)
 		return ret;
 
-	for (; scpi_drvinfo->num_chans < count; scpi_drvinfo->num_chans++) {
+	for (; scpi_info->num_chans < count; scpi_info->num_chans++) {
 		resource_size_t size;
-		int idx = scpi_drvinfo->num_chans;
-		struct scpi_chan *pchan = scpi_drvinfo->channels + idx;
+		int idx = scpi_info->num_chans;
+		struct scpi_chan *pchan = scpi_info->channels + idx;
 		struct mbox_client *cl = &pchan->cl;
 		struct device_node *shmem = of_parse_phandle(np, "shmem", idx);
 
@@ -970,70 +1000,82 @@ static int scpi_probe(struct platform_device *pdev)
 		mutex_init(&pchan->xfers_lock);
 
 		ret = scpi_alloc_xfer_list(dev, pchan);
-		if (!ret) {
-			pchan->chan = mbox_request_channel(cl, idx);
-			if (!IS_ERR(pchan->chan))
-				continue;
-			ret = PTR_ERR(pchan->chan);
-			if (ret != -EPROBE_DEFER)
-				dev_err(dev, "failed to get channel%d err %d\n",
-					idx, ret);
+		if (ret)
+			return ret;
+
+		if (use_mbox_names) {
+			pchan->rx_chan = mbox_request_channel_byname(cl, "rx");
+			if (IS_ERR(pchan->rx_chan)) {
+				ret = PTR_ERR(pchan->rx_chan);
+				goto fail;
+			}
+			pchan->tx_chan = mbox_request_channel_byname(cl, "tx");
+			if (IS_ERR(pchan->rx_chan)) {
+				ret = PTR_ERR(pchan->tx_chan);
+				goto fail;
+			}
+		} else {
+			pchan->rx_chan = mbox_request_channel(cl, idx);
+			if (IS_ERR(pchan->rx_chan)) {
+				ret = PTR_ERR(pchan->rx_chan);
+				goto fail;
+			}
+			pchan->tx_chan = pchan->rx_chan;
 		}
+		continue;
+
+fail:
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "failed to get channel%d err %d\n",
+				idx, ret);
 		return ret;
 	}
 
-	scpi_drvinfo->commands = scpi_std_commands;
+	scpi_info->commands = scpi_std_commands;
 
-	platform_set_drvdata(pdev, scpi_drvinfo);
+	platform_set_drvdata(pdev, scpi_info);
 
-	if (scpi_drvinfo->is_legacy) {
+	if (scpi_info->is_legacy) {
 		/* Replace with legacy variants */
 		scpi_ops.clk_set_val = legacy_scpi_clk_set_val;
-		scpi_drvinfo->commands = scpi_legacy_commands;
+		scpi_info->commands = scpi_legacy_commands;
 
 		/* Fill priority bitmap */
 		for (idx = 0; idx < ARRAY_SIZE(legacy_hpriority_cmds); idx++)
 			set_bit(legacy_hpriority_cmds[idx],
-				scpi_drvinfo->cmd_priority);
+				scpi_info->cmd_priority);
 	}
 
-	scpi_info = scpi_drvinfo;
-
-	ret = scpi_init_versions(scpi_drvinfo);
+	/*
+	ret = scpi_init_versions(scpi_info);
 	if (ret) {
 		dev_err(dev, "incorrect or no SCP firmware found\n");
-		scpi_info = NULL;
 		return ret;
 	}
-
-	if (scpi_drvinfo->is_legacy && !scpi_drvinfo->protocol_version &&
-	    !scpi_drvinfo->firmware_version)
+          */
+	if (scpi_info->is_legacy && !scpi_info->protocol_version &&
+	    !scpi_info->firmware_version)
 		dev_info(dev, "SCP Protocol legacy pre-1.0 firmware\n");
 	else
 		dev_info(dev, "SCP Protocol %lu.%lu Firmware %lu.%lu.%lu version\n",
 			 FIELD_GET(PROTO_REV_MAJOR_MASK,
-				   scpi_drvinfo->protocol_version),
+				   scpi_info->protocol_version),
 			 FIELD_GET(PROTO_REV_MINOR_MASK,
-				   scpi_drvinfo->protocol_version),
+				   scpi_info->protocol_version),
 			 FIELD_GET(FW_REV_MAJOR_MASK,
-				   scpi_drvinfo->firmware_version),
+				   scpi_info->firmware_version),
 			 FIELD_GET(FW_REV_MINOR_MASK,
-				   scpi_drvinfo->firmware_version),
+				   scpi_info->firmware_version),
 			 FIELD_GET(FW_REV_PATCH_MASK,
-				   scpi_drvinfo->firmware_version));
+				   scpi_info->firmware_version));
+	scpi_info->scpi_ops = &scpi_ops;
 
-	scpi_drvinfo->scpi_ops = &scpi_ops;
-
-	ret = devm_of_platform_populate(dev);
-	if (ret)
-		scpi_info = NULL;
-
-	return ret;
+	return devm_of_platform_populate(dev);
 }
 
 static const struct of_device_id scpi_of_match[] = {
 	{.compatible = "arm,scpi"},
-	{.compatible = "arm,scpi-pre-1.0", .data = (void *)1UL },
+	{.compatible = "arm,scpi-pre-1.0"},
 	{},
 };
 
@@ -1046,7 +1088,7 @@ static struct platform_driver scpi_driver = {
 		.dev_groups = versions_groups,
 	},
 	.probe = scpi_probe,
-	.remove_new = scpi_remove,
+	.remove = scpi_remove,
 };
 module_platform_driver(scpi_driver);
 

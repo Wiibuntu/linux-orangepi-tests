@@ -8,93 +8,9 @@
 #include "gve_adminq.h"
 #include "gve_utils.h"
 #include "gve_dqo.h"
-#include <net/ip.h>
 #include <linux/tcp.h>
 #include <linux/slab.h>
 #include <linux/skbuff.h>
-
-/* Returns true if tx_bufs are available. */
-static bool gve_has_free_tx_qpl_bufs(struct gve_tx_ring *tx, int count)
-{
-	int num_avail;
-
-	if (!tx->dqo.qpl)
-		return true;
-
-	num_avail = tx->dqo.num_tx_qpl_bufs -
-		(tx->dqo_tx.alloc_tx_qpl_buf_cnt -
-		 tx->dqo_tx.free_tx_qpl_buf_cnt);
-
-	if (count <= num_avail)
-		return true;
-
-	/* Update cached value from dqo_compl. */
-	tx->dqo_tx.free_tx_qpl_buf_cnt =
-		atomic_read_acquire(&tx->dqo_compl.free_tx_qpl_buf_cnt);
-
-	num_avail = tx->dqo.num_tx_qpl_bufs -
-		(tx->dqo_tx.alloc_tx_qpl_buf_cnt -
-		 tx->dqo_tx.free_tx_qpl_buf_cnt);
-
-	return count <= num_avail;
-}
-
-static s16
-gve_alloc_tx_qpl_buf(struct gve_tx_ring *tx)
-{
-	s16 index;
-
-	index = tx->dqo_tx.free_tx_qpl_buf_head;
-
-	/* No TX buffers available, try to steal the list from the
-	 * completion handler.
-	 */
-	if (unlikely(index == -1)) {
-		tx->dqo_tx.free_tx_qpl_buf_head =
-			atomic_xchg(&tx->dqo_compl.free_tx_qpl_buf_head, -1);
-		index = tx->dqo_tx.free_tx_qpl_buf_head;
-
-		if (unlikely(index == -1))
-			return index;
-	}
-
-	/* Remove TX buf from free list */
-	tx->dqo_tx.free_tx_qpl_buf_head = tx->dqo.tx_qpl_buf_next[index];
-
-	return index;
-}
-
-static void
-gve_free_tx_qpl_bufs(struct gve_tx_ring *tx,
-		     struct gve_tx_pending_packet_dqo *pkt)
-{
-	s16 index;
-	int i;
-
-	if (!pkt->num_bufs)
-		return;
-
-	index = pkt->tx_qpl_buf_ids[0];
-	/* Create a linked list of buffers to be added to the free list */
-	for (i = 1; i < pkt->num_bufs; i++) {
-		tx->dqo.tx_qpl_buf_next[index] = pkt->tx_qpl_buf_ids[i];
-		index = pkt->tx_qpl_buf_ids[i];
-	}
-
-	while (true) {
-		s16 old_head = atomic_read_acquire(&tx->dqo_compl.free_tx_qpl_buf_head);
-
-		tx->dqo.tx_qpl_buf_next[index] = old_head;
-		if (atomic_cmpxchg(&tx->dqo_compl.free_tx_qpl_buf_head,
-				   old_head,
-				   pkt->tx_qpl_buf_ids[0]) == old_head) {
-			break;
-		}
-	}
-
-	atomic_add(pkt->num_bufs, &tx->dqo_compl.free_tx_qpl_buf_cnt);
-	pkt->num_bufs = 0;
-}
 
 /* Returns true if a gve_tx_pending_packet_dqo object is available. */
 static bool gve_has_pending_packet(struct gve_tx_ring *tx)
@@ -188,28 +104,13 @@ static void gve_tx_clean_pending_packets(struct gve_tx_ring *tx)
 	}
 }
 
-void gve_tx_stop_ring_dqo(struct gve_priv *priv, int idx)
+static void gve_tx_free_ring_dqo(struct gve_priv *priv, int idx)
 {
-	int ntfy_idx = gve_tx_idx_to_ntfy(priv, idx);
 	struct gve_tx_ring *tx = &priv->tx[idx];
-
-	if (!gve_tx_was_added_to_block(priv, idx))
-		return;
-
-	gve_remove_napi(priv, ntfy_idx);
-	gve_clean_tx_done_dqo(priv, tx, /*napi=*/NULL);
-	netdev_tx_reset_queue(tx->netdev_txq);
-	gve_tx_clean_pending_packets(tx);
-	gve_tx_remove_from_block(priv, idx);
-}
-
-static void gve_tx_free_ring_dqo(struct gve_priv *priv, struct gve_tx_ring *tx,
-				 struct gve_tx_alloc_rings_cfg *cfg)
-{
 	struct device *hdev = &priv->pdev->dev;
-	int idx = tx->q_num;
 	size_t bytes;
-	u32 qpl_id;
+
+	gve_tx_remove_from_block(priv, idx);
 
 	if (tx->q_resources) {
 		dma_free_coherent(hdev, sizeof(*tx->q_resources),
@@ -234,72 +135,26 @@ static void gve_tx_free_ring_dqo(struct gve_priv *priv, struct gve_tx_ring *tx,
 	kvfree(tx->dqo.pending_packets);
 	tx->dqo.pending_packets = NULL;
 
-	kvfree(tx->dqo.tx_qpl_buf_next);
-	tx->dqo.tx_qpl_buf_next = NULL;
-
-	if (tx->dqo.qpl) {
-		qpl_id = gve_tx_qpl_id(priv, tx->q_num);
-		gve_free_queue_page_list(priv, tx->dqo.qpl, qpl_id);
-		tx->dqo.qpl = NULL;
-	}
-
 	netif_dbg(priv, drv, priv->dev, "freed tx queue %d\n", idx);
 }
 
-static int gve_tx_qpl_buf_init(struct gve_tx_ring *tx)
+static int gve_tx_alloc_ring_dqo(struct gve_priv *priv, int idx)
 {
-	int num_tx_qpl_bufs = GVE_TX_BUFS_PER_PAGE_DQO *
-		tx->dqo.qpl->num_entries;
-	int i;
-
-	tx->dqo.tx_qpl_buf_next = kvcalloc(num_tx_qpl_bufs,
-					   sizeof(tx->dqo.tx_qpl_buf_next[0]),
-					   GFP_KERNEL);
-	if (!tx->dqo.tx_qpl_buf_next)
-		return -ENOMEM;
-
-	tx->dqo.num_tx_qpl_bufs = num_tx_qpl_bufs;
-
-	/* Generate free TX buf list */
-	for (i = 0; i < num_tx_qpl_bufs - 1; i++)
-		tx->dqo.tx_qpl_buf_next[i] = i + 1;
-	tx->dqo.tx_qpl_buf_next[num_tx_qpl_bufs - 1] = -1;
-
-	atomic_set_release(&tx->dqo_compl.free_tx_qpl_buf_head, -1);
-	return 0;
-}
-
-void gve_tx_start_ring_dqo(struct gve_priv *priv, int idx)
-{
-	int ntfy_idx = gve_tx_idx_to_ntfy(priv, idx);
 	struct gve_tx_ring *tx = &priv->tx[idx];
-
-	gve_tx_add_to_block(priv, idx);
-
-	tx->netdev_txq = netdev_get_tx_queue(priv->dev, idx);
-	gve_add_napi(priv, ntfy_idx, gve_napi_poll_dqo);
-}
-
-static int gve_tx_alloc_ring_dqo(struct gve_priv *priv,
-				 struct gve_tx_alloc_rings_cfg *cfg,
-				 struct gve_tx_ring *tx,
-				 int idx)
-{
 	struct device *hdev = &priv->pdev->dev;
 	int num_pending_packets;
-	int qpl_page_cnt;
 	size_t bytes;
-	u32 qpl_id;
 	int i;
 
 	memset(tx, 0, sizeof(*tx));
 	tx->q_num = idx;
-	tx->dev = hdev;
+	tx->dev = &priv->pdev->dev;
+	tx->netdev_txq = netdev_get_tx_queue(priv->dev, idx);
 	atomic_set_release(&tx->dqo_compl.hw_tx_head, 0);
 
 	/* Queue sizes must be a power of 2 */
-	tx->mask = cfg->ring_size - 1;
-	tx->dqo.complq_mask = tx->mask;
+	tx->mask = priv->tx_desc_cnt - 1;
+	tx->dqo.complq_mask = priv->options_dqo_rda.tx_comp_ring_entries - 1;
 
 	/* The max number of pending packets determines the maximum number of
 	 * descriptors which maybe written to the completion queue.
@@ -355,52 +210,22 @@ static int gve_tx_alloc_ring_dqo(struct gve_priv *priv,
 	if (!tx->q_resources)
 		goto err;
 
-	if (!cfg->raw_addressing) {
-		qpl_id = gve_tx_qpl_id(priv, tx->q_num);
-		qpl_page_cnt = priv->tx_pages_per_qpl;
-
-		tx->dqo.qpl = gve_alloc_queue_page_list(priv, qpl_id,
-							qpl_page_cnt);
-		if (!tx->dqo.qpl)
-			goto err;
-
-		if (gve_tx_qpl_buf_init(tx))
-			goto err;
-	}
+	gve_tx_add_to_block(priv, idx);
 
 	return 0;
 
 err:
-	gve_tx_free_ring_dqo(priv, tx, cfg);
+	gve_tx_free_ring_dqo(priv, idx);
 	return -ENOMEM;
 }
 
-int gve_tx_alloc_rings_dqo(struct gve_priv *priv,
-			   struct gve_tx_alloc_rings_cfg *cfg)
+int gve_tx_alloc_rings_dqo(struct gve_priv *priv)
 {
-	struct gve_tx_ring *tx = cfg->tx;
 	int err = 0;
-	int i, j;
+	int i;
 
-	if (cfg->start_idx + cfg->num_rings > cfg->qcfg->max_queues) {
-		netif_err(priv, drv, priv->dev,
-			  "Cannot alloc more than the max num of Tx rings\n");
-		return -EINVAL;
-	}
-
-	if (cfg->start_idx == 0) {
-		tx = kvcalloc(cfg->qcfg->max_queues, sizeof(struct gve_tx_ring),
-			      GFP_KERNEL);
-		if (!tx)
-			return -ENOMEM;
-	} else if (!tx) {
-		netif_err(priv, drv, priv->dev,
-			  "Cannot alloc tx rings from a nonzero start idx without tx array\n");
-		return -EINVAL;
-	}
-
-	for (i = cfg->start_idx; i < cfg->start_idx + cfg->num_rings; i++) {
-		err = gve_tx_alloc_ring_dqo(priv, cfg, &tx[i], i);
+	for (i = 0; i < priv->tx_cfg.num_queues; i++) {
+		err = gve_tx_alloc_ring_dqo(priv, i);
 		if (err) {
 			netif_err(priv, drv, priv->dev,
 				  "Failed to alloc tx ring=%d: err=%d\n",
@@ -409,32 +234,27 @@ int gve_tx_alloc_rings_dqo(struct gve_priv *priv,
 		}
 	}
 
-	cfg->tx = tx;
 	return 0;
 
 err:
-	for (j = 0; j < i; j++)
-		gve_tx_free_ring_dqo(priv, &tx[j], cfg);
-	if (cfg->start_idx == 0)
-		kvfree(tx);
+	for (i--; i >= 0; i--)
+		gve_tx_free_ring_dqo(priv, i);
+
 	return err;
 }
 
-void gve_tx_free_rings_dqo(struct gve_priv *priv,
-			   struct gve_tx_alloc_rings_cfg *cfg)
+void gve_tx_free_rings_dqo(struct gve_priv *priv)
 {
-	struct gve_tx_ring *tx = cfg->tx;
 	int i;
 
-	if (!tx)
-		return;
+	for (i = 0; i < priv->tx_cfg.num_queues; i++) {
+		struct gve_tx_ring *tx = &priv->tx[i];
 
-	for (i = cfg->start_idx; i < cfg->start_idx + cfg->num_rings; i++)
-		gve_tx_free_ring_dqo(priv, &tx[i], cfg);
+		gve_clean_tx_done_dqo(priv, tx, /*napi=*/NULL);
+		netdev_tx_reset_queue(tx->netdev_txq);
+		gve_tx_clean_pending_packets(tx);
 
-	if (cfg->start_idx == 0) {
-		kvfree(tx);
-		cfg->tx = NULL;
+		gve_tx_free_ring_dqo(priv, i);
 	}
 }
 
@@ -446,27 +266,20 @@ static u32 num_avail_tx_slots(const struct gve_tx_ring *tx)
 	return tx->mask - num_used;
 }
 
-static bool gve_has_avail_slots_tx_dqo(struct gve_tx_ring *tx,
-				       int desc_count, int buf_count)
-{
-	return gve_has_pending_packet(tx) &&
-		   num_avail_tx_slots(tx) >= desc_count &&
-		   gve_has_free_tx_qpl_bufs(tx, buf_count);
-}
-
 /* Stops the queue if available descriptors is less than 'count'.
  * Return: 0 if stop is not required.
  */
-static int gve_maybe_stop_tx_dqo(struct gve_tx_ring *tx,
-				 int desc_count, int buf_count)
+static int gve_maybe_stop_tx_dqo(struct gve_tx_ring *tx, int count)
 {
-	if (likely(gve_has_avail_slots_tx_dqo(tx, desc_count, buf_count)))
+	if (likely(gve_has_pending_packet(tx) &&
+		   num_avail_tx_slots(tx) >= count))
 		return 0;
 
 	/* Update cached TX head pointer */
 	tx->dqo_tx.head = atomic_read_acquire(&tx->dqo_compl.hw_tx_head);
 
-	if (likely(gve_has_avail_slots_tx_dqo(tx, desc_count, buf_count)))
+	if (likely(gve_has_pending_packet(tx) &&
+		   num_avail_tx_slots(tx) >= count))
 		return 0;
 
 	/* No space, so stop the queue */
@@ -481,7 +294,8 @@ static int gve_maybe_stop_tx_dqo(struct gve_tx_ring *tx,
 	 */
 	tx->dqo_tx.head = atomic_read_acquire(&tx->dqo_compl.hw_tx_head);
 
-	if (likely(!gve_has_avail_slots_tx_dqo(tx, desc_count, buf_count)))
+	if (likely(!gve_has_pending_packet(tx) ||
+		   num_avail_tx_slots(tx) < count))
 		return -EBUSY;
 
 	netif_tx_start_queue(tx->netdev_txq);
@@ -555,18 +369,28 @@ static int gve_prep_tso(struct sk_buff *skb)
 	if (unlikely(skb_shinfo(skb)->gso_size < GVE_TX_MIN_TSO_MSS_DQO))
 		return -1;
 
-	if (!(skb_shinfo(skb)->gso_type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6)))
-		return -EINVAL;
-
 	/* Needed because we will modify header. */
 	err = skb_cow_head(skb, 0);
 	if (err < 0)
 		return err;
 
 	tcp = tcp_hdr(skb);
+
+	/* Remove payload length from checksum. */
 	paylen = skb->len - skb_transport_offset(skb);
-	csum_replace_by_diff(&tcp->check, (__force __wsum)htonl(paylen));
-	header_len = skb_tcp_all_headers(skb);
+
+	switch (skb_shinfo(skb)->gso_type) {
+	case SKB_GSO_TCPV4:
+	case SKB_GSO_TCPV6:
+		csum_replace_by_diff(&tcp->check,
+				     (__force __wsum)htonl(paylen));
+
+		/* Compute length of segmentation header. */
+		header_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
+		break;
+	default:
+		return -EINVAL;
+	}
 
 	if (unlikely(header_len > GVE_TX_MAX_HDR_SIZE_DQO))
 		return -EINVAL;
@@ -619,158 +443,26 @@ gve_tx_fill_general_ctx_desc(struct gve_tx_general_context_desc_dqo *desc,
 	};
 }
 
-static int gve_tx_add_skb_no_copy_dqo(struct gve_tx_ring *tx,
-				      struct sk_buff *skb,
-				      struct gve_tx_pending_packet_dqo *pkt,
-				      s16 completion_tag,
-				      u32 *desc_idx,
-				      bool is_gso)
-{
-	const struct skb_shared_info *shinfo = skb_shinfo(skb);
-	int i;
-
-	/* Note: HW requires that the size of a non-TSO packet be within the
-	 * range of [17, 9728].
-	 *
-	 * We don't double check because
-	 * - We limited `netdev->min_mtu` to ETH_MIN_MTU.
-	 * - Hypervisor won't allow MTU larger than 9216.
-	 */
-
-	pkt->num_bufs = 0;
-	/* Map the linear portion of skb */
-	{
-		u32 len = skb_headlen(skb);
-		dma_addr_t addr;
-
-		addr = dma_map_single(tx->dev, skb->data, len, DMA_TO_DEVICE);
-		if (unlikely(dma_mapping_error(tx->dev, addr)))
-			goto err;
-
-		dma_unmap_len_set(pkt, len[pkt->num_bufs], len);
-		dma_unmap_addr_set(pkt, dma[pkt->num_bufs], addr);
-		++pkt->num_bufs;
-
-		gve_tx_fill_pkt_desc_dqo(tx, desc_idx, skb, len, addr,
-					 completion_tag,
-					 /*eop=*/shinfo->nr_frags == 0, is_gso);
-	}
-
-	for (i = 0; i < shinfo->nr_frags; i++) {
-		const skb_frag_t *frag = &shinfo->frags[i];
-		bool is_eop = i == (shinfo->nr_frags - 1);
-		u32 len = skb_frag_size(frag);
-		dma_addr_t addr;
-
-		addr = skb_frag_dma_map(tx->dev, frag, 0, len, DMA_TO_DEVICE);
-		if (unlikely(dma_mapping_error(tx->dev, addr)))
-			goto err;
-
-		dma_unmap_len_set(pkt, len[pkt->num_bufs], len);
-		dma_unmap_addr_set(pkt, dma[pkt->num_bufs], addr);
-		++pkt->num_bufs;
-
-		gve_tx_fill_pkt_desc_dqo(tx, desc_idx, skb, len, addr,
-					 completion_tag, is_eop, is_gso);
-	}
-
-	return 0;
-err:
-	for (i = 0; i < pkt->num_bufs; i++) {
-		if (i == 0) {
-			dma_unmap_single(tx->dev,
-					 dma_unmap_addr(pkt, dma[i]),
-					 dma_unmap_len(pkt, len[i]),
-					 DMA_TO_DEVICE);
-		} else {
-			dma_unmap_page(tx->dev,
-				       dma_unmap_addr(pkt, dma[i]),
-				       dma_unmap_len(pkt, len[i]),
-				       DMA_TO_DEVICE);
-		}
-	}
-	pkt->num_bufs = 0;
-	return -1;
-}
-
-/* Tx buffer i corresponds to
- * qpl_page_id = i / GVE_TX_BUFS_PER_PAGE_DQO
- * qpl_page_offset = (i % GVE_TX_BUFS_PER_PAGE_DQO) * GVE_TX_BUF_SIZE_DQO
- */
-static void gve_tx_buf_get_addr(struct gve_tx_ring *tx,
-				s16 index,
-				void **va, dma_addr_t *dma_addr)
-{
-	int page_id = index >> (PAGE_SHIFT - GVE_TX_BUF_SHIFT_DQO);
-	int offset = (index & (GVE_TX_BUFS_PER_PAGE_DQO - 1)) << GVE_TX_BUF_SHIFT_DQO;
-
-	*va = page_address(tx->dqo.qpl->pages[page_id]) + offset;
-	*dma_addr = tx->dqo.qpl->page_buses[page_id] + offset;
-}
-
-static int gve_tx_add_skb_copy_dqo(struct gve_tx_ring *tx,
-				   struct sk_buff *skb,
-				   struct gve_tx_pending_packet_dqo *pkt,
-				   s16 completion_tag,
-				   u32 *desc_idx,
-				   bool is_gso)
-{
-	u32 copy_offset = 0;
-	dma_addr_t dma_addr;
-	u32 copy_len;
-	s16 index;
-	void *va;
-
-	/* Break the packet into buffer size chunks */
-	pkt->num_bufs = 0;
-	while (copy_offset < skb->len) {
-		index = gve_alloc_tx_qpl_buf(tx);
-		if (unlikely(index == -1))
-			goto err;
-
-		gve_tx_buf_get_addr(tx, index, &va, &dma_addr);
-		copy_len = min_t(u32, GVE_TX_BUF_SIZE_DQO,
-				 skb->len - copy_offset);
-		skb_copy_bits(skb, copy_offset, va, copy_len);
-
-		copy_offset += copy_len;
-		dma_sync_single_for_device(tx->dev, dma_addr,
-					   copy_len, DMA_TO_DEVICE);
-		gve_tx_fill_pkt_desc_dqo(tx, desc_idx, skb,
-					 copy_len,
-					 dma_addr,
-					 completion_tag,
-					 copy_offset == skb->len,
-					 is_gso);
-
-		pkt->tx_qpl_buf_ids[pkt->num_bufs] = index;
-		++tx->dqo_tx.alloc_tx_qpl_buf_cnt;
-		++pkt->num_bufs;
-	}
-
-	return 0;
-err:
-	/* Should not be here if gve_has_free_tx_qpl_bufs() check is correct */
-	gve_free_tx_qpl_bufs(tx, pkt);
-	return -ENOMEM;
-}
-
 /* Returns 0 on success, or < 0 on error.
  *
  * Before this function is called, the caller must ensure
  * gve_has_pending_packet(tx) returns true.
  */
-static int gve_tx_add_skb_dqo(struct gve_tx_ring *tx,
-			      struct sk_buff *skb)
+static int gve_tx_add_skb_no_copy_dqo(struct gve_tx_ring *tx,
+				      struct sk_buff *skb)
 {
+	const struct skb_shared_info *shinfo = skb_shinfo(skb);
 	const bool is_gso = skb_is_gso(skb);
 	u32 desc_idx = tx->dqo_tx.tail;
+
 	struct gve_tx_pending_packet_dqo *pkt;
 	struct gve_tx_metadata_dqo metadata;
 	s16 completion_tag;
+	int i;
 
 	pkt = gve_alloc_pending_packet(tx);
 	pkt->skb = skb;
+	pkt->num_bufs = 0;
 	completion_tag = pkt - tx->dqo.pending_packets;
 
 	gve_extract_tx_metadata_dqo(skb, &metadata);
@@ -789,19 +481,49 @@ static int gve_tx_add_skb_dqo(struct gve_tx_ring *tx,
 				     &metadata);
 	desc_idx = (desc_idx + 1) & tx->mask;
 
-	if (tx->dqo.qpl) {
-		if (gve_tx_add_skb_copy_dqo(tx, skb, pkt,
-					    completion_tag,
-					    &desc_idx, is_gso))
+	/* Note: HW requires that the size of a non-TSO packet be within the
+	 * range of [17, 9728].
+	 *
+	 * We don't double check because
+	 * - We limited `netdev->min_mtu` to ETH_MIN_MTU.
+	 * - Hypervisor won't allow MTU larger than 9216.
+	 */
+
+	/* Map the linear portion of skb */
+	{
+		u32 len = skb_headlen(skb);
+		dma_addr_t addr;
+
+		addr = dma_map_single(tx->dev, skb->data, len, DMA_TO_DEVICE);
+		if (unlikely(dma_mapping_error(tx->dev, addr)))
 			goto err;
-	}  else {
-		if (gve_tx_add_skb_no_copy_dqo(tx, skb, pkt,
-					       completion_tag,
-					       &desc_idx, is_gso))
-			goto err;
+
+		dma_unmap_len_set(pkt, len[pkt->num_bufs], len);
+		dma_unmap_addr_set(pkt, dma[pkt->num_bufs], addr);
+		++pkt->num_bufs;
+
+		gve_tx_fill_pkt_desc_dqo(tx, &desc_idx, skb, len, addr,
+					 completion_tag,
+					 /*eop=*/shinfo->nr_frags == 0, is_gso);
 	}
 
-	tx->dqo_tx.posted_packet_desc_cnt += pkt->num_bufs;
+	for (i = 0; i < shinfo->nr_frags; i++) {
+		const skb_frag_t *frag = &shinfo->frags[i];
+		bool is_eop = i == (shinfo->nr_frags - 1);
+		u32 len = skb_frag_size(frag);
+		dma_addr_t addr;
+
+		addr = skb_frag_dma_map(tx->dev, frag, 0, len, DMA_TO_DEVICE);
+		if (unlikely(dma_mapping_error(tx->dev, addr)))
+			goto err;
+
+		dma_unmap_len_set(pkt, len[pkt->num_bufs], len);
+		dma_unmap_addr_set(pkt, dma[pkt->num_bufs], addr);
+		++pkt->num_bufs;
+
+		gve_tx_fill_pkt_desc_dqo(tx, &desc_idx, skb, len, addr,
+					 completion_tag, is_eop, is_gso);
+	}
 
 	/* Commit the changes to our state */
 	tx->dqo_tx.tail = desc_idx;
@@ -824,7 +546,22 @@ static int gve_tx_add_skb_dqo(struct gve_tx_ring *tx,
 	return 0;
 
 err:
+	for (i = 0; i < pkt->num_bufs; i++) {
+		if (i == 0) {
+			dma_unmap_single(tx->dev,
+					 dma_unmap_addr(pkt, dma[i]),
+					 dma_unmap_len(pkt, len[i]),
+					 DMA_TO_DEVICE);
+		} else {
+			dma_unmap_page(tx->dev,
+				       dma_unmap_addr(pkt, dma[i]),
+				       dma_unmap_len(pkt, len[i]),
+				       DMA_TO_DEVICE);
+		}
+	}
+
 	pkt->skb = NULL;
+	pkt->num_bufs = 0;
 	gve_free_pending_packet(tx, pkt);
 
 	return -1;
@@ -861,60 +598,30 @@ static int gve_num_buffer_descs_needed(const struct sk_buff *skb)
  */
 static bool gve_can_send_tso(const struct sk_buff *skb)
 {
+	const int header_len = skb_checksum_start_offset(skb) + tcp_hdrlen(skb);
 	const int max_bufs_per_seg = GVE_TX_MAX_DATA_DESCS - 1;
 	const struct skb_shared_info *shinfo = skb_shinfo(skb);
-	const int header_len = skb_tcp_all_headers(skb);
 	const int gso_size = shinfo->gso_size;
 	int cur_seg_num_bufs;
-	int prev_frag_size;
 	int cur_seg_size;
 	int i;
 
 	cur_seg_size = skb_headlen(skb) - header_len;
-	prev_frag_size = skb_headlen(skb);
 	cur_seg_num_bufs = cur_seg_size > 0;
 
 	for (i = 0; i < shinfo->nr_frags; i++) {
 		if (cur_seg_size >= gso_size) {
 			cur_seg_size %= gso_size;
 			cur_seg_num_bufs = cur_seg_size > 0;
-
-			if (prev_frag_size > GVE_TX_MAX_BUF_SIZE_DQO) {
-				int prev_frag_remain = prev_frag_size %
-					GVE_TX_MAX_BUF_SIZE_DQO;
-
-				/* If the last descriptor of the previous frag
-				 * is less than cur_seg_size, the segment will
-				 * span two descriptors in the previous frag.
-				 * Since max gso size (9728) is less than
-				 * GVE_TX_MAX_BUF_SIZE_DQO, it is impossible
-				 * for the segment to span more than two
-				 * descriptors.
-				 */
-				if (prev_frag_remain &&
-				    cur_seg_size > prev_frag_remain)
-					cur_seg_num_bufs++;
-			}
 		}
 
 		if (unlikely(++cur_seg_num_bufs > max_bufs_per_seg))
 			return false;
 
-		prev_frag_size = skb_frag_size(&shinfo->frags[i]);
-		cur_seg_size += prev_frag_size;
+		cur_seg_size += skb_frag_size(&shinfo->frags[i]);
 	}
 
 	return true;
-}
-
-netdev_features_t gve_features_check_dqo(struct sk_buff *skb,
-					 struct net_device *dev,
-					 netdev_features_t features)
-{
-	if (skb_is_gso(skb) && !gve_can_send_tso(skb))
-		return features & ~NETIF_F_GSO_MASK;
-
-	return features;
 }
 
 /* Attempt to transmit specified SKB.
@@ -928,39 +635,37 @@ static int gve_try_tx_skb(struct gve_priv *priv, struct gve_tx_ring *tx,
 	int num_buffer_descs;
 	int total_num_descs;
 
-	if (skb_is_gso(skb) && unlikely(ipv6_hopopt_jumbo_remove(skb)))
-		goto drop;
-
-	if (tx->dqo.qpl) {
-		/* We do not need to verify the number of buffers used per
-		 * packet or per segment in case of TSO as with 2K size buffers
-		 * none of the TX packet rules would be violated.
-		 *
-		 * gve_can_send_tso() checks that each TCP segment of gso_size is
-		 * not distributed over more than 9 SKB frags..
+	if (skb_is_gso(skb)) {
+		/* If TSO doesn't meet HW requirements, attempt to linearize the
+		 * packet.
 		 */
-		num_buffer_descs = DIV_ROUND_UP(skb->len, GVE_TX_BUF_SIZE_DQO);
+		if (unlikely(!gve_can_send_tso(skb) &&
+			     skb_linearize(skb) < 0)) {
+			net_err_ratelimited("%s: Failed to transmit TSO packet\n",
+					    priv->dev->name);
+			goto drop;
+		}
+
+		num_buffer_descs = gve_num_buffer_descs_needed(skb);
 	} else {
 		num_buffer_descs = gve_num_buffer_descs_needed(skb);
-		if (!skb_is_gso(skb)) {
-			if (unlikely(num_buffer_descs > GVE_TX_MAX_DATA_DESCS)) {
-				if (unlikely(skb_linearize(skb) < 0))
-					goto drop;
 
-				num_buffer_descs = 1;
-			}
+		if (unlikely(num_buffer_descs > GVE_TX_MAX_DATA_DESCS)) {
+			if (unlikely(skb_linearize(skb) < 0))
+				goto drop;
+
+			num_buffer_descs = 1;
 		}
 	}
 
 	/* Metadata + (optional TSO) + data descriptors. */
 	total_num_descs = 1 + skb_is_gso(skb) + num_buffer_descs;
 	if (unlikely(gve_maybe_stop_tx_dqo(tx, total_num_descs +
-			GVE_TX_MIN_DESC_PREVENT_CACHE_OVERLAP,
-			num_buffer_descs))) {
+			GVE_TX_MIN_DESC_PREVENT_CACHE_OVERLAP))) {
 		return -1;
 	}
 
-	if (unlikely(gve_tx_add_skb_dqo(tx, skb) < 0))
+	if (unlikely(gve_tx_add_skb_no_copy_dqo(tx, skb) < 0))
 		goto drop;
 
 	netdev_tx_sent_queue(tx->netdev_txq, skb->len);
@@ -1090,7 +795,7 @@ static void gve_handle_packet_completion(struct gve_priv *priv,
 			     GVE_PACKET_STATE_PENDING_REINJECT_COMPL)) {
 			/* No outstanding miss completion but packet allocated
 			 * implies packet receives a re-injection completion
-			 * without a prior miss completion. Return without
+			 * without a a prior miss completion. Return without
 			 * completing the packet.
 			 */
 			net_err_ratelimited("%s: Re-injection completion received without corresponding miss completion: %d\n",
@@ -1108,11 +813,7 @@ static void gve_handle_packet_completion(struct gve_priv *priv,
 			return;
 		}
 	}
-	tx->dqo_tx.completed_packet_desc_cnt += pending_packet->num_bufs;
-	if (tx->dqo.qpl)
-		gve_free_tx_qpl_bufs(tx, pending_packet);
-	else
-		gve_unmap_packet(tx->dev, pending_packet);
+	gve_unmap_packet(tx->dev, pending_packet);
 
 	*bytes += pending_packet->skb->len;
 	(*pkts)++;
@@ -1170,16 +871,12 @@ static void remove_miss_completions(struct gve_priv *priv,
 
 		remove_from_list(tx, &tx->dqo_compl.miss_completions,
 				 pending_packet);
-		/* Unmap/free TX buffers and free skb but do not unallocate packet i.e.
+		/* Unmap buffers and free skb but do not unallocate packet i.e.
 		 * the completion tag is not freed to ensure that the driver
 		 * can take appropriate action if a corresponding valid
 		 * completion is received later.
 		 */
-		if (tx->dqo.qpl)
-			gve_free_tx_qpl_bufs(tx, pending_packet);
-		else
-			gve_unmap_packet(tx->dev, pending_packet);
-
+		gve_unmap_packet(tx->dev, pending_packet);
 		/* This indicates the packet was dropped. */
 		dev_kfree_skb_any(pending_packet->skb);
 		pending_packet->skb = NULL;
@@ -1256,18 +953,12 @@ int gve_clean_tx_done_dqo(struct gve_priv *priv, struct gve_tx_ring *tx,
 			atomic_set_release(&tx->dqo_compl.hw_tx_head, tx_head);
 		} else if (type == GVE_COMPL_TYPE_DQO_PKT) {
 			u16 compl_tag = le16_to_cpu(compl_desc->completion_tag);
-			if (compl_tag & GVE_ALT_MISS_COMPL_BIT) {
-				compl_tag &= ~GVE_ALT_MISS_COMPL_BIT;
-				gve_handle_miss_completion(priv, tx, compl_tag,
-							   &miss_compl_bytes,
-							   &miss_compl_pkts);
-			} else {
-				gve_handle_packet_completion(priv, tx, !!napi,
-							     compl_tag,
-							     &pkt_compl_bytes,
-							     &pkt_compl_pkts,
-							     false);
-			}
+
+			gve_handle_packet_completion(priv, tx, !!napi,
+						     compl_tag,
+						     &pkt_compl_bytes,
+						     &pkt_compl_pkts,
+						     /*is_reinjection=*/false);
 		} else if (type == GVE_COMPL_TYPE_DQO_MISS) {
 			u16 compl_tag = le16_to_cpu(compl_desc->completion_tag);
 
@@ -1281,7 +972,7 @@ int gve_clean_tx_done_dqo(struct gve_priv *priv, struct gve_tx_ring *tx,
 						     compl_tag,
 						     &reinject_compl_bytes,
 						     &reinject_compl_pkts,
-						     true);
+						     /*is_reinjection=*/true);
 		}
 
 		tx->dqo_compl.head =

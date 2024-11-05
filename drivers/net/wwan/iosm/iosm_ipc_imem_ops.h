@@ -36,15 +36,19 @@
 /**
  * ipc_imem_sys_port_open - Open a port link to CP.
  * @ipc_imem:	Imem instance.
- * @chl_id:	Channel Identifier.
- * @hp_id:	HP Identifier.
+ * @chl_id:	Channel Indentifier.
+ * @hp_id:	HP Indentifier.
  *
  * Return: channel instance on success, NULL for failure
  */
 struct ipc_mem_channel *ipc_imem_sys_port_open(struct iosm_imem *ipc_imem,
 					       int chl_id, int hp_id);
-void ipc_imem_sys_port_close(struct iosm_imem *ipc_imem,
-			     struct ipc_mem_channel *channel);
+
+/**
+ * ipc_imem_sys_cdev_close - Release a sio link to CP.
+ * @ipc_cdev:		iosm sio instance.
+ */
+void ipc_imem_sys_cdev_close(struct iosm_cdev *ipc_cdev);
 
 /**
  * ipc_imem_sys_cdev_write - Route the uplink buffer to CP.
@@ -91,11 +95,9 @@ int ipc_imem_sys_wwan_transmit(struct iosm_imem *ipc_imem, int if_id,
  *				MUX.
  * @ipc_imem:		Pointer to iosm_imem struct.
  * @mux_type:		Type of mux protocol.
- *
- * Return: 0 on success and failure value on error
  */
-int ipc_imem_wwan_channel_init(struct iosm_imem *ipc_imem,
-			       enum ipc_mux_protocol mux_type);
+void ipc_imem_wwan_channel_init(struct iosm_imem *ipc_imem,
+				enum ipc_mux_protocol mux_type);
 
 /**
  * ipc_imem_sys_devlink_open - Open a Flash/CD Channel link to CP
@@ -143,5 +145,4 @@ int ipc_imem_sys_devlink_read(struct iosm_devlink *ipc_devlink, u8 *data,
  */
 int ipc_imem_sys_devlink_write(struct iosm_devlink *ipc_devlink,
 			       unsigned char *buf, int count);
-
 #endif

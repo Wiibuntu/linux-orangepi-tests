@@ -21,7 +21,9 @@
 #include <net/genetlink.h>
 #include <linux/seg6.h>
 #include <linux/seg6_genl.h>
+#ifdef CONFIG_IPV6_SEG6_HMAC
 #include <net/seg6_hmac.h>
+#endif
 
 bool seg6_validate_srh(struct ipv6_sr_hdr *srh, int len, bool reduced)
 {
@@ -185,11 +187,6 @@ static int seg6_genl_sethmac(struct sk_buff *skb, struct genl_info *info)
 	}
 
 	if (!info->attrs[SEG6_ATTR_SECRET]) {
-		err = -EINVAL;
-		goto out_unlock;
-	}
-
-	if (slen > nla_len(info->attrs[SEG6_ATTR_SECRET])) {
 		err = -EINVAL;
 		goto out_unlock;
 	}
@@ -435,11 +432,13 @@ static int __net_init seg6_net_init(struct net *net)
 
 	net->ipv6.seg6_data = sdata;
 
+#ifdef CONFIG_IPV6_SEG6_HMAC
 	if (seg6_hmac_net_init(net)) {
 		kfree(rcu_dereference_raw(sdata->tun_src));
 		kfree(sdata);
 		return -ENOMEM;
 	}
+#endif
 
 	return 0;
 }
@@ -448,7 +447,9 @@ static void __net_exit seg6_net_exit(struct net *net)
 {
 	struct seg6_pernet_data *sdata = seg6_pernet(net);
 
+#ifdef CONFIG_IPV6_SEG6_HMAC
 	seg6_hmac_net_exit(net);
+#endif
 
 	kfree(rcu_dereference_raw(sdata->tun_src));
 	kfree(sdata);
@@ -498,7 +499,6 @@ static struct genl_family seg6_genl_family __ro_after_init = {
 	.parallel_ops	= true,
 	.ops		= seg6_genl_ops,
 	.n_ops		= ARRAY_SIZE(seg6_genl_ops),
-	.resv_start_op	= SEG6_CMD_GET_TUNSRC + 1,
 	.module		= THIS_MODULE,
 };
 
@@ -506,46 +506,58 @@ int __init seg6_init(void)
 {
 	int err;
 
-	err = register_pernet_subsys(&ip6_segments_ops);
+	err = genl_register_family(&seg6_genl_family);
 	if (err)
 		goto out;
 
-	err = genl_register_family(&seg6_genl_family);
-	if (err)
-		goto out_unregister_pernet;
-
-	err = seg6_iptunnel_init();
+	err = register_pernet_subsys(&ip6_segments_ops);
 	if (err)
 		goto out_unregister_genl;
 
+#ifdef CONFIG_IPV6_SEG6_LWTUNNEL
+	err = seg6_iptunnel_init();
+	if (err)
+		goto out_unregister_pernet;
+
 	err = seg6_local_init();
 	if (err)
-		goto out_unregister_iptun;
+		goto out_unregister_pernet;
+#endif
 
+#ifdef CONFIG_IPV6_SEG6_HMAC
 	err = seg6_hmac_init();
 	if (err)
-		goto out_unregister_seg6;
+		goto out_unregister_iptun;
+#endif
 
 	pr_info("Segment Routing with IPv6\n");
 
 out:
 	return err;
-out_unregister_seg6:
-	seg6_local_exit();
+#ifdef CONFIG_IPV6_SEG6_HMAC
 out_unregister_iptun:
+#ifdef CONFIG_IPV6_SEG6_LWTUNNEL
+	seg6_local_exit();
 	seg6_iptunnel_exit();
-out_unregister_genl:
-	genl_unregister_family(&seg6_genl_family);
+#endif
+#endif
+#ifdef CONFIG_IPV6_SEG6_LWTUNNEL
 out_unregister_pernet:
 	unregister_pernet_subsys(&ip6_segments_ops);
+#endif
+out_unregister_genl:
+	genl_unregister_family(&seg6_genl_family);
 	goto out;
 }
 
 void seg6_exit(void)
 {
+#ifdef CONFIG_IPV6_SEG6_HMAC
 	seg6_hmac_exit();
-	seg6_local_exit();
+#endif
+#ifdef CONFIG_IPV6_SEG6_LWTUNNEL
 	seg6_iptunnel_exit();
-	genl_unregister_family(&seg6_genl_family);
+#endif
 	unregister_pernet_subsys(&ip6_segments_ops);
+	genl_unregister_family(&seg6_genl_family);
 }

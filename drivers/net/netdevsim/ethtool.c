@@ -65,9 +65,7 @@ static int nsim_set_coalesce(struct net_device *dev,
 }
 
 static void nsim_get_ringparam(struct net_device *dev,
-			       struct ethtool_ringparam *ring,
-			       struct kernel_ethtool_ringparam *kernel_ring,
-			       struct netlink_ext_ack *extack)
+			       struct ethtool_ringparam *ring)
 {
 	struct netdevsim *ns = netdev_priv(dev);
 
@@ -75,9 +73,7 @@ static void nsim_get_ringparam(struct net_device *dev,
 }
 
 static int nsim_set_ringparam(struct net_device *dev,
-			      struct ethtool_ringparam *ring,
-			      struct kernel_ethtool_ringparam *kernel_ring,
-			      struct netlink_ext_ack *extack)
+			      struct ethtool_ringparam *ring)
 {
 	struct netdevsim *ns = netdev_priv(dev);
 
@@ -140,23 +136,6 @@ nsim_set_fecparam(struct net_device *dev, struct ethtool_fecparam *fecparam)
 	return 0;
 }
 
-static void
-nsim_get_fec_stats(struct net_device *dev, struct ethtool_fec_stats *fec_stats)
-{
-	fec_stats->corrected_blocks.total = 123;
-	fec_stats->uncorrectable_blocks.total = 4;
-}
-
-static int nsim_get_ts_info(struct net_device *dev,
-			    struct kernel_ethtool_ts_info *info)
-{
-	struct netdevsim *ns = netdev_priv(dev);
-
-	info->phc_index = mock_phc_index(ns->phc);
-
-	return 0;
-}
-
 static const struct ethtool_ops nsim_ethtool_ops = {
 	.supported_coalesce_params	= ETHTOOL_COALESCE_ALL_PARAMS,
 	.get_pause_stats	        = nsim_get_pause_stats,
@@ -170,8 +149,6 @@ static const struct ethtool_ops nsim_ethtool_ops = {
 	.set_channels			= nsim_set_channels,
 	.get_fecparam			= nsim_get_fecparam,
 	.set_fecparam			= nsim_set_fecparam,
-	.get_fec_stats			= nsim_get_fec_stats,
-	.get_ts_info			= nsim_get_ts_info,
 };
 
 static void nsim_ethtool_ring_init(struct netdevsim *ns)
@@ -189,9 +166,6 @@ void nsim_ethtool_init(struct netdevsim *ns)
 	ns->netdev->ethtool_ops = &nsim_ethtool_ops;
 
 	nsim_ethtool_ring_init(ns);
-
-	ns->ethtool.pauseparam.report_stats_rx = true;
-	ns->ethtool.pauseparam.report_stats_tx = true;
 
 	ns->ethtool.fec.fec = ETHTOOL_FEC_NONE;
 	ns->ethtool.fec.active_fec = ETHTOOL_FEC_NONE;

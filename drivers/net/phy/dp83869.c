@@ -16,7 +16,6 @@
 #include <dt-bindings/net/ti-dp83869.h>
 
 #define DP83869_PHY_ID		0x2000a0f1
-#define DP83561_PHY_ID		0x2000a1a4
 #define DP83869_DEVADDR		0x1f
 
 #define MII_DP83869_PHYCTRL	0x10
@@ -588,13 +587,15 @@ static int dp83869_of_init(struct phy_device *phydev)
 						       &dp83869_internal_delay[0],
 						       delay_size, true);
 	if (dp83869->rx_int_delay < 0)
-		dp83869->rx_int_delay = DP83869_CLK_DELAY_DEF;
+		dp83869->rx_int_delay =
+				dp83869_internal_delay[DP83869_CLK_DELAY_DEF];
 
 	dp83869->tx_int_delay = phy_get_internal_delay(phydev, dev,
 						       &dp83869_internal_delay[0],
 						       delay_size, false);
 	if (dp83869->tx_int_delay < 0)
-		dp83869->tx_int_delay = DP83869_CLK_DELAY_DEF;
+		dp83869->tx_int_delay =
+				dp83869_internal_delay[DP83869_CLK_DELAY_DEF];
 
 	return ret;
 }
@@ -645,6 +646,7 @@ static int dp83869_configure_fiber(struct phy_device *phydev,
 		     phydev->supported);
 
 	linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT, phydev->supported);
+	linkmode_set_bit(ADVERTISED_FIBRE, phydev->advertising);
 
 	if (dp83869->mode == DP83869_RGMII_1000_BASE) {
 		linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseX_Full_BIT,
@@ -691,20 +693,8 @@ static int dp83869_configure_mode(struct phy_device *phydev,
 	/* Below init sequence for each operational mode is defined in
 	 * section 9.4.8 of the datasheet.
 	 */
-	phy_ctrl_val = dp83869->mode;
-	if (phydev->interface == PHY_INTERFACE_MODE_MII) {
-		if (dp83869->mode == DP83869_100M_MEDIA_CONVERT ||
-		    dp83869->mode == DP83869_RGMII_100_BASE ||
-		    dp83869->mode == DP83869_RGMII_COPPER_ETHERNET) {
-			phy_ctrl_val |= DP83869_OP_MODE_MII;
-		} else {
-			phydev_err(phydev, "selected op-mode is not valid with MII mode\n");
-			return -EINVAL;
-		}
-	}
-
 	ret = phy_write_mmd(phydev, DP83869_DEVADDR, DP83869_OP_MODE,
-			    phy_ctrl_val);
+			    dp83869->mode);
 	if (ret)
 		return ret;
 
@@ -888,35 +878,34 @@ static int dp83869_phy_reset(struct phy_device *phydev)
 	return dp83869_config_init(phydev);
 }
 
-
-#define DP83869_PHY_DRIVER(_id, _name)				\
-{								\
-	PHY_ID_MATCH_MODEL(_id),				\
-	.name		= (_name),				\
-	.probe          = dp83869_probe,			\
-	.config_init	= dp83869_config_init,			\
-	.soft_reset	= dp83869_phy_reset,			\
-	.config_intr	= dp83869_config_intr,			\
-	.handle_interrupt = dp83869_handle_interrupt,		\
-	.read_status	= dp83869_read_status,			\
-	.get_tunable	= dp83869_get_tunable,			\
-	.set_tunable	= dp83869_set_tunable,			\
-	.get_wol	= dp83869_get_wol,			\
-	.set_wol	= dp83869_set_wol,			\
-	.suspend	= genphy_suspend,			\
-	.resume		= genphy_resume,			\
-}
-
 static struct phy_driver dp83869_driver[] = {
-	DP83869_PHY_DRIVER(DP83869_PHY_ID, "TI DP83869"),
-	DP83869_PHY_DRIVER(DP83561_PHY_ID, "TI DP83561-SP"),
+	{
+		PHY_ID_MATCH_MODEL(DP83869_PHY_ID),
+		.name		= "TI DP83869",
 
+		.probe          = dp83869_probe,
+		.config_init	= dp83869_config_init,
+		.soft_reset	= dp83869_phy_reset,
+
+		/* IRQ related */
+		.config_intr	= dp83869_config_intr,
+		.handle_interrupt = dp83869_handle_interrupt,
+		.read_status	= dp83869_read_status,
+
+		.get_tunable	= dp83869_get_tunable,
+		.set_tunable	= dp83869_set_tunable,
+
+		.get_wol	= dp83869_get_wol,
+		.set_wol	= dp83869_set_wol,
+
+		.suspend	= genphy_suspend,
+		.resume		= genphy_resume,
+	},
 };
 module_phy_driver(dp83869_driver);
 
 static struct mdio_device_id __maybe_unused dp83869_tbl[] = {
 	{ PHY_ID_MATCH_MODEL(DP83869_PHY_ID) },
-	{ PHY_ID_MATCH_MODEL(DP83561_PHY_ID) },
 	{ }
 };
 MODULE_DEVICE_TABLE(mdio, dp83869_tbl);

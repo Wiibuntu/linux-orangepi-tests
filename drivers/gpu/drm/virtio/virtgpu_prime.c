@@ -90,6 +90,7 @@ static const struct virtio_dma_buf_ops virtgpu_dmabuf_ops =  {
 int virtio_gpu_resource_assign_uuid(struct virtio_gpu_device *vgdev,
 				    struct virtio_gpu_object *bo)
 {
+	int ret;
 	struct virtio_gpu_object_array *objs;
 
 	objs = virtio_gpu_array_alloc(1);
@@ -97,8 +98,11 @@ int virtio_gpu_resource_assign_uuid(struct virtio_gpu_device *vgdev,
 		return -ENOMEM;
 
 	virtio_gpu_array_add_obj(objs, &bo->base.base);
+	ret = virtio_gpu_cmd_resource_assign_uuid(vgdev, objs);
+	if (ret)
+		return ret;
 
-	return virtio_gpu_cmd_resource_assign_uuid(vgdev, objs);
+	return 0;
 }
 
 struct dma_buf *virtgpu_gem_prime_export(struct drm_gem_object *obj,

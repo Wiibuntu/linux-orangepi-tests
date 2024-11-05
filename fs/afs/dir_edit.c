@@ -109,18 +109,17 @@ static void afs_clear_contig_bits(union afs_xdr_dir_block *block,
  */
 static struct folio *afs_dir_get_folio(struct afs_vnode *vnode, pgoff_t index)
 {
-	struct address_space *mapping = vnode->netfs.inode.i_mapping;
+	struct address_space *mapping = vnode->vfs_inode.i_mapping;
 	struct folio *folio;
 
 	folio = __filemap_get_folio(mapping, index,
 				    FGP_LOCK | FGP_ACCESSED | FGP_CREAT,
 				    mapping->gfp_mask);
-	if (IS_ERR(folio)) {
+	if (!folio)
 		clear_bit(AFS_VNODE_DIR_VALID, &vnode->flags);
-		return NULL;
-	}
-	if (!folio_test_private(folio))
+	else if (folio && !folio_test_private(folio))
 		folio_attach_private(folio, (void *)1);
+
 	return folio;
 }
 
@@ -217,7 +216,7 @@ void afs_edit_dir_add(struct afs_vnode *vnode,
 
 	_enter(",,{%d,%s},", name->len, name->name);
 
-	i_size = i_size_read(&vnode->netfs.inode);
+	i_size = i_size_read(&vnode->vfs_inode);
 	if (i_size > AFS_DIR_BLOCK_SIZE * AFS_DIR_MAX_BLOCKS ||
 	    (i_size & (AFS_DIR_BLOCK_SIZE - 1))) {
 		clear_bit(AFS_VNODE_DIR_VALID, &vnode->flags);
@@ -256,7 +255,7 @@ void afs_edit_dir_add(struct afs_vnode *vnode,
 			folio = folio0;
 		}
 
-		block = kmap_local_folio(folio, b * AFS_DIR_BLOCK_SIZE - folio_pos(folio));
+		block = kmap_local_folio(folio, b * AFS_DIR_BLOCK_SIZE - folio_file_pos(folio));
 
 		/* Abandon the edit if we got a callback break. */
 		if (!test_bit(AFS_VNODE_DIR_VALID, &vnode->flags))
@@ -337,7 +336,7 @@ found_space:
 	if (b < AFS_DIR_BLOCKS_WITH_CTR)
 		meta->meta.alloc_ctrs[b] -= need_slots;
 
-	inode_inc_iversion_raw(&vnode->netfs.inode);
+	inode_inc_iversion_raw(&vnode->vfs_inode);
 	afs_stat_v(vnode, n_dir_cr);
 	_debug("Insert %s in %u[%u]", name->name, b, slot);
 
@@ -384,7 +383,7 @@ void afs_edit_dir_remove(struct afs_vnode *vnode,
 
 	_enter(",,{%d,%s},", name->len, name->name);
 
-	i_size = i_size_read(&vnode->netfs.inode);
+	i_size = i_size_read(&vnode->vfs_inode);
 	if (i_size < AFS_DIR_BLOCK_SIZE ||
 	    i_size > AFS_DIR_BLOCK_SIZE * AFS_DIR_MAX_BLOCKS ||
 	    (i_size & (AFS_DIR_BLOCK_SIZE - 1))) {
@@ -417,7 +416,7 @@ void afs_edit_dir_remove(struct afs_vnode *vnode,
 			folio = folio0;
 		}
 
-		block = kmap_local_folio(folio, b * AFS_DIR_BLOCK_SIZE - folio_pos(folio));
+		block = kmap_local_folio(folio, b * AFS_DIR_BLOCK_SIZE - folio_file_pos(folio));
 
 		/* Abandon the edit if we got a callback break. */
 		if (!test_bit(AFS_VNODE_DIR_VALID, &vnode->flags))
@@ -464,7 +463,7 @@ found_dirent:
 	if (b < AFS_DIR_BLOCKS_WITH_CTR)
 		meta->meta.alloc_ctrs[b] += need_slots;
 
-	inode_set_iversion_raw(&vnode->netfs.inode, vnode->status.data_version);
+	inode_set_iversion_raw(&vnode->vfs_inode, vnode->status.data_version);
 	afs_stat_v(vnode, n_dir_rm);
 	_debug("Remove %s from %u[%u]", name->name, b, slot);
 

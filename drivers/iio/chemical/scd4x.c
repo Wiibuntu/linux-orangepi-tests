@@ -11,7 +11,7 @@
  * https://www.sensirion.com/file/datasheet_scd4x
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/crc8.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -36,8 +36,6 @@
 #define SCD4X_WRITE_BUF_SIZE 5
 #define SCD4X_FRC_MIN_PPM 0
 #define SCD4X_FRC_MAX_PPM 2000
-#define SCD4X_PRESSURE_COMP_MIN_MBAR 700
-#define SCD4X_PRESSURE_COMP_MAX_MBAR 1200
 #define SCD4X_READY_MASK 0x01
 
 /*Commands SCD4X*/
@@ -47,8 +45,6 @@ enum scd4x_cmd {
 	CMD_STOP_MEAS           = 0x3f86,
 	CMD_SET_TEMP_OFFSET     = 0x241d,
 	CMD_GET_TEMP_OFFSET     = 0x2318,
-	CMD_SET_AMB_PRESSURE	= 0xe000,
-	CMD_GET_AMB_PRESSURE	= 0xe000,
 	CMD_FRC                 = 0x362f,
 	CMD_SET_ASC             = 0x2416,
 	CMD_GET_ASC             = 0x2313,
@@ -141,8 +137,7 @@ static int scd4x_read(struct scd4x_state *state, enum scd4x_cmd cmd,
 	 * Measurement needs to be stopped before sending commands.
 	 * Except for reading measurement and data ready command.
 	 */
-	if ((cmd != CMD_GET_DATA_READY) && (cmd != CMD_READ_MEAS) &&
-	    (cmd != CMD_GET_AMB_PRESSURE)) {
+	if ((cmd != CMD_GET_DATA_READY) && (cmd != CMD_READ_MEAS)) {
 		ret = scd4x_send_command(state, CMD_STOP_MEAS);
 		if (ret)
 			return ret;
@@ -171,8 +166,7 @@ static int scd4x_read(struct scd4x_state *state, enum scd4x_cmd cmd,
 	}
 
 	/* start measurement */
-	if ((cmd != CMD_GET_DATA_READY) && (cmd != CMD_READ_MEAS) &&
-	    (cmd != CMD_GET_AMB_PRESSURE)) {
+	if ((cmd != CMD_GET_DATA_READY) && (cmd != CMD_READ_MEAS)) {
 		ret = scd4x_send_command(state, CMD_START_MEAS);
 		if (ret)
 			return ret;
@@ -194,11 +188,9 @@ static int scd4x_write(struct scd4x_state *state, enum scd4x_cmd cmd, uint16_t a
 	buf[4] = crc;
 
 	/* measurement needs to be stopped before sending commands */
-	if (cmd != CMD_SET_AMB_PRESSURE) {
-		ret = scd4x_send_command(state, CMD_STOP_MEAS);
-		if (ret)
-			return ret;
-	}
+	ret = scd4x_send_command(state, CMD_STOP_MEAS);
+	if (ret)
+		return ret;
 
 	/* execution time */
 	msleep_interruptible(500);
@@ -208,7 +200,7 @@ static int scd4x_write(struct scd4x_state *state, enum scd4x_cmd cmd, uint16_t a
 		return ret;
 
 	/* start measurement, except for forced calibration command */
-	if ((cmd != CMD_FRC) && (cmd != CMD_SET_AMB_PRESSURE)) {
+	if (cmd != CMD_FRC) {
 		ret = scd4x_send_command(state, CMD_START_MEAS);
 		if (ret)
 			return ret;
@@ -346,18 +338,6 @@ static int scd4x_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (chan->output) {
-			mutex_lock(&state->lock);
-			ret = scd4x_read(state, CMD_GET_AMB_PRESSURE, &tmp, sizeof(tmp));
-			mutex_unlock(&state->lock);
-
-			if (ret)
-				return ret;
-
-			*val = be16_to_cpu(tmp);
-			return IIO_VAL_INT;
-		}
-
 		ret = iio_device_claim_direct_mode(indio_dev);
 		if (ret)
 			return ret;
@@ -406,25 +386,6 @@ static int scd4x_read_raw(struct iio_dev *indio_dev,
 	}
 }
 
-static const int scd4x_pressure_calibbias_available[] = {
-	SCD4X_PRESSURE_COMP_MIN_MBAR, 1, SCD4X_PRESSURE_COMP_MAX_MBAR,
-};
-
-static int scd4x_read_avail(struct iio_dev *indio_dev, struct iio_chan_spec const *chan,
-			    const int **vals, int *type, int *length, long mask)
-{
-	switch (mask) {
-	case IIO_CHAN_INFO_RAW:
-		*vals = scd4x_pressure_calibbias_available;
-		*type = IIO_VAL_INT;
-
-		return IIO_AVAIL_RANGE;
-	}
-
-	return -EINVAL;
-}
-
-
 static int scd4x_write_raw(struct iio_dev *indio_dev, struct iio_chan_spec const *chan,
 				int val, int val2, long mask)
 {
@@ -438,21 +399,6 @@ static int scd4x_write_raw(struct iio_dev *indio_dev, struct iio_chan_spec const
 		mutex_unlock(&state->lock);
 
 		return ret;
-	case IIO_CHAN_INFO_RAW:
-		switch (chan->type) {
-		case IIO_PRESSURE:
-			if (val < SCD4X_PRESSURE_COMP_MIN_MBAR ||
-			    val > SCD4X_PRESSURE_COMP_MAX_MBAR)
-				return -EINVAL;
-
-			mutex_lock(&state->lock);
-			ret = scd4x_write(state, CMD_SET_AMB_PRESSURE, val);
-			mutex_unlock(&state->lock);
-
-			return ret;
-		default:
-			return -EINVAL;
-		}
 	default:
 		return -EINVAL;
 	}
@@ -477,7 +423,7 @@ static ssize_t calibration_auto_enable_show(struct device *dev,
 
 	val = (be16_to_cpu(bval) & SCD4X_READY_MASK) ? 1 : 0;
 
-	return sysfs_emit(buf, "%d\n", val);
+	return sprintf(buf, "%d\n", val);
 }
 
 static ssize_t calibration_auto_enable_store(struct device *dev,
@@ -525,15 +471,12 @@ static ssize_t calibration_forced_value_store(struct device *dev,
 	ret = scd4x_write_and_fetch(state, CMD_FRC, arg, &val, sizeof(val));
 	mutex_unlock(&state->lock);
 
-	if (ret)
-		return ret;
-
 	if (val == 0xff) {
 		dev_err(dev, "forced calibration has failed");
 		return -EINVAL;
 	}
 
-	return len;
+	return ret ?: len;
 }
 
 static IIO_DEVICE_ATTR_RW(calibration_auto_enable, 0);
@@ -557,22 +500,9 @@ static const struct iio_info scd4x_info = {
 	.attrs = &scd4x_attr_group,
 	.read_raw = scd4x_read_raw,
 	.write_raw = scd4x_write_raw,
-	.read_avail = scd4x_read_avail,
 };
 
 static const struct iio_chan_spec scd4x_channels[] = {
-	{
-		/*
-		 * this channel is special in a sense we are pretending that
-		 * sensor is able to change measurement chamber pressure but in
-		 * fact we're just setting pressure compensation value
-		 */
-		.type = IIO_PRESSURE,
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
-		.info_mask_separate_available = BIT(IIO_CHAN_INFO_RAW),
-		.output = 1,
-		.scan_index = -1,
-	},
 	{
 		.type = IIO_CONCENTRATION,
 		.channel2 = IIO_MOD_CO2,
@@ -618,7 +548,7 @@ static const struct iio_chan_spec scd4x_channels[] = {
 	},
 };
 
-static int scd4x_suspend(struct device *dev)
+static int __maybe_unused scd4x_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct scd4x_state *state  = iio_priv(indio_dev);
@@ -631,7 +561,7 @@ static int scd4x_suspend(struct device *dev)
 	return regulator_disable(state->vdd);
 }
 
-static int scd4x_resume(struct device *dev)
+static int __maybe_unused scd4x_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct scd4x_state *state = iio_priv(indio_dev);
@@ -644,7 +574,7 @@ static int scd4x_resume(struct device *dev)
 	return scd4x_send_command(state, CMD_START_MEAS);
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(scd4x_pm_ops, scd4x_suspend, scd4x_resume);
+static __maybe_unused SIMPLE_DEV_PM_OPS(scd4x_pm_ops, scd4x_suspend, scd4x_resume);
 
 static void scd4x_stop_meas(void *state)
 {
@@ -682,7 +612,7 @@ out:
 	return IRQ_HANDLED;
 }
 
-static int scd4x_probe(struct i2c_client *client)
+static int scd4x_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	static const unsigned long scd4x_scan_masks[] = { 0x07, 0x00 };
 	struct device *dev = &client->dev;
@@ -755,7 +685,7 @@ static struct i2c_driver scd4x_i2c_driver = {
 	.driver = {
 		.name = KBUILD_MODNAME,
 		.of_match_table = scd4x_dt_ids,
-		.pm = pm_sleep_ptr(&scd4x_pm_ops),
+		.pm = &scd4x_pm_ops
 	},
 	.probe = scd4x_probe,
 };

@@ -231,15 +231,6 @@ static int hci_uart_setup(struct hci_dev *hdev)
 	return 0;
 }
 
-/* Check if the device is wakeable */
-static bool hci_uart_wakeup(struct hci_dev *hdev)
-{
-	/* HCI UART devices are assumed to be wakeable by default.
-	 * Implement wakeup callback to override this behavior.
-	 */
-	return true;
-}
-
 /** hci_uart_write_wakeup - transmit buffer wakeup
  * @serdev: serial device
  *
@@ -271,8 +262,8 @@ static void hci_uart_write_wakeup(struct serdev_device *serdev)
  *
  * Return: number of processed bytes
  */
-static size_t hci_uart_receive_buf(struct serdev_device *serdev,
-				   const u8 *data, size_t count)
+static int hci_uart_receive_buf(struct serdev_device *serdev, const u8 *data,
+				   size_t count)
 {
 	struct hci_uart *hu = serdev_device_get_drvdata(serdev);
 
@@ -300,9 +291,8 @@ static const struct serdev_device_ops hci_serdev_client_ops = {
 	.write_wakeup = hci_uart_write_wakeup,
 };
 
-int hci_uart_register_device_priv(struct hci_uart *hu,
-			     const struct hci_uart_proto *p,
-			     int sizeof_priv)
+int hci_uart_register_device(struct hci_uart *hu,
+			     const struct hci_uart_proto *p)
 {
 	int err;
 	struct hci_dev *hdev;
@@ -311,12 +301,9 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 
 	serdev_device_set_client_ops(hu->serdev, &hci_serdev_client_ops);
 
-	if (percpu_init_rwsem(&hu->proto_lock))
-		return -ENOMEM;
-
 	err = serdev_device_open(hu->serdev);
 	if (err)
-		goto err_rwsem;
+		return err;
 
 	err = p->open(hu);
 	if (err)
@@ -326,7 +313,7 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 	set_bit(HCI_UART_PROTO_READY, &hu->flags);
 
 	/* Initialize and register HCI device */
-	hdev = hci_alloc_dev_priv(sizeof_priv);
+	hdev = hci_alloc_dev();
 	if (!hdev) {
 		BT_ERR("Can't allocate HCI device");
 		err = -ENOMEM;
@@ -340,6 +327,7 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 
 	INIT_WORK(&hu->init_ready, hci_uart_init_work);
 	INIT_WORK(&hu->write_work, hci_uart_write_work);
+	percpu_init_rwsem(&hu->proto_lock);
 
 	/* Only when vendor specific setup callback is provided, consider
 	 * the manufacturer information valid. This avoids filling in the
@@ -353,8 +341,6 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 	hdev->flush = hci_uart_flush;
 	hdev->send  = hci_uart_send_frame;
 	hdev->setup = hci_uart_setup;
-	if (!hdev->wakeup)
-		hdev->wakeup = hci_uart_wakeup;
 	SET_HCIDEV_DEV(hdev, &hu->serdev->dev);
 
 	if (test_bit(HCI_UART_NO_SUSPEND_NOTIFIER, &hu->flags))
@@ -365,6 +351,11 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 
 	if (test_bit(HCI_UART_EXT_CONFIG, &hu->hdev_flags))
 		set_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks);
+
+	if (test_bit(HCI_UART_CREATE_AMP, &hu->hdev_flags))
+		hdev->dev_type = HCI_AMP;
+	else
+		hdev->dev_type = HCI_PRIMARY;
 
 	if (test_bit(HCI_UART_INIT_PENDING, &hu->hdev_flags))
 		return 0;
@@ -386,11 +377,9 @@ err_alloc:
 	p->close(hu);
 err_open:
 	serdev_device_close(hu->serdev);
-err_rwsem:
-	percpu_free_rwsem(&hu->proto_lock);
 	return err;
 }
-EXPORT_SYMBOL_GPL(hci_uart_register_device_priv);
+EXPORT_SYMBOL_GPL(hci_uart_register_device);
 
 void hci_uart_unregister_device(struct hci_uart *hu)
 {
@@ -409,6 +398,5 @@ void hci_uart_unregister_device(struct hci_uart *hu)
 		clear_bit(HCI_UART_PROTO_READY, &hu->flags);
 		serdev_device_close(hu->serdev);
 	}
-	percpu_free_rwsem(&hu->proto_lock);
 }
 EXPORT_SYMBOL_GPL(hci_uart_unregister_device);

@@ -13,9 +13,9 @@
 */
 
 
-#include <linux/unaligned.h>
-#include <crypto/algapi.h>
+#include <asm/unaligned.h>
 #include <linux/init.h>
+#include <linux/crypto.h>
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/string.h>

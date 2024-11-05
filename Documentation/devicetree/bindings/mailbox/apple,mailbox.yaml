@@ -27,22 +27,14 @@ properties:
           for example for the display controller, the system management
           controller and the NVMe coprocessor.
         items:
-          - enum:
-              - apple,t8103-asc-mailbox
-              - apple,t8112-asc-mailbox
-              - apple,t6000-asc-mailbox
-          - const: apple,asc-mailbox-v4
+          - const: apple,t8103-asc-mailbox
 
       - description:
           M3 mailboxes are an older variant with a slightly different MMIO
           interface still found on the M1. It is used for the Thunderbolt
           co-processors.
         items:
-          - enum:
-              - apple,t8103-m3-mailbox
-              - apple,t8112-m3-mailbox
-              - apple,t6000-m3-mailbox
-          - const: apple,m3-mailbox-v2
+          - const: apple,t8103-m3-mailbox
 
   reg:
     maxItems: 1
@@ -64,9 +56,6 @@ properties:
   "#mbox-cells":
     const: 0
 
-  power-domains:
-    maxItems: 1
-
 required:
   - compatible
   - reg
@@ -79,7 +68,7 @@ additionalProperties: false
 examples:
   - |
         mailbox@77408000 {
-                compatible = "apple,t8103-asc-mailbox", "apple,asc-mailbox-v4";
+                compatible = "apple,t8103-asc-mailbox";
                 reg = <0x77408000 0x4000>;
                 interrupts = <1 583 4>, <1 584 4>, <1 585 4>, <1 586 4>;
                 interrupt-names = "send-empty", "send-not-empty",

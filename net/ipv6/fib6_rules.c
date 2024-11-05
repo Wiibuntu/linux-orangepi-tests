@@ -16,7 +16,6 @@
 #include <linux/indirect_call_wrapper.h>
 
 #include <net/fib_rules.h>
-#include <net/inet_dscp.h>
 #include <net/ipv6.h>
 #include <net/addrconf.h>
 #include <net/ip6_route.h>
@@ -26,15 +25,14 @@ struct fib6_rule {
 	struct fib_rule		common;
 	struct rt6key		src;
 	struct rt6key		dst;
-	dscp_t			dscp;
-	u8			dscp_full:1;	/* DSCP or TOS selector */
+	u8			tclass;
 };
 
 static bool fib6_rule_matchall(const struct fib_rule *rule)
 {
 	struct fib6_rule *r = container_of(rule, struct fib6_rule, common);
 
-	if (r->dst.plen || r->src.plen || r->dscp)
+	if (r->dst.plen || r->src.plen || r->tclass)
 		return false;
 	return fib_rule_matchall(rule);
 }
@@ -234,12 +232,8 @@ static int __fib6_rule_action(struct fib_rule *rule, struct flowi *flp,
 	rt = pol_lookup_func(lookup,
 			     net, table, flp6, arg->lookup_data, flags);
 	if (rt != net->ipv6.ip6_null_entry) {
-		struct inet6_dev *idev = ip6_dst_idev(&rt->dst);
-
-		if (!idev)
-			goto again;
 		err = fib6_rule_saddr(net, rule, flags, flp6,
-				      idev->dev);
+				      ip6_dst_idev(&rt->dst)->dev);
 
 		if (err == -EAGAIN)
 			goto again;
@@ -329,7 +323,7 @@ INDIRECT_CALLABLE_SCOPE int fib6_rule_match(struct fib_rule *rule,
 			return 0;
 	}
 
-	if (r->dscp && r->dscp != ip6_dscp(fl6->flowlabel))
+	if (r->tclass && r->tclass != ip6_tclass(fl6->flowlabel))
 		return 0;
 
 	if (rule->ip_proto && (rule->ip_proto != fl6->flowi6_proto))
@@ -346,19 +340,9 @@ INDIRECT_CALLABLE_SCOPE int fib6_rule_match(struct fib_rule *rule,
 	return 1;
 }
 
-static int fib6_nl2rule_dscp(const struct nlattr *nla, struct fib6_rule *rule6,
-			     struct netlink_ext_ack *extack)
-{
-	if (rule6->dscp) {
-		NL_SET_ERR_MSG(extack, "Cannot specify both TOS and DSCP");
-		return -EINVAL;
-	}
-
-	rule6->dscp = inet_dsfield_to_dscp(nla_get_u8(nla) << 2);
-	rule6->dscp_full = true;
-
-	return 0;
-}
+static const struct nla_policy fib6_rule_policy[FRA_MAX+1] = {
+	FRA_GENERIC_POLICY,
+};
 
 static int fib6_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 			       struct fib_rule_hdr *frh,
@@ -368,16 +352,6 @@ static int fib6_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 	int err = -EINVAL;
 	struct net *net = sock_net(skb->sk);
 	struct fib6_rule *rule6 = (struct fib6_rule *) rule;
-
-	if (!inet_validate_dscp(frh->tos)) {
-		NL_SET_ERR_MSG(extack,
-			       "Invalid dsfield (tos): ECN bits must be 0");
-		goto errout;
-	}
-	rule6->dscp = inet_dsfield_to_dscp(frh->tos);
-
-	if (tb[FRA_DSCP] && fib6_nl2rule_dscp(tb[FRA_DSCP], rule6, extack) < 0)
-		goto errout;
 
 	if (rule->action == FR_ACT_TO_TBL && !rule->l3mdev) {
 		if (rule->table == RT6_TABLE_UNSPEC) {
@@ -399,6 +373,7 @@ static int fib6_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 
 	rule6->src.plen = frh->src_len;
 	rule6->dst.plen = frh->dst_len;
+	rule6->tclass = frh->tos;
 
 	if (fib_rule_requires_fldissect(rule))
 		net->ipv6.fib6_rules_require_fldissect++;
@@ -431,18 +406,8 @@ static int fib6_rule_compare(struct fib_rule *rule, struct fib_rule_hdr *frh,
 	if (frh->dst_len && (rule6->dst.plen != frh->dst_len))
 		return 0;
 
-	if (frh->tos &&
-	    (rule6->dscp_full ||
-	     inet_dscp_to_dsfield(rule6->dscp) != frh->tos))
+	if (frh->tos && (rule6->tclass != frh->tos))
 		return 0;
-
-	if (tb[FRA_DSCP]) {
-		dscp_t dscp;
-
-		dscp = inet_dsfield_to_dscp(nla_get_u8(tb[FRA_DSCP]) << 2);
-		if (!rule6->dscp_full || rule6->dscp != dscp)
-			return 0;
-	}
 
 	if (frh->src_len &&
 	    nla_memcmp(tb[FRA_SRC], &rule6->src.addr, sizeof(struct in6_addr)))
@@ -462,15 +427,7 @@ static int fib6_rule_fill(struct fib_rule *rule, struct sk_buff *skb,
 
 	frh->dst_len = rule6->dst.plen;
 	frh->src_len = rule6->src.plen;
-
-	if (rule6->dscp_full) {
-		frh->tos = 0;
-		if (nla_put_u8(skb, FRA_DSCP,
-			       inet_dscp_to_dsfield(rule6->dscp) >> 2))
-			goto nla_put_failure;
-	} else {
-		frh->tos = inet_dscp_to_dsfield(rule6->dscp);
-	}
+	frh->tos = rule6->tclass;
 
 	if ((rule6->dst.plen &&
 	     nla_put_in6_addr(skb, FRA_DST, &rule6->dst.addr)) ||
@@ -486,13 +443,7 @@ nla_put_failure:
 static size_t fib6_rule_nlmsg_payload(struct fib_rule *rule)
 {
 	return nla_total_size(16) /* dst */
-	       + nla_total_size(16) /* src */
-	       + nla_total_size(1); /* dscp */
-}
-
-static void fib6_rule_flush_cache(struct fib_rules_ops *ops)
-{
-	rt_genid_bump_ipv6(ops->fro_net);
+	       + nla_total_size(16); /* src */
 }
 
 static const struct fib_rules_ops __net_initconst fib6_rules_ops_template = {
@@ -507,8 +458,8 @@ static const struct fib_rules_ops __net_initconst fib6_rules_ops_template = {
 	.compare		= fib6_rule_compare,
 	.fill			= fib6_rule_fill,
 	.nlmsg_payload		= fib6_rule_nlmsg_payload,
-	.flush_cache		= fib6_rule_flush_cache,
 	.nlgroup		= RTNLGRP_IPV6_RULE,
+	.policy			= fib6_rule_policy,
 	.owner			= THIS_MODULE,
 	.fro_net		= &init_net,
 };
@@ -522,11 +473,11 @@ static int __net_init fib6_rules_net_init(struct net *net)
 	if (IS_ERR(ops))
 		return PTR_ERR(ops);
 
-	err = fib_default_rule_add(ops, 0, RT6_TABLE_LOCAL);
+	err = fib_default_rule_add(ops, 0, RT6_TABLE_LOCAL, 0);
 	if (err)
 		goto out_fib6_rules_ops;
 
-	err = fib_default_rule_add(ops, 0x7FFE, RT6_TABLE_MAIN);
+	err = fib_default_rule_add(ops, 0x7FFE, RT6_TABLE_MAIN, 0);
 	if (err)
 		goto out_fib6_rules_ops;
 
@@ -540,21 +491,16 @@ out_fib6_rules_ops:
 	goto out;
 }
 
-static void __net_exit fib6_rules_net_exit_batch(struct list_head *net_list)
+static void __net_exit fib6_rules_net_exit(struct net *net)
 {
-	struct net *net;
-
 	rtnl_lock();
-	list_for_each_entry(net, net_list, exit_list) {
-		fib_rules_unregister(net->ipv6.fib6_rules_ops);
-		cond_resched();
-	}
+	fib_rules_unregister(net->ipv6.fib6_rules_ops);
 	rtnl_unlock();
 }
 
 static struct pernet_operations fib6_rules_net_ops = {
 	.init = fib6_rules_net_init,
-	.exit_batch = fib6_rules_net_exit_batch,
+	.exit = fib6_rules_net_exit,
 };
 
 int __init fib6_rules_init(void)

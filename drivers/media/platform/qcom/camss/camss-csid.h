@@ -19,13 +19,8 @@
 #include <media/v4l2-subdev.h>
 
 #define MSM_CSID_PAD_SINK 0
-#define MSM_CSID_PAD_FIRST_SRC 1
-#define MSM_CSID_PADS_NUM 5
-
-#define MSM_CSID_PAD_SRC (MSM_CSID_PAD_FIRST_SRC)
-
-/* CSID hardware can demultiplex up to 4 outputs */
-#define MSM_CSID_MAX_SRC_STREAMS	4
+#define MSM_CSID_PAD_SRC 1
+#define MSM_CSID_PADS_NUM 2
 
 #define DATA_TYPE_EMBEDDED_DATA_8BIT	0x12
 #define DATA_TYPE_YUV420_8BIT		0x18
@@ -67,17 +62,12 @@ enum csid_testgen_mode {
 	CSID_PAYLOAD_MODE_NUM_SUPPORTED_GEN2 = 9, /* excluding disabled */
 };
 
-struct csid_format_info {
+struct csid_format {
 	u32 code;
 	u8 data_type;
 	u8 decode_format;
 	u8 bpp;
 	u8 spp; /* bus samples per pixel */
-};
-
-struct csid_formats {
-	unsigned int nformats;
-	const struct csid_format_info *formats;
 };
 
 struct csid_testgen_config {
@@ -91,8 +81,6 @@ struct csid_phy_config {
 	u8 csiphy_id;
 	u8 lane_cnt;
 	u32 lane_assign;
-	u32 en_vc;
-	u8 need_vc_update;
 };
 
 struct csid_device;
@@ -154,13 +142,6 @@ struct csid_hw_ops {
 	void (*subdev_init)(struct csid_device *csid);
 };
 
-struct csid_subdev_resources {
-	bool is_lite;
-	const struct csid_hw_ops *hw_ops;
-	const struct parent_dev_ops *parent_dev_ops;
-	const struct csid_formats *formats;
-};
-
 struct csid_device {
 	struct camss *camss;
 	u8 id;
@@ -171,18 +152,19 @@ struct csid_device {
 	char irq_name[30];
 	struct camss_clock *clock;
 	int nclocks;
-	struct regulator_bulk_data *supplies;
-	int num_supplies;
+	struct regulator *vdda;
 	struct completion reset_complete;
 	struct csid_testgen_config testgen;
 	struct csid_phy_config phy;
 	struct v4l2_mbus_framefmt fmt[MSM_CSID_PADS_NUM];
 	struct v4l2_ctrl_handler ctrls;
 	struct v4l2_ctrl *testgen_mode;
-	const struct csid_subdev_resources *res;
+	const struct csid_format *formats;
+	unsigned int nformats;
+	const struct csid_hw_ops *ops;
 };
 
-struct camss_subdev_resources;
+struct resources;
 
 /*
  * csid_find_code - Find a format code in an array using array index or format code
@@ -198,19 +180,19 @@ u32 csid_find_code(u32 *codes, unsigned int ncode,
 		   unsigned int match_format_idx, u32 match_code);
 
 /*
- * csid_get_fmt_entry - Find csid_format_info entry with matching format code
- * @formats: Array of format csid_format_info entries
+ * csid_get_fmt_entry - Find csid_format entry with matching format code
+ * @formats: Array of format csid_format entries
  * @nformats: Length of @nformats array
  * @code: Desired format code
  *
  * Return formats[0] on failure to find code
  */
-const struct csid_format_info *csid_get_fmt_entry(const struct csid_format_info *formats,
-						  unsigned int nformats,
-						  u32 code);
+const struct csid_format *csid_get_fmt_entry(const struct csid_format *formats,
+					     unsigned int nformats,
+					     u32 code);
 
 int msm_csid_subdev_init(struct camss *camss, struct csid_device *csid,
-			 const struct camss_subdev_resources *res, u8 id);
+			 const struct resources *res, u8 id);
 
 int msm_csid_register_entity(struct csid_device *csid,
 			     struct v4l2_device *v4l2_dev);
@@ -221,20 +203,9 @@ void msm_csid_get_csid_id(struct media_entity *entity, u8 *id);
 
 extern const char * const csid_testgen_modes[];
 
-extern const struct csid_formats csid_formats_4_1;
-extern const struct csid_formats csid_formats_4_7;
-extern const struct csid_formats csid_formats_gen2;
-
 extern const struct csid_hw_ops csid_ops_4_1;
 extern const struct csid_hw_ops csid_ops_4_7;
-extern const struct csid_hw_ops csid_ops_gen2;
+extern const struct csid_hw_ops csid_ops_170;
 
-/*
- * csid_is_lite - Check if CSID is CSID lite.
- * @csid: CSID Device
- *
- * Return whether CSID is CSID lite
- */
-bool csid_is_lite(struct csid_device *csid);
 
 #endif /* QC_MSM_CAMSS_CSID_H */

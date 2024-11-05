@@ -217,7 +217,8 @@ current *struct* is::
 		int (*media_changed)(struct cdrom_device_info *, int);
 		int (*tray_move)(struct cdrom_device_info *, int);
 		int (*lock_door)(struct cdrom_device_info *, int);
-		int (*select_speed)(struct cdrom_device_info *, unsigned long);
+		int (*select_speed)(struct cdrom_device_info *, int);
+		int (*select_disc)(struct cdrom_device_info *, int);
 		int (*get_last_session) (struct cdrom_device_info *,
 					 struct cdrom_multisession *);
 		int (*get_mcn)(struct cdrom_device_info *, struct cdrom_mcn *);
@@ -396,7 +397,7 @@ action need be taken, and the return value should be 0.
 
 ::
 
-	int select_speed(struct cdrom_device_info *cdi, unsigned long speed)
+	int select_speed(struct cdrom_device_info *cdi, int speed)
 
 Some CD-ROM drives are capable of changing their head-speed. There
 are several reasons for changing the speed of a CD-ROM drive. Badly
@@ -417,6 +418,15 @@ maximum data-rate or real-time audio rate. If the drive doesn't have
 this `auto-selection` capability, the decision should be made on the
 current disc loaded and the return value should be positive. A negative
 return value indicates an error.
+
+::
+
+	int select_disc(struct cdrom_device_info *cdi, int number)
+
+If the drive can store multiple discs (a juke-box) this function
+will perform disc selection. It should return the number of the
+selected disc on success, a negative value on error. Currently, only
+the ide-cd driver supports this functionality.
 
 ::
 

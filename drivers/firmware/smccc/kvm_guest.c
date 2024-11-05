@@ -4,7 +4,6 @@
 
 #include <linux/arm-smccc.h>
 #include <linux/bitmap.h>
-#include <linux/cache.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
 
@@ -39,8 +38,6 @@ void __init kvm_init_hyp_services(void)
 
 	pr_info("hypervisor services detected (0x%08lx 0x%08lx 0x%08lx 0x%08lx)\n",
 		 res.a3, res.a2, res.a1, res.a0);
-
-	kvm_arch_init_hyp_services();
 }
 
 bool kvm_arm_hyp_service_available(u32 func_id)

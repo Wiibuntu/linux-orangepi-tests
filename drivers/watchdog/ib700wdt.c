@@ -256,6 +256,7 @@ static int ibwdt_close(struct inode *inode, struct file *file)
 
 static const struct file_operations ibwdt_fops = {
 	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
 	.write		= ibwdt_write,
 	.unlocked_ioctl	= ibwdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -315,13 +316,14 @@ out_nostopreg:
 	return res;
 }
 
-static void ibwdt_remove(struct platform_device *dev)
+static int ibwdt_remove(struct platform_device *dev)
 {
 	misc_deregister(&ibwdt_miscdev);
 	release_region(WDT_START, 1);
 #if WDT_START != WDT_STOP
 	release_region(WDT_STOP, 1);
 #endif
+	return 0;
 }
 
 static void ibwdt_shutdown(struct platform_device *dev)
@@ -331,7 +333,7 @@ static void ibwdt_shutdown(struct platform_device *dev)
 }
 
 static struct platform_driver ibwdt_driver = {
-	.remove_new	= ibwdt_remove,
+	.remove		= ibwdt_remove,
 	.shutdown	= ibwdt_shutdown,
 	.driver		= {
 		.name	= DRV_NAME,

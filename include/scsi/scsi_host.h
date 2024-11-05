@@ -16,6 +16,7 @@ struct completion;
 struct module;
 struct scsi_cmnd;
 struct scsi_device;
+struct scsi_host_cmd_pool;
 struct scsi_target;
 struct Scsi_Host;
 struct scsi_transport_template;
@@ -26,18 +27,6 @@ struct scsi_transport_template;
 #define MODE_UNKNOWN 0x00
 #define MODE_INITIATOR 0x01
 #define MODE_TARGET 0x02
-
-/**
- * enum scsi_timeout_action - How to handle a command that timed out.
- * @SCSI_EH_DONE: The command has already been completed.
- * @SCSI_EH_RESET_TIMER: Reset the timer and continue waiting for completion.
- * @SCSI_EH_NOT_HANDLED: The command has not yet finished. Abort the command.
- */
-enum scsi_timeout_action {
-	SCSI_EH_DONE,
-	SCSI_EH_RESET_TIMER,
-	SCSI_EH_NOT_HANDLED,
-};
 
 struct scsi_host_template {
 	/*
@@ -211,11 +200,7 @@ struct scsi_host_template {
 	 *     up after yourself before returning non-0
 	 *
 	 * Status: OPTIONAL
-	 *
-	 * Note: slave_configure is the legacy version, use device_configure for
-	 * all new code.  A driver must never define both.
 	 */
-	int (* device_configure)(struct scsi_device *, struct queue_limits *lim);
 	int (* slave_configure)(struct scsi_device *);
 
 	/*
@@ -248,9 +233,6 @@ struct scsi_host_template {
 	 * after all activity to attached scsi devices has ceased, the
 	 * midlayer calls this point so that the driver may deallocate
 	 * and terminate any references to the target.
-	 *
-	 * Note: This callback is called with the host lock held and hence
-	 * must not sleep.
 	 *
 	 * Status: OPTIONAL
 	 */
@@ -295,7 +277,7 @@ struct scsi_host_template {
 	 *
 	 * Status: OPTIONAL
 	 */
-	void (* map_queues)(struct Scsi_Host *shost);
+	int (* map_queues)(struct Scsi_Host *shost);
 
 	/*
 	 * SCSI interface of blk_poll - poll for IO completions.
@@ -350,7 +332,7 @@ struct scsi_host_template {
 	 *
 	 * Status: OPTIONAL
 	 */
-	enum scsi_timeout_action (*eh_timed_out)(struct scsi_cmnd *);
+	enum blk_eh_timer_return (*eh_timed_out)(struct scsi_cmnd *);
 	/*
 	 * Optional routine that allows the transport to decide if a cmd
 	 * is retryable. Return true if the transport is in a state the
@@ -375,6 +357,12 @@ struct scsi_host_template {
 	 * Name of proc directory
 	 */
 	const char *proc_name;
+
+	/*
+	 * Used to store the procfs directory if a driver implements the
+	 * show_info method.
+	 */
+	struct proc_dir_entry *proc_dir;
 
 	/*
 	 * This determines if we will use a non-interrupt driven
@@ -409,8 +397,6 @@ struct scsi_host_template {
 	 */
 	unsigned int max_segment_size;
 
-	unsigned int dma_alignment;
-
 	/*
 	 * DMA scatter gather segment boundary limit. A segment crossing this
 	 * boundary will be split in two.
@@ -437,6 +423,12 @@ struct scsi_host_template {
 	 * before you try setting this above 1.
 	 */
 	short cmd_per_lun;
+
+	/*
+	 * present contains counter indicating how many boards of this
+	 * type were found when we did the scan.
+	 */
+	unsigned char present;
 
 	/* If use block layer to manage tags, this is tag allocation policy */
 	int tag_alloc_policy;
@@ -466,9 +458,6 @@ struct scsi_host_template {
 
 	/* True if the host uses host-wide tagspace */
 	unsigned host_tagset:1;
-
-	/* The queuecommand callback may block. See also BLK_MQ_F_BLOCKING. */
-	unsigned queuecommand_may_block:1;
 
 	/*
 	 * Countdown for host blocking with no commands outstanding.
@@ -503,6 +492,11 @@ struct scsi_host_template {
 	 *   scsi_netlink.h
 	 */
 	u64 vendor_id;
+
+	struct scsi_host_cmd_pool *cmd_pool;
+
+	/* Delay for runtime autosuspend */
+	int rpm_autosuspend_delay;
 };
 
 /*
@@ -563,11 +557,9 @@ struct Scsi_Host {
 	struct completion     * eh_action; /* Wait for specific actions on the
 					      host. */
 	wait_queue_head_t       host_wait;
-	const struct scsi_host_template *hostt;
+	struct scsi_host_template *hostt;
 	struct scsi_transport_template *transportt;
 
-	struct kref		tagset_refcnt;
-	struct completion	tagset_freed;
 	/* Area to keep a shared tag map */
 	struct blk_mq_tag_set	tag_set;
 
@@ -618,9 +610,7 @@ struct Scsi_Host {
 	short unsigned int sg_tablesize;
 	short unsigned int sg_prot_tablesize;
 	unsigned int max_sectors;
-	unsigned int opt_sectors;
 	unsigned int max_segment_size;
-	unsigned int dma_alignment;
 	unsigned long dma_boundary;
 	unsigned long virt_boundary_mask;
 	/*
@@ -663,20 +653,16 @@ struct Scsi_Host {
 	/* True if the host uses host-wide tagspace */
 	unsigned host_tagset:1;
 
-	/* The queuecommand callback may block. See also BLK_MQ_F_BLOCKING. */
-	unsigned queuecommand_may_block:1;
-
 	/* Host responded with short (<36 bytes) INQUIRY result */
 	unsigned short_inquiry:1;
 
 	/* The transport requires the LUN bits NOT to be stored in CDB[1] */
 	unsigned no_scsi2_lun_in_cdb:1;
 
-	unsigned no_highmem:1;
-
 	/*
 	 * Optional work queue to be utilized by the transport
 	 */
+	char work_q_name[20];
 	struct workqueue_struct *work_q;
 
 	/*
@@ -705,6 +691,12 @@ struct Scsi_Host {
 
 	/* ldm bits */
 	struct device		shost_gendev, shost_dev;
+	/*
+	 * The array size 3 provides space for one attribute group defined by
+	 * the SCSI core, one attribute group defined by the SCSI LLD and one
+	 * terminating NULL pointer.
+	 */
+	const struct attribute_group *shost_dev_attr_groups[3];
 
 	/*
 	 * Points to the transport data (if any) which is allocated
@@ -717,9 +709,6 @@ struct Scsi_Host {
 	 * Needed just in case we have virtual hosts.
 	 */
 	struct device *dma_dev;
-
-	/* Delay for runtime autosuspend */
-	int rpm_autosuspend_delay;
 
 	/*
 	 * We should ensure that this is aligned, both for better performance
@@ -764,24 +753,17 @@ static inline int scsi_host_in_recovery(struct Scsi_Host *shost)
 extern int scsi_queue_work(struct Scsi_Host *, struct work_struct *);
 extern void scsi_flush_work(struct Scsi_Host *);
 
-extern struct Scsi_Host *scsi_host_alloc(const struct scsi_host_template *, int);
+extern struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *, int);
 extern int __must_check scsi_add_host_with_dma(struct Scsi_Host *,
 					       struct device *,
 					       struct device *);
-#if defined(CONFIG_SCSI_PROC_FS)
-struct proc_dir_entry *
-scsi_template_proc_dir(const struct scsi_host_template *sht);
-#else
-#define scsi_template_proc_dir(sht) NULL
-#endif
 extern void scsi_scan_host(struct Scsi_Host *);
-extern int scsi_resume_device(struct scsi_device *sdev);
-extern int scsi_rescan_device(struct scsi_device *sdev);
+extern void scsi_rescan_device(struct device *);
 extern void scsi_remove_host(struct Scsi_Host *);
 extern struct Scsi_Host *scsi_host_get(struct Scsi_Host *);
 extern int scsi_host_busy(struct Scsi_Host *shost);
 extern void scsi_host_put(struct Scsi_Host *t);
-extern struct Scsi_Host *scsi_host_lookup(unsigned int hostnum);
+extern struct Scsi_Host *scsi_host_lookup(unsigned short);
 extern const char *scsi_host_state_name(enum scsi_host_state);
 extern void scsi_host_complete_all_commands(struct Scsi_Host *shost,
 					    enum scsi_host_status status);
@@ -813,7 +795,7 @@ extern int scsi_host_block(struct Scsi_Host *shost);
 extern int scsi_host_unblock(struct Scsi_Host *shost, int new_state);
 
 void scsi_host_busy_iter(struct Scsi_Host *,
-			 bool (*fn)(struct scsi_cmnd *, void *), void *priv);
+			 bool (*fn)(struct scsi_cmnd *, void *, bool), void *priv);
 
 struct class_container;
 

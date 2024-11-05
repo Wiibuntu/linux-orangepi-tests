@@ -18,10 +18,11 @@
 #include <linux/regulator/consumer.h>
 #include <linux/types.h>
 
-#include <drm/display/drm_dp_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_dp_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
@@ -47,7 +48,7 @@ struct anx6345 {
 	struct drm_dp_aux aux;
 	struct drm_bridge bridge;
 	struct i2c_client *client;
-	const struct drm_edid *drm_edid;
+	struct edid *edid;
 	struct drm_connector connector;
 	struct drm_panel *panel;
 	struct regulator *dvdd12;
@@ -458,7 +459,7 @@ static int anx6345_get_modes(struct drm_connector *connector)
 
 	mutex_lock(&anx6345->lock);
 
-	if (!anx6345->drm_edid) {
+	if (!anx6345->edid) {
 		if (!anx6345->powered) {
 			anx6345_poweron(anx6345);
 			power_off = true;
@@ -470,18 +471,19 @@ static int anx6345_get_modes(struct drm_connector *connector)
 			goto unlock;
 		}
 
-		anx6345->drm_edid = drm_edid_read_ddc(connector, &anx6345->aux.ddc);
-		if (!anx6345->drm_edid)
+		anx6345->edid = drm_get_edid(connector, &anx6345->aux.ddc);
+		if (!anx6345->edid)
 			DRM_ERROR("Failed to read EDID from panel\n");
 
-		err = drm_edid_connector_update(connector, anx6345->drm_edid);
+		err = drm_connector_update_edid_property(connector,
+							 anx6345->edid);
 		if (err) {
 			DRM_ERROR("Failed to update EDID property: %d\n", err);
 			goto unlock;
 		}
 	}
 
-	num_modes += drm_edid_connector_add_modes(connector);
+	num_modes += drm_add_edid_modes(connector, anx6345->edid);
 
 	/* Driver currently supports only 6bpc */
 	connector->display_info.bpc = 6;
@@ -525,6 +527,11 @@ static int anx6345_bridge_attach(struct drm_bridge *bridge,
 	if (flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR) {
 		DRM_ERROR("Fix bridge driver to make connector optional!");
 		return -EINVAL;
+	}
+
+	if (!bridge->encoder) {
+		DRM_ERROR("Parent encoder object not found");
+		return -ENODEV;
 	}
 
 	/* Register aux channel */
@@ -685,7 +692,8 @@ static bool anx6345_get_chip_id(struct anx6345 *anx6345)
 	return false;
 }
 
-static int anx6345_i2c_probe(struct i2c_client *client)
+static int anx6345_i2c_probe(struct i2c_client *client,
+			     const struct i2c_device_id *id)
 {
 	struct anx6345 *anx6345;
 	struct device *dev;
@@ -779,7 +787,7 @@ err_unregister_i2c:
 	return err;
 }
 
-static void anx6345_i2c_remove(struct i2c_client *client)
+static int anx6345_i2c_remove(struct i2c_client *client)
 {
 	struct anx6345 *anx6345 = i2c_get_clientdata(client);
 
@@ -787,9 +795,11 @@ static void anx6345_i2c_remove(struct i2c_client *client)
 
 	unregister_i2c_dummy_clients(anx6345);
 
-	drm_edid_free(anx6345->drm_edid);
+	kfree(anx6345->edid);
 
 	mutex_destroy(&anx6345->lock);
+
+	return 0;
 }
 
 static const struct i2c_device_id anx6345_id[] = {
@@ -807,7 +817,7 @@ MODULE_DEVICE_TABLE(of, anx6345_match_table);
 static struct i2c_driver anx6345_driver = {
 	.driver = {
 		   .name = "anx6345",
-		   .of_match_table = anx6345_match_table,
+		   .of_match_table = of_match_ptr(anx6345_match_table),
 		  },
 	.probe = anx6345_i2c_probe,
 	.remove = anx6345_i2c_remove,

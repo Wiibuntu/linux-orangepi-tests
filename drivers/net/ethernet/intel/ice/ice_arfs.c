@@ -2,7 +2,6 @@
 /* Copyright (C) 2018-2020, Intel Corporation. */
 
 #include "ice.h"
-#include <net/rps.h>
 
 /**
  * ice_is_arfs_active - helper to check is aRFS is active
@@ -578,7 +577,7 @@ void ice_free_cpu_rx_rmap(struct ice_vsi *vsi)
 {
 	struct net_device *netdev;
 
-	if (!vsi || vsi->type != ICE_VSI_PF)
+	if (!vsi || vsi->type != ICE_VSI_PF || !vsi->arfs_fltr_list)
 		return;
 
 	netdev = vsi->netdev;
@@ -597,10 +596,10 @@ int ice_set_cpu_rx_rmap(struct ice_vsi *vsi)
 {
 	struct net_device *netdev;
 	struct ice_pf *pf;
-	int i;
+	int base_idx, i;
 
 	if (!vsi || vsi->type != ICE_VSI_PF)
-		return 0;
+		return -EINVAL;
 
 	pf = vsi->back;
 	netdev = vsi->netdev;
@@ -614,9 +613,10 @@ int ice_set_cpu_rx_rmap(struct ice_vsi *vsi)
 	if (unlikely(!netdev->rx_cpu_rmap))
 		return -EINVAL;
 
+	base_idx = vsi->base_vector;
 	ice_for_each_q_vector(vsi, i)
 		if (irq_cpu_rmap_add(netdev->rx_cpu_rmap,
-				     vsi->q_vectors[i]->irq.virq)) {
+				     pf->msix_entries[base_idx + i].vector)) {
 			ice_free_cpu_rx_rmap(vsi);
 			return -EINVAL;
 		}
@@ -636,6 +636,7 @@ void ice_remove_arfs(struct ice_pf *pf)
 	if (!pf_vsi)
 		return;
 
+	ice_free_cpu_rx_rmap(pf_vsi);
 	ice_clear_arfs(pf_vsi);
 }
 
@@ -652,5 +653,9 @@ void ice_rebuild_arfs(struct ice_pf *pf)
 		return;
 
 	ice_remove_arfs(pf);
+	if (ice_set_cpu_rx_rmap(pf_vsi)) {
+		dev_err(ice_pf_to_dev(pf), "Failed to rebuild aRFS\n");
+		return;
+	}
 	ice_init_arfs(pf_vsi);
 }

@@ -4,7 +4,6 @@
 
 #include <linux/stringify.h>
 #include <linux/instrumentation.h>
-#include <linux/objtool.h>
 
 /*
  * Despite that some emulators terminate on UD2, we use it for WARN().
@@ -13,24 +12,12 @@
 #define INSN_UD2	0x0b0f
 #define LEN_UD2		2
 
-/*
- * In clang we have UD1s reporting UBSAN failures on X86, 64 and 32bit.
- */
-#define INSN_ASOP		0x67
-#define OPCODE_ESCAPE		0x0f
-#define SECOND_BYTE_OPCODE_UD1	0xb9
-#define SECOND_BYTE_OPCODE_UD2	0x0b
-
-#define BUG_NONE		0xffff
-#define BUG_UD1			0xfffe
-#define BUG_UD2			0xfffd
-
 #ifdef CONFIG_GENERIC_BUG
 
 #ifdef CONFIG_X86_32
 # define __BUG_REL(val)	".long " __stringify(val)
 #else
-# define __BUG_REL(val)	".long " __stringify(val) " - ."
+# define __BUG_REL(val)	".long " __stringify(val) " - 2b"
 #endif
 
 #ifdef CONFIG_DEBUG_BUGVERBOSE
@@ -90,9 +77,9 @@ do {								\
  */
 #define __WARN_FLAGS(flags)					\
 do {								\
-	__auto_type __flags = BUGFLAG_WARNING|(flags);		\
+	__auto_type f = BUGFLAG_WARNING|(flags);		\
 	instrumentation_begin();				\
-	_BUG_FLAGS(ASM_UD2, __flags, ASM_REACHABLE);		\
+	_BUG_FLAGS(ASM_UD2, f, ASM_REACHABLE);			\
 	instrumentation_end();					\
 } while (0)
 

@@ -25,8 +25,7 @@ if [[ "$(cat /proc/cmdline)" != "$MOD_LIVEPATCH: this has been live patched" ]] 
 	die "livepatch kselftest(s) failed"
 fi
 
-# Check that ftrace could not get disabled when a livepatch is enabled
-set_ftrace_enabled --fail 0
+set_ftrace_enabled 0
 if [[ "$(cat /proc/cmdline)" != "$MOD_LIVEPATCH: this has been live patched" ]] ; then
 	echo -e "FAIL\n\n"
 	die "livepatch kselftest(s) failed"
@@ -35,7 +34,7 @@ disable_lp $MOD_LIVEPATCH
 unload_lp $MOD_LIVEPATCH
 
 check_result "livepatch: kernel.ftrace_enabled = 0
-% insmod test_modules/$MOD_LIVEPATCH.ko
+% modprobe $MOD_LIVEPATCH
 livepatch: enabling patch '$MOD_LIVEPATCH'
 livepatch: '$MOD_LIVEPATCH': initializing patching transition
 livepatch: failed to register ftrace handler for function 'cmdline_proc_show' (-16)
@@ -44,9 +43,9 @@ livepatch: failed to enable patch '$MOD_LIVEPATCH'
 livepatch: '$MOD_LIVEPATCH': canceling patching transition, going to unpatch
 livepatch: '$MOD_LIVEPATCH': completing unpatching transition
 livepatch: '$MOD_LIVEPATCH': unpatching complete
-insmod: ERROR: could not insert module test_modules/$MOD_LIVEPATCH.ko: Device or resource busy
+modprobe: ERROR: could not insert '$MOD_LIVEPATCH': Device or resource busy
 livepatch: kernel.ftrace_enabled = 1
-% insmod test_modules/$MOD_LIVEPATCH.ko
+% modprobe $MOD_LIVEPATCH
 livepatch: enabling patch '$MOD_LIVEPATCH'
 livepatch: '$MOD_LIVEPATCH': initializing patching transition
 livepatch: '$MOD_LIVEPATCH': starting patching transition

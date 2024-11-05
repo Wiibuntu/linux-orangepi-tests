@@ -19,11 +19,11 @@
 #include <linux/ioport.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/slab.h>
 
 #include "../core.h"
@@ -757,9 +757,9 @@ static int rza1_gpio_request(struct gpio_chip *chip, unsigned int gpio)
 }
 
 /**
- * rza1_gpio_free() - reset a pin
+ * rza1_gpio_disable_free() - reset a pin
  *
- * Surprisingly, freeing a gpio is equivalent to requesting it.
+ * Surprisingly, disable_free a gpio, is equivalent to request it.
  * Reset pin to port mode, with input buffer disabled. This overwrites all
  * port direction settings applied with set_direction
  *
@@ -852,6 +852,7 @@ static const struct gpio_chip rza1_gpiochip_template = {
  */
 static int rza1_dt_node_pin_count(struct device_node *np)
 {
+	struct device_node *child;
 	struct property *of_pins;
 	unsigned int npins;
 
@@ -860,10 +861,12 @@ static int rza1_dt_node_pin_count(struct device_node *np)
 		return of_pins->length / sizeof(u32);
 
 	npins = 0;
-	for_each_child_of_node_scoped(np, child) {
+	for_each_child_of_node(np, child) {
 		of_pins = of_find_property(child, "pinmux", NULL);
-		if (!of_pins)
+		if (!of_pins) {
+			of_node_put(child);
 			return -EINVAL;
+		}
 
 		npins += of_pins->length / sizeof(u32);
 	}
@@ -872,7 +875,7 @@ static int rza1_dt_node_pin_count(struct device_node *np)
 }
 
 /**
- * rza1_parse_pinmux_node() - parse a pin mux sub-node
+ * rza1_parse_pmx_function() - parse a pin mux sub-node
  *
  * @rza1_pctl: RZ/A1 pin controller device
  * @np: of pmx sub-node
@@ -983,6 +986,7 @@ static int rza1_dt_node_to_map(struct pinctrl_dev *pctldev,
 	struct rza1_pinctrl *rza1_pctl = pinctrl_dev_get_drvdata(pctldev);
 	struct rza1_mux_conf *mux_confs, *mux_conf;
 	unsigned int *grpins, *grpin;
+	struct device_node *child;
 	const char *grpname;
 	const char **fngrps;
 	int ret, npins;
@@ -1019,11 +1023,13 @@ static int rza1_dt_node_to_map(struct pinctrl_dev *pctldev,
 
 	ret = rza1_parse_pinmux_node(rza1_pctl, np, mux_conf, grpin);
 	if (ret == -ENOENT)
-		for_each_child_of_node_scoped(np, child) {
+		for_each_child_of_node(np, child) {
 			ret = rza1_parse_pinmux_node(rza1_pctl, child, mux_conf,
 						     grpin);
-			if (ret < 0)
+			if (ret < 0) {
+				of_node_put(child);
 				return ret;
+			}
 
 			grpin += ret;
 			mux_conf += ret;
@@ -1125,7 +1131,7 @@ static int rza1_set_mux(struct pinctrl_dev *pctldev, unsigned int selector,
 		return -EINVAL;
 
 	mux_confs = (struct rza1_mux_conf *)func->data;
-	for (i = 0; i < grp->grp.npins; ++i) {
+	for (i = 0; i < grp->num_pins; ++i) {
 		int ret;
 
 		ret = rza1_pin_mux_single(rza1_pctl, &mux_confs[i]);
@@ -1148,6 +1154,21 @@ static const struct pinmux_ops rza1_pinmux_ops = {
  * RZ/A1 pin controller driver operations
  */
 
+static unsigned int rza1_count_gpio_chips(struct device_node *np)
+{
+	struct device_node *child;
+	unsigned int count = 0;
+
+	for_each_child_of_node(np, child) {
+		if (!of_property_read_bool(child, "gpio-controller"))
+			continue;
+
+		count++;
+	}
+
+	return count;
+}
+
 /**
  * rza1_parse_gpiochip() - parse and register a gpio chip and pin range
  *
@@ -1155,22 +1176,22 @@ static const struct pinmux_ops rza1_pinmux_ops = {
  * defined by gpio device tree binding documentation.
  *
  * @rza1_pctl: RZ/A1 pin controller device
- * @fwnode: gpio-controller firmware node
+ * @np: of gpio-controller node
  * @chip: gpio chip to register to gpiolib
  * @range: pin range to register to pinctrl core
  */
 static int rza1_parse_gpiochip(struct rza1_pinctrl *rza1_pctl,
-			       struct fwnode_handle *fwnode,
+			       struct device_node *np,
 			       struct gpio_chip *chip,
 			       struct pinctrl_gpio_range *range)
 {
 	const char *list_name = "gpio-ranges";
-	struct fwnode_reference_args args;
+	struct of_phandle_args of_args;
 	unsigned int gpioport;
 	u32 pinctrl_base;
 	int ret;
 
-	ret = fwnode_property_get_reference_args(fwnode, list_name, NULL, 3, 0, &args);
+	ret = of_parse_phandle_with_fixed_args(np, list_name, 3, 0, &of_args);
 	if (ret) {
 		dev_err(rza1_pctl->dev, "Unable to parse %s list property\n",
 			list_name);
@@ -1181,7 +1202,7 @@ static int rza1_parse_gpiochip(struct rza1_pinctrl *rza1_pctl,
 	 * Find out on which port this gpio-chip maps to by inspecting the
 	 * second argument of the "gpio-ranges" property.
 	 */
-	pinctrl_base = args.args[1];
+	pinctrl_base = of_args.args[1];
 	gpioport = RZA1_PIN_ID_TO_PORT(pinctrl_base);
 	if (gpioport >= RZA1_NPORTS) {
 		dev_err(rza1_pctl->dev,
@@ -1191,18 +1212,19 @@ static int rza1_parse_gpiochip(struct rza1_pinctrl *rza1_pctl,
 
 	*chip		= rza1_gpiochip_template;
 	chip->base	= -1;
-	chip->ngpio	= args.args[2];
-	chip->label	= devm_kasprintf(rza1_pctl->dev, GFP_KERNEL, "%pfwP", fwnode);
+	chip->label	= devm_kasprintf(rza1_pctl->dev, GFP_KERNEL, "%pOFn",
+					 np);
 	if (!chip->label)
 		return -ENOMEM;
 
-	chip->fwnode	= fwnode;
+	chip->ngpio	= of_args.args[2];
+	chip->of_node	= np;
 	chip->parent	= rza1_pctl->dev;
 
 	range->id	= gpioport;
 	range->name	= chip->label;
 	range->pin_base	= range->base = pinctrl_base;
-	range->npins	= args.args[2];
+	range->npins	= of_args.args[2];
 	range->gc	= chip;
 
 	ret = devm_gpiochip_add_data(rza1_pctl->dev, chip,
@@ -1225,14 +1247,15 @@ static int rza1_parse_gpiochip(struct rza1_pinctrl *rza1_pctl,
  */
 static int rza1_gpio_register(struct rza1_pinctrl *rza1_pctl)
 {
+	struct device_node *np = rza1_pctl->dev->of_node;
 	struct pinctrl_gpio_range *gpio_ranges;
 	struct gpio_chip *gpio_chips;
-	struct fwnode_handle *child;
+	struct device_node *child;
 	unsigned int ngpiochips;
 	unsigned int i;
 	int ret;
 
-	ngpiochips = gpiochip_node_count(rza1_pctl->dev);
+	ngpiochips = rza1_count_gpio_chips(np);
 	if (ngpiochips == 0) {
 		dev_dbg(rza1_pctl->dev, "No gpiochip registered\n");
 		return 0;
@@ -1246,11 +1269,14 @@ static int rza1_gpio_register(struct rza1_pinctrl *rza1_pctl)
 		return -ENOMEM;
 
 	i = 0;
-	for_each_gpiochip_node(rza1_pctl->dev, child) {
+	for_each_child_of_node(np, child) {
+		if (!of_property_read_bool(child, "gpio-controller"))
+			continue;
+
 		ret = rza1_parse_gpiochip(rza1_pctl, child, &gpio_chips[i],
 					  &gpio_ranges[i]);
 		if (ret) {
-			fwnode_handle_put(child);
+			of_node_put(child);
 			return ret;
 		}
 
@@ -1381,7 +1407,7 @@ static const struct of_device_id rza1_pinctrl_of_match[] = {
 		.compatible	= "renesas,r7s72102-ports",
 		.data		= &rza1l_pmx_conf,
 	},
-	{ /* sentinel */ }
+	{ }
 };
 
 static struct platform_driver rza1_pinctrl_driver = {
@@ -1400,3 +1426,4 @@ core_initcall(rza1_pinctrl_init);
 
 MODULE_AUTHOR("Jacopo Mondi <jacopo+renesas@jmondi.org");
 MODULE_DESCRIPTION("Pin and gpio controller driver for Reneas RZ/A1 SoC");
+MODULE_LICENSE("GPL v2");

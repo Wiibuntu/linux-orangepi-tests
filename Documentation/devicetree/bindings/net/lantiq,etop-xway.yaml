@@ -46,6 +46,7 @@ properties:
 required:
   - compatible
   - reg
+  - interrupt-parent
   - interrupts
   - interrupt-names
   - lantiq,tx-burst-length

@@ -18,7 +18,7 @@
 #include <linux/irq.h>
 #include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_graph.h>
 
 #include <drm/drm_fourcc.h>
@@ -1165,7 +1165,6 @@ static int ipu_add_client_devices(struct ipu_soc *ipu, unsigned long ipu_base)
 		pdev = platform_device_alloc(reg->name, id++);
 		if (!pdev) {
 			ret = -ENOMEM;
-			of_node_put(of_node);
 			goto err_register;
 		}
 
@@ -1450,7 +1449,7 @@ out_failed_reset:
 	return ret;
 }
 
-static void ipu_remove(struct platform_device *pdev)
+static int ipu_remove(struct platform_device *pdev)
 {
 	struct ipu_soc *ipu = platform_get_drvdata(pdev);
 
@@ -1459,6 +1458,8 @@ static void ipu_remove(struct platform_device *pdev)
 	ipu_irq_exit(ipu);
 
 	clk_disable_unprepare(ipu->clk);
+
+	return 0;
 }
 
 static struct platform_driver imx_ipu_driver = {
@@ -1467,7 +1468,7 @@ static struct platform_driver imx_ipu_driver = {
 		.of_match_table = imx_ipu_dt_ids,
 	},
 	.probe = ipu_probe,
-	.remove_new = ipu_remove,
+	.remove = ipu_remove,
 };
 
 static struct platform_driver * const drivers[] = {

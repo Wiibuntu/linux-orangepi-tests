@@ -34,7 +34,6 @@ algorithms work.
    seq_file
    sharedsubtree
    idmappings
-   iomap/index
 
    automount-support
 
@@ -51,7 +50,6 @@ filesystem implementations.
 .. toctree::
    :maxdepth: 2
 
-   buffer
    journalling
    fscrypt
    fsverity
@@ -71,10 +69,10 @@ Documentation for filesystem implementations.
    afs
    autofs
    autofs-mount-control
-   bcachefs/index
    befs
    bfs
    btrfs
+   cifs/index
    ceph
    coda
    configfs
@@ -101,6 +99,7 @@ Documentation for filesystem implementations.
    isofs
    nilfs2
    nfs/index
+   ntfs
    ntfs3
    ocfs2
    ocfs2-online-filecheck
@@ -112,7 +111,6 @@ Documentation for filesystem implementations.
    ramfs-rootfs-initramfs
    relay
    romfs
-   smb/index
    spufs/index
    squashfs
    sysfs
@@ -123,5 +121,6 @@ Documentation for filesystem implementations.
    udf
    virtiofs
    vfat
-   xfs/index
+   xfs-delayed-logging-design
+   xfs-self-describing-metadata
    zonefs

@@ -13,12 +13,13 @@
 #include <linux/delay.h>
 #include <linux/memblock.h>
 #include <linux/libfdt.h>
-#include <linux/crash_reserve.h>
-#include <linux/of.h>
-#include <linux/of_fdt.h>
+#include <linux/crash_core.h>
 #include <asm/cacheflush.h>
+#include <asm/prom.h>
 #include <asm/kdump.h>
 #include <mm/mmu_decl.h>
+#include <generated/compile.h>
+#include <generated/utsrelease.h>
 
 struct regions {
 	unsigned long pa_start;
@@ -35,11 +36,17 @@ struct regions {
 	int reserved_mem_size_cells;
 };
 
+/* Simplified build-specific string for starting entropy. */
+static const char build_str[] = UTS_RELEASE " (" LINUX_COMPILE_BY "@"
+		LINUX_COMPILE_HOST ") (" LINUX_COMPILER ") " UTS_VERSION;
+
 struct regions __initdata regions;
 
 static __init void kaslr_get_cmdline(void *fdt)
 {
-	early_init_dt_scan_chosen(boot_command_line);
+	int node = fdt_path_offset(fdt, "/chosen");
+
+	early_init_dt_scan_chosen(node, "chosen", 1, boot_command_line);
 }
 
 static unsigned long __init rotate_xor(unsigned long hash, const void *area,
@@ -65,8 +72,7 @@ static unsigned long __init get_boot_seed(void *fdt)
 {
 	unsigned long hash = 0;
 
-	/* build-specific string for starting entropy. */
-	hash = rotate_xor(hash, linux_banner, strlen(linux_banner));
+	hash = rotate_xor(hash, build_str, sizeof(build_str));
 	hash = rotate_xor(hash, fdt, fdt_totalsize(fdt));
 
 	return hash;
@@ -173,12 +179,12 @@ static __init bool overlaps_region(const void *fdt, u32 start,
 
 static void __init get_crash_kernel(void *fdt, unsigned long size)
 {
-#ifdef CONFIG_CRASH_RESERVE
+#ifdef CONFIG_CRASH_CORE
 	unsigned long long crash_size, crash_base;
 	int ret;
 
 	ret = parse_crashkernel(boot_command_line, size, &crash_size,
-				&crash_base, NULL, NULL);
+				&crash_base);
 	if (ret != 0 || crash_size == 0)
 		return;
 	if (crash_base == 0)
@@ -311,7 +317,7 @@ static unsigned long __init kaslr_choose_location(void *dt_ptr, phys_addr_t size
 	ram = map_mem_in_cams(ram, CONFIG_LOWMEM_CAM_NUM, true, true);
 	linear_sz = min_t(unsigned long, ram, SZ_512M);
 
-	/* If the linear size is smaller than 64M, do not randomize */
+	/* If the linear size is smaller than 64M, do not randmize */
 	if (linear_sz < SZ_64M)
 		return 0;
 
@@ -376,7 +382,7 @@ notrace void __init kaslr_early_init(void *dt_ptr, phys_addr_t size)
 		create_kaslr_tlb_entry(1, tlb_virt, tlb_phys);
 	}
 
-	/* Copy the kernel to its new location and run */
+	/* Copy the kernel to it's new location and run */
 	memcpy((void *)kernstart_virt_addr, (void *)_stext, kernel_sz);
 	flush_icache_range(kernstart_virt_addr, kernstart_virt_addr + kernel_sz);
 

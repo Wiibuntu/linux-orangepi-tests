@@ -19,7 +19,6 @@
 #include <linux/errno.h>
 #include <linux/proc_fs.h>
 #include <linux/init.h>
-#include <asm/papr-sysparm.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
@@ -29,6 +28,7 @@
 #include <asm/firmware.h>
 #include <asm/rtas.h>
 #include <asm/time.h>
+#include <asm/prom.h>
 #include <asm/vdso_datapage.h>
 #include <asm/vio.h>
 #include <asm/mmu.h>
@@ -36,7 +36,6 @@
 #include <asm/drmem.h>
 
 #include "pseries.h"
-#include "vas.h"	/* pseries_vas_dlpar_cpu() */
 
 /*
  * This isn't a module but we expose that to userspace
@@ -113,8 +112,8 @@ struct hvcall_ppp_data {
  */
 static unsigned int h_get_ppp(struct hvcall_ppp_data *ppp_data)
 {
-	unsigned long retbuf[PLPAR_HCALL9_BUFSIZE] = {0};
-	long rc;
+	unsigned long rc;
+	unsigned long retbuf[PLPAR_HCALL9_BUFSIZE];
 
 	rc = plpar_hcall9(H_GET_PPP, retbuf);
 
@@ -170,23 +169,19 @@ out:
 	kfree(buf);
 }
 
-static long h_pic(unsigned long *pool_idle_time,
-		  unsigned long *num_procs)
+static unsigned h_pic(unsigned long *pool_idle_time,
+		      unsigned long *num_procs)
 {
-	long rc;
-	unsigned long retbuf[PLPAR_HCALL_BUFSIZE] = {0};
+	unsigned long rc;
+	unsigned long retbuf[PLPAR_HCALL_BUFSIZE];
 
 	rc = plpar_hcall(H_PIC, retbuf);
 
-	if (pool_idle_time)
-		*pool_idle_time = retbuf[0];
-	if (num_procs)
-		*num_procs = retbuf[1];
+	*pool_idle_time = retbuf[0];
+	*num_procs = retbuf[1];
 
 	return rc;
 }
-
-unsigned long boot_pool_idle_time;
 
 /*
  * parse_ppp_data
@@ -197,7 +192,7 @@ static void parse_ppp_data(struct seq_file *m)
 	struct hvcall_ppp_data ppp_data;
 	struct device_node *root;
 	const __be32 *perf_level;
-	long rc;
+	int rc;
 
 	rc = h_get_ppp(&ppp_data);
 	if (rc)
@@ -210,7 +205,7 @@ static void parse_ppp_data(struct seq_file *m)
 	           ppp_data.active_system_procs);
 
 	/* pool related entries are appropriate for shared configs */
-	if (lppaca_shared_proc()) {
+	if (lppaca_shared_proc(get_lppaca())) {
 		unsigned long pool_idle_time, pool_procs;
 
 		seq_printf(m, "pool=%d\n", ppp_data.pool_num);
@@ -219,15 +214,9 @@ static void parse_ppp_data(struct seq_file *m)
 		seq_printf(m, "pool_capacity=%d\n",
 			   ppp_data.active_procs_in_pool * 100);
 
-		/* In case h_pic call is not successful, this would result in
-		 * APP values being wrong in tools like lparstat.
-		 */
-
-		if (h_pic(&pool_idle_time, &pool_procs) == H_SUCCESS) {
-			seq_printf(m, "pool_idle_time=%ld\n", pool_idle_time);
-			seq_printf(m, "pool_num_procs=%ld\n", pool_procs);
-			seq_printf(m, "boot_pool_idle_time=%ld\n", boot_pool_idle_time);
-		}
+		h_pic(&pool_idle_time, &pool_procs);
+		seq_printf(m, "pool_idle_time=%ld\n", pool_idle_time);
+		seq_printf(m, "pool_num_procs=%ld\n", pool_procs);
 	}
 
 	seq_printf(m, "unallocated_capacity_weight=%d\n",
@@ -322,59 +311,7 @@ static void parse_mpp_x_data(struct seq_file *m)
 		seq_printf(m, "coalesce_pool_spurr=%ld\n", mpp_x_data.pool_spurr_cycles);
 }
 
-/*
- * Read the lpar name using the RTAS ibm,get-system-parameter call.
- *
- * The name read through this call is updated if changes are made by the end
- * user on the hypervisor side.
- *
- * Some hypervisor (like Qemu) may not provide this value. In that case, a non
- * null value is returned.
- */
-static int read_rtas_lpar_name(struct seq_file *m)
-{
-	struct papr_sysparm_buf *buf;
-	int err;
-
-	buf = papr_sysparm_buf_alloc();
-	if (!buf)
-		return -ENOMEM;
-
-	err = papr_sysparm_get(PAPR_SYSPARM_LPAR_NAME, buf);
-	if (!err)
-		seq_printf(m, "partition_name=%s\n", buf->val);
-
-	papr_sysparm_buf_free(buf);
-	return err;
-}
-
-/*
- * Read the LPAR name from the Device Tree.
- *
- * The value read in the DT is not updated if the end-user is touching the LPAR
- * name on the hypervisor side.
- */
-static int read_dt_lpar_name(struct seq_file *m)
-{
-	struct device_node *root = of_find_node_by_path("/");
-	const char *name;
-	int ret;
-
-	ret = of_property_read_string(root, "ibm,partition-name", &name);
-	of_node_put(root);
-	if (ret)
-		return -ENOENT;
-
-	seq_printf(m, "partition_name=%s\n", name);
-	return 0;
-}
-
-static void read_lpar_name(struct seq_file *m)
-{
-	if (read_rtas_lpar_name(m))
-		read_dt_lpar_name(m);
-}
-
+#define SPLPAR_CHARACTERISTICS_TOKEN 20
 #define SPLPAR_MAXLENGTH 1026*(sizeof(char))
 
 /*
@@ -385,25 +322,45 @@ static void read_lpar_name(struct seq_file *m)
  */
 static void parse_system_parameter_string(struct seq_file *m)
 {
-	struct papr_sysparm_buf *buf;
+	int call_status;
 
-	buf = papr_sysparm_buf_alloc();
-	if (!buf)
+	unsigned char *local_buffer = kmalloc(SPLPAR_MAXLENGTH, GFP_KERNEL);
+	if (!local_buffer) {
+		printk(KERN_ERR "%s %s kmalloc failure at line %d\n",
+		       __FILE__, __func__, __LINE__);
 		return;
+	}
 
-	if (papr_sysparm_get(PAPR_SYSPARM_SHARED_PROC_LPAR_ATTRS, buf)) {
-		goto out_free;
+	spin_lock(&rtas_data_buf_lock);
+	memset(rtas_data_buf, 0, SPLPAR_MAXLENGTH);
+	call_status = rtas_call(rtas_token("ibm,get-system-parameter"), 3, 1,
+				NULL,
+				SPLPAR_CHARACTERISTICS_TOKEN,
+				__pa(rtas_data_buf),
+				RTAS_DATA_BUF_SIZE);
+	memcpy(local_buffer, rtas_data_buf, SPLPAR_MAXLENGTH);
+	local_buffer[SPLPAR_MAXLENGTH - 1] = '\0';
+	spin_unlock(&rtas_data_buf_lock);
+
+	if (call_status != 0) {
+		printk(KERN_INFO
+		       "%s %s Error calling get-system-parameter (0x%x)\n",
+		       __FILE__, __func__, call_status);
 	} else {
-		const char *local_buffer;
 		int splpar_strlen;
 		int idx, w_idx;
 		char *workbuffer = kzalloc(SPLPAR_MAXLENGTH, GFP_KERNEL);
-
-		if (!workbuffer)
-			goto out_free;
-
-		splpar_strlen = be16_to_cpu(buf->len);
-		local_buffer = buf->val;
+		if (!workbuffer) {
+			printk(KERN_ERR "%s %s kmalloc failure at line %d\n",
+			       __FILE__, __func__, __LINE__);
+			kfree(local_buffer);
+			return;
+		}
+#ifdef LPARCFG_DEBUG
+		printk(KERN_INFO "success calling get-system-parameter\n");
+#endif
+		splpar_strlen = local_buffer[0] * 256 + local_buffer[1];
+		local_buffer += 2;	/* step over strlen value */
 
 		w_idx = 0;
 		idx = 0;
@@ -437,8 +394,7 @@ static void parse_system_parameter_string(struct seq_file *m)
 		kfree(workbuffer);
 		local_buffer -= 2;	/* back up over strlen value */
 	}
-out_free:
-	papr_sysparm_buf_free(buf);
+	kfree(local_buffer);
 }
 
 /* Return the number of processors in the system.
@@ -540,7 +496,6 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 
 	if (firmware_has_feature(FW_FEATURE_SPLPAR)) {
 		/* this call handles the ibm,get-system-parameter contents */
-		read_lpar_name(m);
 		parse_system_parameter_string(m);
 		parse_ppp_data(m);
 		parse_mpp_data(m);
@@ -574,11 +529,10 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 		   partition_potential_processors);
 
 	seq_printf(m, "shared_processor_mode=%d\n",
-		   lppaca_shared_proc());
+		   lppaca_shared_proc(get_lppaca()));
 
-#ifdef CONFIG_PPC_64S_HASH_MMU
-	if (!radix_enabled())
-		seq_printf(m, "slb_size=%d\n", mmu_slb_size);
+#ifdef CONFIG_PPC_BOOK3S_64
+	seq_printf(m, "slb_size=%d\n", mmu_slb_size);
 #endif
 	parse_em_data(m);
 	maxmem_data(m);
@@ -707,16 +661,6 @@ static ssize_t lparcfg_write(struct file *file, const char __user * buf,
 			return -EINVAL;
 
 		retval = update_ppp(new_entitled_ptr, NULL);
-
-		if (retval == H_SUCCESS || retval == H_CONSTRAINED) {
-			/*
-			 * The hypervisor assigns VAS resources based
-			 * on entitled capacity for shared mode.
-			 * Reconfig VAS windows based on DLPAR CPU events.
-			 */
-			if (pseries_vas_dlpar_cpu() != 0)
-				retval = H_HARDWARE;
-		}
 	} else if (!strcmp(kbuf, "capacity_weight")) {
 		char *endp;
 		*new_weight_ptr = (u8) simple_strtoul(tmp, &endp, 10);
@@ -802,7 +746,6 @@ static const struct proc_ops lparcfg_proc_ops = {
 static int __init lparcfg_init(void)
 {
 	umode_t mode = 0444;
-	long retval;
 
 	/* Allow writing if we have FW_FEATURE_SPLPAR */
 	if (firmware_has_feature(FW_FEATURE_SPLPAR))
@@ -812,16 +755,6 @@ static int __init lparcfg_init(void)
 		printk(KERN_ERR "Failed to create powerpc/lparcfg\n");
 		return -EIO;
 	}
-
-	/* If this call fails, it would result in APP values
-	 * being wrong for since boot reports of lparstat
-	 */
-	retval = h_pic(&boot_pool_idle_time, NULL);
-
-	if (retval != H_SUCCESS)
-		pr_debug("H_PIC failed during lparcfg init retval: %ld\n",
-			 retval);
-
 	return 0;
 }
 machine_device_initcall(pseries, lparcfg_init);

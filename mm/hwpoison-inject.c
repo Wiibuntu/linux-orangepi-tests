@@ -15,7 +15,7 @@ static int hwpoison_inject(void *data, u64 val)
 {
 	unsigned long pfn = val;
 	struct page *p;
-	struct folio *folio;
+	struct page *hpage;
 	int err;
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -25,17 +25,16 @@ static int hwpoison_inject(void *data, u64 val)
 		return -ENXIO;
 
 	p = pfn_to_page(pfn);
-	folio = page_folio(p);
+	hpage = compound_head(p);
 
 	if (!hwpoison_filter_enable)
 		goto inject;
 
-	shake_folio(folio);
+	shake_page(hpage);
 	/*
-	 * This implies unable to support non-LRU pages except free page.
+	 * This implies unable to support non-LRU pages.
 	 */
-	if (!folio_test_lru(folio) && !folio_test_hugetlb(folio) &&
-	    !is_free_buddy_page(p))
+	if (!PageLRU(hpage) && !PageHuge(p))
 		return 0;
 
 	/*
@@ -43,14 +42,13 @@ static int hwpoison_inject(void *data, u64 val)
 	 * the targeted owner (or on a free page).
 	 * memory_failure() will redo the check reliably inside page lock.
 	 */
-	err = hwpoison_filter(&folio->page);
+	err = hwpoison_filter(hpage);
 	if (err)
 		return 0;
 
 inject:
 	pr_info("Injecting memory failure at pfn %#lx\n", pfn);
-	err = memory_failure(pfn, MF_SW_SIMULATED);
-	return (err == -EOPNOTSUPP) ? 0 : err;
+	return memory_failure(pfn, 0);
 }
 
 static int hwpoison_unpoison(void *data, u64 val)
@@ -64,13 +62,12 @@ static int hwpoison_unpoison(void *data, u64 val)
 DEFINE_DEBUGFS_ATTRIBUTE(hwpoison_fops, NULL, hwpoison_inject, "%lli\n");
 DEFINE_DEBUGFS_ATTRIBUTE(unpoison_fops, NULL, hwpoison_unpoison, "%lli\n");
 
-static void __exit pfn_inject_exit(void)
+static void pfn_inject_exit(void)
 {
-	hwpoison_filter_enable = 0;
 	debugfs_remove_recursive(hwpoison_dir);
 }
 
-static int __init pfn_inject_init(void)
+static int pfn_inject_init(void)
 {
 	hwpoison_dir = debugfs_create_dir("hwpoison", NULL);
 
@@ -110,5 +107,4 @@ static int __init pfn_inject_init(void)
 
 module_init(pfn_inject_init);
 module_exit(pfn_inject_exit);
-MODULE_DESCRIPTION("HWPoison pages injector");
 MODULE_LICENSE("GPL");

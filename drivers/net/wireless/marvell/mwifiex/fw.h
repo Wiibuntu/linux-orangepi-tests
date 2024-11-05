@@ -1,8 +1,20 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * NXP Wireless LAN device driver: Firmware specific macros & structures
  *
  * Copyright 2011-2020 NXP
+ *
+ * This software file (the "File") is distributed by NXP
+ * under the terms of the GNU General Public License Version 2, June 1991
+ * (the "License").  You may use, redistribute and/or modify this File in
+ * accordance with the terms and conditions of the License, a copy of which
+ * is available by writing to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+ * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *
+ * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+ * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+ * this warranty disclaimer.
  */
 
 #ifndef _MWIFIEX_FW_H_
@@ -41,7 +53,7 @@ struct mwifiex_fw_header {
 struct mwifiex_fw_data {
 	struct mwifiex_fw_header header;
 	__le32 seq_num;
-	u8 data[];
+	u8 data[1];
 } __packed;
 
 struct mwifiex_fw_dump_header {
@@ -165,7 +177,6 @@ enum MWIFIEX_802_11_PRIVACY_FILTER {
 #define TLV_TYPE_STA_MAC_ADDR       (PROPRIETARY_TLV_BASE_ID + 32)
 #define TLV_TYPE_BSSID              (PROPRIETARY_TLV_BASE_ID + 35)
 #define TLV_TYPE_CHANNELBANDLIST    (PROPRIETARY_TLV_BASE_ID + 42)
-#define TLV_TYPE_UAP_MAC_ADDRESS    (PROPRIETARY_TLV_BASE_ID + 43)
 #define TLV_TYPE_UAP_BEACON_PERIOD  (PROPRIETARY_TLV_BASE_ID + 44)
 #define TLV_TYPE_UAP_DTIM_PERIOD    (PROPRIETARY_TLV_BASE_ID + 45)
 #define TLV_TYPE_UAP_BCAST_SSID     (PROPRIETARY_TLV_BASE_ID + 48)
@@ -210,9 +221,6 @@ enum MWIFIEX_802_11_PRIVACY_FILTER {
 #define TLV_TYPE_RANDOM_MAC         (PROPRIETARY_TLV_BASE_ID + 236)
 #define TLV_TYPE_CHAN_ATTR_CFG      (PROPRIETARY_TLV_BASE_ID + 237)
 #define TLV_TYPE_MAX_CONN           (PROPRIETARY_TLV_BASE_ID + 279)
-#define TLV_TYPE_HOST_MLME          (PROPRIETARY_TLV_BASE_ID + 307)
-#define TLV_TYPE_UAP_STA_FLAGS      (PROPRIETARY_TLV_BASE_ID + 313)
-#define TLV_TYPE_SAE_PWE_MODE       (PROPRIETARY_TLV_BASE_ID + 339)
 
 #define MWIFIEX_TX_DATA_BUF_SIZE_2K        2048
 
@@ -408,7 +416,6 @@ enum MWIFIEX_802_11_PRIVACY_FILTER {
 #define HostCmd_CMD_STA_CONFIGURE		      0x023f
 #define HostCmd_CMD_CHAN_REGION_CFG		      0x0242
 #define HostCmd_CMD_PACKET_AGGR_CTRL		      0x0251
-#define HostCmd_CMD_ADD_NEW_STATION		      0x025f
 
 #define PROTOCOL_NO_SECURITY        0x01
 #define PROTOCOL_STATIC_WEP         0x02
@@ -419,8 +426,6 @@ enum MWIFIEX_802_11_PRIVACY_FILTER {
 #define KEY_MGMT_NONE               0x04
 #define KEY_MGMT_PSK                0x02
 #define KEY_MGMT_EAP                0x01
-#define KEY_MGMT_PSK_SHA256         0x100
-#define KEY_MGMT_SAE                0x400
 #define CIPHER_TKIP                 0x04
 #define CIPHER_AES_CCMP             0x08
 #define VALID_CIPHER_BITMAP         0x0c
@@ -505,9 +510,6 @@ enum mwifiex_channel_flags {
 #define HostCmd_ACT_GET_RX              0x0004
 #define HostCmd_ACT_GET_TX              0x0008
 #define HostCmd_ACT_GET_BOTH            0x000c
-
-#define HostCmd_ACT_REMOVE_STA          0x0
-#define HostCmd_ACT_ADD_STA             0x1
 
 #define RF_ANTENNA_AUTO                 0xFFFF
 
@@ -651,7 +653,7 @@ struct mwifiex_ie_types_header {
 
 struct mwifiex_ie_types_data {
 	struct mwifiex_ie_types_header header;
-	u8 data[];
+	u8 data[1];
 } __packed;
 
 #define MWIFIEX_TxPD_POWER_MGMT_NULL_PACKET 0x01
@@ -753,25 +755,6 @@ struct uap_rxpd {
 	u8 flags;
 } __packed;
 
-struct mwifiex_auth {
-	__le16 auth_alg;
-	__le16 auth_transaction;
-	__le16 status_code;
-	/* possibly followed by Challenge text */
-	u8 variable[];
-} __packed;
-
-struct mwifiex_ieee80211_mgmt {
-	__le16 frame_control;
-	__le16 duration;
-	u8 da[ETH_ALEN];
-	u8 sa[ETH_ALEN];
-	u8 bssid[ETH_ALEN];
-	__le16 seq_ctrl;
-	u8 addr4[ETH_ALEN];
-	struct mwifiex_auth auth;
-} __packed;
-
 struct mwifiex_fw_chan_stats {
 	u8 chan_num;
 	u8 bandcfg;
@@ -798,7 +781,7 @@ struct mwifiex_chan_scan_param_set {
 
 struct mwifiex_ie_types_chan_list_param_set {
 	struct mwifiex_ie_types_header header;
-	struct mwifiex_chan_scan_param_set chan_scan_param[];
+	struct mwifiex_chan_scan_param_set chan_scan_param[1];
 } __packed;
 
 struct mwifiex_ie_types_rxba_sync {
@@ -808,7 +791,7 @@ struct mwifiex_ie_types_rxba_sync {
 	u8 reserved;
 	__le16 seq_num;
 	__le16 bitmap_len;
-	u8 bitmap[];
+	u8 bitmap[1];
 } __packed;
 
 struct chan_band_param_set {
@@ -823,17 +806,12 @@ struct mwifiex_ie_types_chan_band_list_param_set {
 
 struct mwifiex_ie_types_rates_param_set {
 	struct mwifiex_ie_types_header header;
-	u8 rates[];
+	u8 rates[1];
 } __packed;
 
 struct mwifiex_ie_types_ssid_param_set {
 	struct mwifiex_ie_types_header header;
-	u8 ssid[];
-} __packed;
-
-struct mwifiex_ie_types_host_mlme {
-	struct mwifiex_ie_types_header header;
-	u8 host_mlme;
+	u8 ssid[1];
 } __packed;
 
 struct mwifiex_ie_types_num_probes {
@@ -939,16 +917,9 @@ struct mwifiex_ie_types_tdls_idle_timeout {
 	__le16 value;
 } __packed;
 
-#define MWIFIEX_AUTHTYPE_SAE 6
-
-struct mwifiex_ie_types_sae_pwe_mode {
-	struct mwifiex_ie_types_header header;
-	u8 pwe[];
-} __packed;
-
 struct mwifiex_ie_types_rsn_param_set {
 	struct mwifiex_ie_types_header header;
-	u8 rsn_ie[];
+	u8 rsn_ie[1];
 } __packed;
 
 #define KEYPARAMSET_FIXED_LEN 6
@@ -1089,7 +1060,6 @@ enum API_VER_ID {
 	FW_API_VER_ID = 2,
 	UAP_FW_API_VER_ID = 3,
 	CHANRPT_API_VER_ID = 4,
-	FW_HOTFIX_VER_ID = 5,
 };
 
 struct hw_spec_api_rev {
@@ -1475,7 +1445,7 @@ struct mwifiex_tdls_stop_cs_params {
 
 struct host_cmd_ds_tdls_config {
 	__le16 tdls_action;
-	u8 tdls_data[];
+	u8 tdls_data[1];
 } __packed;
 
 struct mwifiex_chan_desc {
@@ -1616,18 +1586,18 @@ struct ie_body {
 struct host_cmd_ds_802_11_scan {
 	u8 bss_mode;
 	u8 bssid[ETH_ALEN];
-	u8 tlv_buffer[];
+	u8 tlv_buffer[1];
 } __packed;
 
 struct host_cmd_ds_802_11_scan_rsp {
 	__le16 bss_descript_size;
 	u8 number_of_sets;
-	u8 bss_desc_and_tlv_buffer[];
+	u8 bss_desc_and_tlv_buffer[1];
 } __packed;
 
 struct host_cmd_ds_802_11_scan_ext {
 	u32   reserved;
-	u8    tlv_buffer[];
+	u8    tlv_buffer[1];
 } __packed;
 
 struct mwifiex_ie_types_bss_mode {
@@ -1638,7 +1608,7 @@ struct mwifiex_ie_types_bss_mode {
 struct mwifiex_ie_types_bss_scan_rsp {
 	struct mwifiex_ie_types_header header;
 	u8 bssid[ETH_ALEN];
-	u8 frame_body[];
+	u8 frame_body[1];
 } __packed;
 
 struct mwifiex_ie_types_bss_scan_info {
@@ -1775,7 +1745,7 @@ struct mwifiex_ie_types_local_pwr_constraint {
 
 struct mwifiex_ie_types_wmm_param_set {
 	struct mwifiex_ie_types_header header;
-	u8 wmm_ie[];
+	u8 wmm_ie[1];
 } __packed;
 
 struct mwifiex_ie_types_mgmt_frame {
@@ -2001,7 +1971,7 @@ struct host_cmd_tlv_wep_key {
 	struct mwifiex_ie_types_header header;
 	u8 key_index;
 	u8 is_default;
-	u8 key[];
+	u8 key[1];
 };
 
 struct host_cmd_tlv_auth_type {
@@ -2101,11 +2071,9 @@ struct mwifiex_ie_types_robust_coex {
 	__le32 mode;
 } __packed;
 
-#define MWIFIEX_VERSION_STR_LENGTH  128
-
 struct host_cmd_ds_version_ext {
 	u8 version_str_sel;
-	char version_str[MWIFIEX_VERSION_STR_LENGTH];
+	char version_str[128];
 } __packed;
 
 struct host_cmd_ds_mgmt_frame_reg {
@@ -2146,7 +2114,7 @@ struct mwifiex_fw_mef_entry {
 struct host_cmd_ds_mef_cfg {
 	__le32 criteria;
 	__le16 num_entries;
-	u8 mef_entry_data[];
+	struct mwifiex_fw_mef_entry mef_entry[];
 } __packed;
 
 #define CONNECTION_TYPE_INFRA   0
@@ -2296,7 +2264,7 @@ struct coalesce_receive_filt_rule {
 struct host_cmd_ds_coalesce_cfg {
 	__le16 action;
 	__le16 num_of_rules;
-	u8 rule_data[];
+	struct coalesce_receive_filt_rule rule[];
 } __packed;
 
 struct host_cmd_ds_multi_chan_policy {
@@ -2336,20 +2304,6 @@ struct host_cmd_ds_pkt_aggr_ctrl {
 struct host_cmd_ds_sta_configure {
 	__le16 action;
 	u8 tlv_buffer[];
-} __packed;
-
-struct mwifiex_ie_types_sta_flag {
-	struct mwifiex_ie_types_header header;
-	__le32 sta_flags;
-} __packed;
-
-struct host_cmd_ds_add_station {
-	__le16 action;
-	__le16 aid;
-	u8 peer_mac[ETH_ALEN];
-	__le32 listen_interval;
-	__le16 cap_info;
-	u8 tlv[];
 } __packed;
 
 struct host_cmd_ds_command {
@@ -2430,7 +2384,6 @@ struct host_cmd_ds_command {
 		struct host_cmd_ds_chan_region_cfg reg_cfg;
 		struct host_cmd_ds_pkt_aggr_ctrl pkt_aggr_ctrl;
 		struct host_cmd_ds_sta_configure sta_cfg;
-		struct host_cmd_ds_add_station sta_info;
 	} params;
 } __packed;
 

@@ -9,7 +9,6 @@
 #include <linux/clk.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
-#include <drm/drm_plane.h>
 
 #include "sunxi_engine.h"
 
@@ -20,6 +19,12 @@
 #define SUN8I_MIXER_GLOBAL_STATUS		0x4
 #define SUN8I_MIXER_GLOBAL_DBUFF		0x8
 #define SUN8I_MIXER_GLOBAL_SIZE			0xc
+
+#define SUN50I_MIXER_GLOBAL_CTL			0x0
+#define SUN50I_MIXER_GLOBAL_STATUS		0x4
+#define SUN50I_MIXER_GLOBAL_SIZE		0x8
+#define SUN50I_MIXER_GLOBAL_CLK			0xc
+#define SUN50I_MIXER_GLOBAL_DBUFF		0x10
 
 #define SUN8I_MIXER_GLOBAL_CTL_RT_EN		BIT(0)
 
@@ -142,13 +147,10 @@
 #define SUN50I_MIXER_CDC0_EN			0xd0000
 #define SUN50I_MIXER_CDC1_EN			0xd8000
 
-enum {
-	/* First mixer or second mixer with VEP support. */
-	CCSC_MIXER0_LAYOUT,
-	/* Second mixer without VEP support. */
-	CCSC_MIXER1_LAYOUT,
-	/* First mixer with the MMIO layout found in the D1 SoC. */
-	CCSC_D1_MIXER0_LAYOUT,
+enum sun8i_mixer_type {
+	sun8i_mixer_de2,
+	sun8i_mixer_de3,
+	sun8i_mixer_de33,
 };
 
 /**
@@ -159,7 +161,10 @@ enum {
  *	First, scaler supports for VI channels is defined and after that, scaler
  *	support for UI channels. For example, if mixer has 2 VI channels without
  *	scaler and 2 UI channels with scaler, bitmask would be 0xC.
- * @ccsc: select set of CCSC base addresses from the enumeration above.
+ * @ccsc: select set of CCSC base addresses
+ *	Set value to 0 if this is first mixer or second mixer with VEP support.
+ *	Set value to 1 if this is second mixer without VEP support. Other values
+ *	are invalid.
  * @mod_rate: module clock rate that needs to be set in order to have
  *	a functional block.
  * @is_de3: true, if this is next gen display engine 3.0, false otherwise.
@@ -171,8 +176,9 @@ struct sun8i_mixer_cfg {
 	int		scaler_mask;
 	int		ccsc;
 	unsigned long	mod_rate;
-	unsigned int	is_de3 : 1;
+	unsigned int	de_type;
 	unsigned int	scanline_yuv;
+	unsigned int	map[6];
 };
 
 struct sun8i_mixer {
@@ -184,26 +190,10 @@ struct sun8i_mixer {
 
 	struct clk			*bus_clk;
 	struct clk			*mod_clk;
-};
 
-enum {
-	SUN8I_LAYER_TYPE_UI,
-	SUN8I_LAYER_TYPE_VI,
+	struct regmap			*top_regs;
+	struct regmap			*disp_regs;
 };
-
-struct sun8i_layer {
-	struct drm_plane	plane;
-	struct sun8i_mixer	*mixer;
-	int			type;
-	int			channel;
-	int			overlay;
-};
-
-static inline struct sun8i_layer *
-plane_to_sun8i_layer(struct drm_plane *plane)
-{
-	return container_of(plane, struct sun8i_layer, plane);
-}
 
 static inline struct sun8i_mixer *
 engine_to_sun8i_mixer(struct sunxi_engine *engine)
@@ -214,13 +204,22 @@ engine_to_sun8i_mixer(struct sunxi_engine *engine)
 static inline u32
 sun8i_blender_base(struct sun8i_mixer *mixer)
 {
-	return mixer->cfg->is_de3 ? DE3_BLD_BASE : DE2_BLD_BASE;
+	return mixer->cfg->de_type == sun8i_mixer_de3 ? DE3_BLD_BASE : DE2_BLD_BASE;
+}
+
+static inline struct regmap *
+sun8i_blender_regmap(struct sun8i_mixer *mixer)
+{
+	return mixer->cfg->de_type == sun8i_mixer_de33 ?
+		mixer->disp_regs : mixer->engine.regs;
 }
 
 static inline u32
 sun8i_channel_base(struct sun8i_mixer *mixer, int channel)
 {
-	if (mixer->cfg->is_de3)
+	if (mixer->cfg->de_type == sun8i_mixer_de33)
+		return mixer->cfg->map[channel] * 0x20000 + DE2_CH_SIZE;
+	else if (mixer->cfg->de_type == sun8i_mixer_de3)
 		return DE3_CH_BASE + channel * DE3_CH_SIZE;
 	else
 		return DE2_CH_BASE + channel * DE2_CH_SIZE;

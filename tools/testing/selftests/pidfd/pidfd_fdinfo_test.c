@@ -62,7 +62,7 @@ static void error_report(struct error *err, const char *test_name)
 		break;
 
 	case PIDFD_PASS:
-		ksft_test_result_pass("%s test: Passed\n", test_name);
+		ksft_test_result_pass("%s test: Passed\n");
 		break;
 
 	default:
@@ -143,7 +143,6 @@ static inline int child_join(struct child *child, struct error *err)
 		r = -1;
 	}
 
-	ksft_print_msg("waitpid WEXITSTATUS=%d\n", r);
 	return r;
 }
 
@@ -307,5 +306,5 @@ int main(int argc, char **argv)
 	test_pidfd_fdinfo_nspid();
 	test_pidfd_dead_fdinfo();
 
-	ksft_exit_pass();
+	return ksft_exit_pass();
 }

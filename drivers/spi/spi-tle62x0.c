@@ -288,7 +288,7 @@ static int tle62x0_probe(struct spi_device *spi)
 	return ret;
 }
 
-static void tle62x0_remove(struct spi_device *spi)
+static int tle62x0_remove(struct spi_device *spi)
 {
 	struct tle62x0_state *st = spi_get_drvdata(spi);
 	int ptr;
@@ -298,6 +298,7 @@ static void tle62x0_remove(struct spi_device *spi)
 
 	device_remove_file(&spi->dev, &dev_attr_status_show);
 	kfree(st);
+	return 0;
 }
 
 static struct spi_driver tle62x0_driver = {

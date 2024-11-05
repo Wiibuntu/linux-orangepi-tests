@@ -18,13 +18,11 @@
  * Copyright 2018 David Lechner <david@lechnology.com>
  */
 
-#include <linux/backlight.h>
 #include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/property.h>
+#include <linux/of_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
 
@@ -32,9 +30,9 @@
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fbdev_dma.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_gem_atomic_helper.h>
-#include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_cma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_mipi_dbi.h>
 #include <drm/drm_modes.h>
@@ -121,19 +119,19 @@ struct ili9341_config {
 	const struct drm_display_mode mode;
 	/* ca: TODO: need comments for this register */
 	u8 ca[ILI9341_CA_LEN];
-	/* power_b: Power control B (CFh) */
+	/* power_b: TODO: need comments for this register */
 	u8 power_b[ILI9341_POWER_B_LEN];
-	/* power_seq: Power on sequence control (EDh) */
+	/* power_seq: TODO: need comments for this register */
 	u8 power_seq[ILI9341_POWER_SEQ_LEN];
-	/* dtca: Driver timing control A (E8h) */
+	/* dtca: TODO: need comments for this register */
 	u8 dtca[ILI9341_DTCA_LEN];
-	/* dtcb: Driver timing control B (EAh) */
+	/* dtcb: TODO: need comments for this register */
 	u8 dtcb[ILI9341_DTCB_LEN];
-	/* power_a: Power control A (CBh) */
+	/* power_a: TODO: need comments for this register */
 	u8 power_a[ILI9341_POWER_A_LEN];
 	/* frc: Frame Rate Control (In Normal Mode/Full Colors) (B1h) */
 	u8 frc[ILI9341_FRC_LEN];
-	/* prc: Pump ratio control (F7h) */
+	/* prc: TODO: need comments for this register */
 	u8 prc;
 	/* dfc_1: B6h DISCTRL (Display Function Control) */
 	u8 dfc_1[ILI9341_DFC_1_LEN];
@@ -147,7 +145,7 @@ struct ili9341_config {
 	u8 vcom_2;
 	/* address_mode: Memory Access Control (36h) */
 	u8 address_mode;
-	/* g3amma_en: Enable 3G (F2h) */
+	/* g3amma_en: TODO: need comments for this register */
 	u8 g3amma_en;
 	/* rgb_interface: RGB Interface Signal Control (B0h) */
 	u8 rgb_interface;
@@ -422,7 +420,7 @@ static int ili9341_dpi_prepare(struct drm_panel *panel)
 
 	ili9341_dpi_init(ili);
 
-	return 0;
+	return ret;
 }
 
 static int ili9341_dpi_enable(struct drm_panel *panel)
@@ -578,19 +576,22 @@ out_exit:
 }
 
 static const struct drm_simple_display_pipe_funcs ili9341_dbi_funcs = {
-	DRM_MIPI_DBI_SIMPLE_DISPLAY_PIPE_FUNCS(ili9341_dbi_enable),
+	.enable = ili9341_dbi_enable,
+	.disable = mipi_dbi_pipe_disable,
+	.update = mipi_dbi_pipe_update,
+	.prepare_fb = drm_gem_simple_display_pipe_prepare_fb,
 };
 
 static const struct drm_display_mode ili9341_dbi_mode = {
 	DRM_SIMPLE_MODE(240, 320, 37, 49),
 };
 
-DEFINE_DRM_GEM_DMA_FOPS(ili9341_dbi_fops);
+DEFINE_DRM_GEM_CMA_FOPS(ili9341_dbi_fops);
 
 static struct drm_driver ili9341_dbi_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops			= &ili9341_dbi_fops,
-	DRM_GEM_DMA_DRIVER_OPS_VMAP,
+	DRM_GEM_CMA_DRIVER_OPS_VMAP,
 	.debugfs_init		= mipi_dbi_debugfs_init,
 	.name			= "ili9341",
 	.desc			= "Ilitek ILI9341",
@@ -611,10 +612,8 @@ static int ili9341_dbi_probe(struct spi_device *spi, struct gpio_desc *dc,
 	int ret;
 
 	vcc = devm_regulator_get_optional(dev, "vcc");
-	if (IS_ERR(vcc)) {
+	if (IS_ERR(vcc))
 		dev_err(dev, "get optional vcc failed\n");
-		vcc = NULL;
-	}
 
 	dbidev = devm_drm_dev_alloc(dev, &ili9341_dbi_driver,
 				    struct mipi_dbi_dev, drm);
@@ -651,7 +650,7 @@ static int ili9341_dbi_probe(struct spi_device *spi, struct gpio_desc *dc,
 
 	spi_set_drvdata(spi, drm);
 
-	drm_fbdev_dma_setup(drm, 0);
+	drm_fbdev_generic_setup(drm, 0);
 
 	return 0;
 }
@@ -692,7 +691,7 @@ static int ili9341_dpi_probe(struct spi_device *spi, struct gpio_desc *dc,
 	 * Every new incarnation of this display must have a unique
 	 * data entry for the system in this driver.
 	 */
-	ili->conf = device_get_match_data(dev);
+	ili->conf = of_device_get_match_data(dev);
 	if (!ili->conf) {
 		dev_err(dev, "missing device configuration\n");
 		return -ENODEV;
@@ -715,22 +714,21 @@ static int ili9341_probe(struct spi_device *spi)
 
 	reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(reset))
-		return dev_err_probe(dev, PTR_ERR(reset), "Failed to get gpio 'reset'\n");
+		dev_err(dev, "Failed to get gpio 'reset'\n");
 
 	dc = devm_gpiod_get_optional(dev, "dc", GPIOD_OUT_LOW);
 	if (IS_ERR(dc))
-		return dev_err_probe(dev, PTR_ERR(dc), "Failed to get gpio 'dc'\n");
+		dev_err(dev, "Failed to get gpio 'dc'\n");
 
 	if (!strcmp(id->name, "sf-tc240t-9370-t"))
 		return ili9341_dpi_probe(spi, dc, reset);
-
-	if (!strcmp(id->name, "yx240qv29"))
+	else if (!strcmp(id->name, "yx240qv29"))
 		return ili9341_dbi_probe(spi, dc, reset);
 
-	return -ENODEV;
+	return -1;
 }
 
-static void ili9341_remove(struct spi_device *spi)
+static int ili9341_remove(struct spi_device *spi)
 {
 	const struct spi_device_id *id = spi_get_device_id(spi);
 	struct ili9341 *ili = spi_get_drvdata(spi);
@@ -743,6 +741,7 @@ static void ili9341_remove(struct spi_device *spi)
 		drm_dev_unplug(drm);
 		drm_atomic_helper_shutdown(drm);
 	}
+	return 0;
 }
 
 static void ili9341_shutdown(struct spi_device *spi)

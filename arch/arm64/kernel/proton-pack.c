@@ -168,7 +168,7 @@ static enum mitigation_state spectre_v2_get_cpu_hw_mitigation_state(void)
 
 	/* If the CPU has CSV2 set, we're safe */
 	pfr0 = read_cpuid(ID_AA64PFR0_EL1);
-	if (cpuid_feature_extract_unsigned_field(pfr0, ID_AA64PFR0_EL1_CSV2_SHIFT))
+	if (cpuid_feature_extract_unsigned_field(pfr0, ID_AA64PFR0_CSV2_SHIFT))
 		return SPECTRE_UNAFFECTED;
 
 	/* Alternatively, we have a list of unaffected CPUs */
@@ -233,20 +233,17 @@ static void install_bp_hardening_cb(bp_hardening_cb_t fn)
 	__this_cpu_write(bp_hardening_data.slot, HYP_VECTOR_SPECTRE_DIRECT);
 }
 
-/* Called during entry so must be noinstr */
-static noinstr void call_smc_arch_workaround_1(void)
+static void call_smc_arch_workaround_1(void)
 {
 	arm_smccc_1_1_smc(ARM_SMCCC_ARCH_WORKAROUND_1, NULL);
 }
 
-/* Called during entry so must be noinstr */
-static noinstr void call_hvc_arch_workaround_1(void)
+static void call_hvc_arch_workaround_1(void)
 {
 	arm_smccc_1_1_hvc(ARM_SMCCC_ARCH_WORKAROUND_1, NULL);
 }
 
-/* Called during entry so must be noinstr */
-static noinstr void qcom_link_stack_sanitisation(void)
+static void qcom_link_stack_sanitisation(void)
 {
 	u64 tmp;
 
@@ -521,13 +518,10 @@ bool has_spectre_v4(const struct arm64_cpu_capabilities *cap, int scope)
 	return state != SPECTRE_UNAFFECTED;
 }
 
-bool try_emulate_el1_ssbs(struct pt_regs *regs, u32 instr)
+static int ssbs_emulation_handler(struct pt_regs *regs, u32 instr)
 {
-	const u32 instr_mask = ~(1U << PSTATE_Imm_shift);
-	const u32 instr_val = 0xd500401f | PSTATE_SSBS;
-
-	if ((instr & instr_mask) != instr_val)
-		return false;
+	if (user_mode(regs))
+		return 1;
 
 	if (instr & BIT(PSTATE_Imm_shift))
 		regs->pstate |= PSR_SSBS_BIT;
@@ -535,11 +529,19 @@ bool try_emulate_el1_ssbs(struct pt_regs *regs, u32 instr)
 		regs->pstate &= ~PSR_SSBS_BIT;
 
 	arm64_skip_faulting_instruction(regs, 4);
-	return true;
+	return 0;
 }
+
+static struct undef_hook ssbs_emulation_hook = {
+	.instr_mask	= ~(1U << PSTATE_Imm_shift),
+	.instr_val	= 0xd500401f | PSTATE_SSBS,
+	.fn		= ssbs_emulation_handler,
+};
 
 static enum mitigation_state spectre_v4_enable_hw_mitigation(void)
 {
+	static bool undef_hook_registered = false;
+	static DEFINE_RAW_SPINLOCK(hook_lock);
 	enum mitigation_state state;
 
 	/*
@@ -550,6 +552,13 @@ static enum mitigation_state spectre_v4_enable_hw_mitigation(void)
 	if (state != SPECTRE_MITIGATED || !this_cpu_has_cap(ARM64_SSBS))
 		return state;
 
+	raw_spin_lock(&hook_lock);
+	if (!undef_hook_registered) {
+		register_undef_hook(&ssbs_emulation_hook);
+		undef_hook_registered = true;
+	}
+	raw_spin_unlock(&hook_lock);
+
 	if (spectre_v4_mitigations_off()) {
 		sysreg_clear_set(sctlr_el1, 0, SCTLR_ELx_DSSBS);
 		set_pstate_ssbs(1);
@@ -558,18 +567,6 @@ static enum mitigation_state spectre_v4_enable_hw_mitigation(void)
 
 	/* SCTLR_EL1.DSSBS was initialised to 0 during boot */
 	set_pstate_ssbs(0);
-
-	/*
-	 * SSBS is self-synchronizing and is intended to affect subsequent
-	 * speculative instructions, but some CPUs can speculate with a stale
-	 * value of SSBS.
-	 *
-	 * Mitigate this with an unconditional speculation barrier, as CPUs
-	 * could mis-speculate branches and bypass a conditional barrier.
-	 */
-	if (IS_ENABLED(CONFIG_ARM64_ERRATUM_3194386))
-		spec_bar();
-
 	return SPECTRE_MITIGATED;
 }
 
@@ -586,7 +583,7 @@ void __init spectre_v4_patch_fw_mitigation_enable(struct alt_instr *alt,
 	if (spectre_v4_mitigations_off())
 		return;
 
-	if (cpus_have_cap(ARM64_SSBS))
+	if (cpus_have_final_cap(ARM64_SSBS))
 		return;
 
 	if (spectre_v4_mitigations_dynamic())
@@ -853,7 +850,6 @@ u8 spectre_bhb_loop_affected(int scope)
 	if (scope == SCOPE_LOCAL_CPU) {
 		static const struct midr_range spectre_bhb_k32_list[] = {
 			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78),
-			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78AE),
 			MIDR_ALL_VERSIONS(MIDR_CORTEX_A78C),
 			MIDR_ALL_VERSIONS(MIDR_CORTEX_X1),
 			MIDR_ALL_VERSIONS(MIDR_CORTEX_A710),
@@ -868,10 +864,6 @@ u8 spectre_bhb_loop_affected(int scope)
 			MIDR_ALL_VERSIONS(MIDR_NEOVERSE_N1),
 			{},
 		};
-		static const struct midr_range spectre_bhb_k11_list[] = {
-			MIDR_ALL_VERSIONS(MIDR_AMPERE1),
-			{},
-		};
 		static const struct midr_range spectre_bhb_k8_list[] = {
 			MIDR_ALL_VERSIONS(MIDR_CORTEX_A72),
 			MIDR_ALL_VERSIONS(MIDR_CORTEX_A57),
@@ -882,8 +874,6 @@ u8 spectre_bhb_loop_affected(int scope)
 			k = 32;
 		else if (is_midr_in_range_list(read_cpuid_id(), spectre_bhb_k24_list))
 			k = 24;
-		else if (is_midr_in_range_list(read_cpuid_id(), spectre_bhb_k11_list))
-			k = 11;
 		else if (is_midr_in_range_list(read_cpuid_id(), spectre_bhb_k8_list))
 			k =  8;
 
@@ -951,7 +941,7 @@ static bool supports_ecbhb(int scope)
 		mmfr1 = read_sanitised_ftr_reg(SYS_ID_AA64MMFR1_EL1);
 
 	return cpuid_feature_extract_unsigned_field(mmfr1,
-						    ID_AA64MMFR1_EL1_ECBHB_SHIFT);
+						    ID_AA64MMFR1_ECBHB_SHIFT);
 }
 
 bool is_spectre_bhb_affected(const struct arm64_cpu_capabilities *entry,
@@ -978,26 +968,21 @@ static void this_cpu_set_vectors(enum arm64_bp_harden_el1_vectors slot)
 {
 	const char *v = arm64_get_bp_hardening_vector(slot);
 
+	if (slot < 0)
+		return;
+
 	__this_cpu_write(this_cpu_vector, v);
 
 	/*
 	 * When KPTI is in use, the vectors are switched when exiting to
 	 * user-space.
 	 */
-	if (cpus_have_cap(ARM64_UNMAP_KERNEL_AT_EL0))
+	if (arm64_kernel_unmapped_at_el0())
 		return;
 
 	write_sysreg(v, vbar_el1);
 	isb();
 }
-
-static bool __read_mostly __nospectre_bhb;
-static int __init parse_spectre_bhb_param(char *str)
-{
-	__nospectre_bhb = true;
-	return 0;
-}
-early_param("nospectre_bhb", parse_spectre_bhb_param);
 
 void spectre_bhb_enable_mitigation(const struct arm64_cpu_capabilities *entry)
 {
@@ -1012,7 +997,7 @@ void spectre_bhb_enable_mitigation(const struct arm64_cpu_capabilities *entry)
 		/* No point mitigating Spectre-BHB alone. */
 	} else if (!IS_ENABLED(CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY)) {
 		pr_info_once("spectre-bhb mitigation disabled by compile time option\n");
-	} else if (cpu_mitigations_off() || __nospectre_bhb) {
+	} else if (cpu_mitigations_off()) {
 		pr_info_once("spectre-bhb mitigation disabled by command line option\n");
 	} else if (supports_ecbhb(SCOPE_LOCAL_CPU)) {
 		state = SPECTRE_MITIGATED;

@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/iio/adc/x-powers,axp209-adc.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: X-Powers AXP ADC
+title: X-Powers AXP ADC bindings
 
 maintainers:
   - Chen-Yu Tsai <wens@csie.org>
@@ -27,7 +27,6 @@ description: |
    8 | batt_v
    9 | batt_chrg_i
   10 | batt_dischrg_i
-  11 | ts_v
 
   AXP22x
   ------
@@ -35,18 +34,6 @@ description: |
    1 | batt_v
    2 | batt_chrg_i
    3 | batt_dischrg_i
-   4 | ts_v
-
-  AXP717
-  ------
-   0 | batt_v
-   1 | ts_v
-   2 | vbus_v
-   3 | vsys_v
-   4 | pmic_temp
-   5 | batt_chrg_i
-   6 | vmid_v
-   7 | bkup_batt_v
 
   AXP813
   ------
@@ -55,7 +42,6 @@ description: |
    2 | batt_v
    3 | batt_chrg_i
    4 | batt_dischrg_i
-   5 | ts_v
 
 
 properties:
@@ -63,7 +49,6 @@ properties:
     oneOf:
       - const: x-powers,axp209-adc
       - const: x-powers,axp221-adc
-      - const: x-powers,axp717-adc
       - const: x-powers,axp813-adc
 
       - items:
@@ -72,6 +57,11 @@ properties:
 
   "#io-channel-cells":
     const: 1
+
+  x-powers,ts-as-gpadc:
+    description: |
+      Boolean. Defines whether the TS pin should be used
+      as GPADC rather than battery temperature sensor pin.
 
 additionalProperties: false
 

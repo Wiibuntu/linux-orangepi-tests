@@ -215,9 +215,9 @@ static const char *get_access_type(int type)
 	if (type & KCSAN_ACCESS_ASSERT) {
 		if (type & KCSAN_ACCESS_SCOPED) {
 			if (type & KCSAN_ACCESS_WRITE)
-				return "assert no accesses (reordered)";
+				return "assert no accesses (scoped)";
 			else
-				return "assert no writes (reordered)";
+				return "assert no writes (scoped)";
 		} else {
 			if (type & KCSAN_ACCESS_WRITE)
 				return "assert no accesses";
@@ -240,17 +240,17 @@ static const char *get_access_type(int type)
 	case KCSAN_ACCESS_COMPOUND | KCSAN_ACCESS_WRITE | KCSAN_ACCESS_ATOMIC:
 		return "read-write (marked)";
 	case KCSAN_ACCESS_SCOPED:
-		return "read (reordered)";
+		return "read (scoped)";
 	case KCSAN_ACCESS_SCOPED | KCSAN_ACCESS_ATOMIC:
-		return "read (marked, reordered)";
+		return "read (marked, scoped)";
 	case KCSAN_ACCESS_SCOPED | KCSAN_ACCESS_WRITE:
-		return "write (reordered)";
+		return "write (scoped)";
 	case KCSAN_ACCESS_SCOPED | KCSAN_ACCESS_WRITE | KCSAN_ACCESS_ATOMIC:
-		return "write (marked, reordered)";
+		return "write (marked, scoped)";
 	case KCSAN_ACCESS_SCOPED | KCSAN_ACCESS_COMPOUND | KCSAN_ACCESS_WRITE:
-		return "read-write (reordered)";
+		return "read-write (scoped)";
 	case KCSAN_ACCESS_SCOPED | KCSAN_ACCESS_COMPOUND | KCSAN_ACCESS_WRITE | KCSAN_ACCESS_ATOMIC:
-		return "read-write (marked, reordered)";
+		return "read-write (marked, scoped)";
 	default:
 		BUG();
 	}
@@ -308,12 +308,10 @@ static int get_stack_skipnr(const unsigned long stack_entries[], int num_entries
 
 /*
  * Skips to the first entry that matches the function of @ip, and then replaces
- * that entry with @ip, returning the entries to skip with @replaced containing
- * the replaced entry.
+ * that entry with @ip, returning the entries to skip.
  */
 static int
-replace_stack_entry(unsigned long stack_entries[], int num_entries, unsigned long ip,
-		    unsigned long *replaced)
+replace_stack_entry(unsigned long stack_entries[], int num_entries, unsigned long ip)
 {
 	unsigned long symbolsize, offset;
 	unsigned long target_func;
@@ -332,7 +330,6 @@ replace_stack_entry(unsigned long stack_entries[], int num_entries, unsigned lon
 		func -= offset;
 
 		if (func == target_func) {
-			*replaced = stack_entries[skip];
 			stack_entries[skip] = ip;
 			return skip;
 		}
@@ -345,10 +342,9 @@ fallback:
 }
 
 static int
-sanitize_stack_entries(unsigned long stack_entries[], int num_entries, unsigned long ip,
-		       unsigned long *replaced)
+sanitize_stack_entries(unsigned long stack_entries[], int num_entries, unsigned long ip)
 {
-	return ip ? replace_stack_entry(stack_entries, num_entries, ip, replaced) :
+	return ip ? replace_stack_entry(stack_entries, num_entries, ip) :
 			  get_stack_skipnr(stack_entries, num_entries);
 }
 
@@ -362,14 +358,6 @@ static int sym_strcmp(void *addr1, void *addr2)
 	snprintf(buf2, sizeof(buf2), "%pS", addr2);
 
 	return strncmp(buf1, buf2, sizeof(buf1));
-}
-
-static void
-print_stack_trace(unsigned long stack_entries[], int num_entries, unsigned long reordered_to)
-{
-	stack_trace_print(stack_entries, num_entries, 0);
-	if (reordered_to)
-		pr_err("  |\n  +-> reordered to: %pS\n", (void *)reordered_to);
 }
 
 static void print_verbose_info(struct task_struct *task)
@@ -390,12 +378,10 @@ static void print_report(enum kcsan_value_change value_change,
 			 struct other_info *other_info,
 			 u64 old, u64 new, u64 mask)
 {
-	unsigned long reordered_to = 0;
 	unsigned long stack_entries[NUM_STACK_ENTRIES] = { 0 };
 	int num_stack_entries = stack_trace_save(stack_entries, NUM_STACK_ENTRIES, 1);
-	int skipnr = sanitize_stack_entries(stack_entries, num_stack_entries, ai->ip, &reordered_to);
+	int skipnr = sanitize_stack_entries(stack_entries, num_stack_entries, ai->ip);
 	unsigned long this_frame = stack_entries[skipnr];
-	unsigned long other_reordered_to = 0;
 	unsigned long other_frame = 0;
 	int other_skipnr = 0; /* silence uninit warnings */
 
@@ -408,7 +394,7 @@ static void print_report(enum kcsan_value_change value_change,
 	if (other_info) {
 		other_skipnr = sanitize_stack_entries(other_info->stack_entries,
 						      other_info->num_stack_entries,
-						      other_info->ai.ip, &other_reordered_to);
+						      other_info->ai.ip);
 		other_frame = other_info->stack_entries[other_skipnr];
 
 		/* @value_change is only known for the other thread */
@@ -448,9 +434,10 @@ static void print_report(enum kcsan_value_change value_change,
 		       other_info->ai.cpu_id);
 
 		/* Print the other thread's stack trace. */
-		print_stack_trace(other_info->stack_entries + other_skipnr,
+		stack_trace_print(other_info->stack_entries + other_skipnr,
 				  other_info->num_stack_entries - other_skipnr,
-				  other_reordered_to);
+				  0);
+
 		if (IS_ENABLED(CONFIG_KCSAN_VERBOSE))
 			print_verbose_info(other_info->task);
 
@@ -464,7 +451,9 @@ static void print_report(enum kcsan_value_change value_change,
 		       get_thread_desc(ai->task_pid), ai->cpu_id);
 	}
 	/* Print stack trace of this thread. */
-	print_stack_trace(stack_entries + skipnr, num_stack_entries - skipnr, reordered_to);
+	stack_trace_print(stack_entries + skipnr, num_stack_entries - skipnr,
+			  0);
+
 	if (IS_ENABLED(CONFIG_KCSAN_VERBOSE))
 		print_verbose_info(current);
 
@@ -492,7 +481,8 @@ static void print_report(enum kcsan_value_change value_change,
 	dump_stack_print_info(KERN_DEFAULT);
 	pr_err("==================================================================\n");
 
-	check_panic_on_warn("KCSAN");
+	if (panic_on_warn)
+		panic("panic_on_warn set ...\n");
 }
 
 static void release_report(unsigned long *flags, struct other_info *other_info)

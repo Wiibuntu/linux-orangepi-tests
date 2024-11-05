@@ -355,7 +355,7 @@ marvel_init_io7(struct io7 *io7)
 	}
 }
 
-static void __init
+void __init
 marvel_io7_present(gct6_node *node)
 {
 	int pe;
@@ -803,7 +803,7 @@ void __iomem *marvel_ioportmap (unsigned long addr)
 	return (void __iomem *)addr;
 }
 
-u8
+unsigned int
 marvel_ioread8(const void __iomem *xaddr)
 {
 	unsigned long addr = (unsigned long) xaddr;

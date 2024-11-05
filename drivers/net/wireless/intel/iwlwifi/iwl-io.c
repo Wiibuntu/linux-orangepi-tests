@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2003-2014, 2018-2022, 2024 Intel Corporation
+ * Copyright (C) 2003-2014, 2018-2021 Intel Corporation
  * Copyright (C) 2015-2016 Intel Deutschland GmbH
  */
 #include <linux/delay.h>
@@ -65,15 +65,14 @@ IWL_EXPORT_SYMBOL(iwl_poll_bit);
 
 u32 iwl_read_direct32(struct iwl_trans *trans, u32 reg)
 {
-	if (iwl_trans_grab_nic_access(trans)) {
-		u32 value = iwl_read32(trans, reg);
+	u32 value = 0x5a5a5a5a;
 
+	if (iwl_trans_grab_nic_access(trans)) {
+		value = iwl_read32(trans, reg);
 		iwl_trans_release_nic_access(trans);
-		return value;
 	}
 
-	/* return as if we have a HW timeout/failure */
-	return 0x5a5a5a5a;
+	return value;
 }
 IWL_EXPORT_SYMBOL(iwl_read_direct32);
 
@@ -136,16 +135,13 @@ IWL_EXPORT_SYMBOL(iwl_write_prph64_no_grab);
 
 u32 iwl_read_prph(struct iwl_trans *trans, u32 ofs)
 {
+	u32 val = 0x5a5a5a5a;
+
 	if (iwl_trans_grab_nic_access(trans)) {
-		u32 val = iwl_read_prph_no_grab(trans, ofs);
-
+		val = iwl_read_prph_no_grab(trans, ofs);
 		iwl_trans_release_nic_access(trans);
-
-		return val;
 	}
-
-	/* return as if we have a HW timeout/failure */
-	return 0x5a5a5a5a;
+	return val;
 }
 IWL_EXPORT_SYMBOL(iwl_read_prph);
 
@@ -460,7 +456,7 @@ int iwl_finish_nic_init(struct iwl_trans *trans)
 	 */
 	if (cfg_trans->device_family >= IWL_DEVICE_FAMILY_BZ) {
 		iwl_set_bit(trans, CSR_GP_CNTRL,
-			    CSR_GP_CNTRL_REG_FLAG_BZ_MAC_ACCESS_REQ |
+			    CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY |
 			    CSR_GP_CNTRL_REG_FLAG_MAC_INIT);
 		poll_ready = CSR_GP_CNTRL_REG_FLAG_MAC_STATUS;
 	} else {

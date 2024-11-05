@@ -12,8 +12,9 @@
 #include <asm/vmlinux.lds.h>
 #include <asm/cache.h>
 #include <asm/thread_info.h>
-#include <asm/page.h>
+#include <asm/memory.h>
 #include <asm/mpu.h>
+#include <asm/page.h>
 
 OUTPUT_ARCH(arm)
 ENTRY(stext)
@@ -74,7 +75,7 @@ SECTIONS
 	. = ALIGN(4);
 	__ex_table : AT(ADDR(__ex_table) - LOAD_OFFSET) {
 		__start___ex_table = .;
-		ARM_MMU_KEEP(KEEP(*(__ex_table)))
+		ARM_MMU_KEEP(*(__ex_table))
 		__stop___ex_table = .;
 	}
 
@@ -99,7 +100,7 @@ SECTIONS
 	}
 	.init.arch.info : {
 		__arch_info_begin = .;
-		KEEP(*(.arch.info.init))
+		*(.arch.info.init)
 		__arch_info_end = .;
 	}
 	.init.tagtable : {
@@ -116,7 +117,7 @@ SECTIONS
 #endif
 	.init.pv_table : {
 		__pv_table_begin = .;
-		KEEP(*(.pv_table))
+		*(.pv_table)
 		__pv_table_end = .;
 	}
 
@@ -137,12 +138,12 @@ SECTIONS
 #ifdef CONFIG_STRICT_KERNEL_RWX
 	. = ALIGN(1<<SECTION_SHIFT);
 #else
-	. = ALIGN(THREAD_ALIGN);
+	. = ALIGN(THREAD_SIZE);
 #endif
 	__init_end = .;
 
 	_sdata = .;
-	RW_DATA(L1_CACHE_BYTES, PAGE_SIZE, THREAD_ALIGN)
+	RW_DATA(L1_CACHE_BYTES, PAGE_SIZE, THREAD_SIZE)
 	_edata = .;
 
 	BSS_SECTION(0, 0, 0)

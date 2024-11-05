@@ -133,8 +133,7 @@ static struct inode *get_cramfs_inode(struct super_block *sb,
 	}
 
 	/* Struct copy intentional */
-	inode_set_mtime_to_ts(inode,
-			      inode_set_atime_to_ts(inode, inode_set_ctime_to_ts(inode, zerotime)));
+	inode->i_mtime = inode->i_atime = inode->i_ctime = zerotime;
 	/* inode->i_nlink is left 1 - arguably wrong for directories,
 	   but it's the best we can do without reading the directory
 	   contents.  1 yields the right result in GNU find, even
@@ -183,8 +182,7 @@ static int next_buffer;
 static void *cramfs_blkdev_read(struct super_block *sb, unsigned int offset,
 				unsigned int len)
 {
-	struct address_space *mapping = sb->s_bdev->bd_mapping;
-	struct file_ra_state ra = {};
+	struct address_space *mapping = sb->s_bdev->bd_inode->i_mapping;
 	struct page *pages[BLKS_PER_BUF];
 	unsigned i, blocknr, buffer;
 	unsigned long devsize;
@@ -214,9 +212,6 @@ static void *cramfs_blkdev_read(struct super_block *sb, unsigned int offset,
 	devsize = bdev_nr_bytes(sb->s_bdev) >> PAGE_SHIFT;
 
 	/* Ok, read in BLKS_PER_BUF pages completely first. */
-	file_ra_state_init(&ra, mapping);
-	page_cache_sync_readahead(mapping, &ra, NULL, blocknr, BLKS_PER_BUF);
-
 	for (i = 0; i < BLKS_PER_BUF; i++) {
 		struct page *page = NULL;
 
@@ -229,6 +224,19 @@ static void *cramfs_blkdev_read(struct super_block *sb, unsigned int offset,
 		pages[i] = page;
 	}
 
+	for (i = 0; i < BLKS_PER_BUF; i++) {
+		struct page *page = pages[i];
+
+		if (page) {
+			wait_on_page_locked(page);
+			if (!PageUptodate(page)) {
+				/* asynchronous error */
+				put_page(page);
+				pages[i] = NULL;
+			}
+		}
+	}
+
 	buffer = next_buffer;
 	next_buffer = NEXT_BUFFER(buffer);
 	buffer_blocknr[buffer] = blocknr;
@@ -239,7 +247,8 @@ static void *cramfs_blkdev_read(struct super_block *sb, unsigned int offset,
 		struct page *page = pages[i];
 
 		if (page) {
-			memcpy_from_page(data, page, 0, PAGE_SIZE);
+			memcpy(data, kmap(page), PAGE_SIZE);
+			kunmap(page);
 			put_page(page);
 		} else
 			memset(data, 0, PAGE_SIZE);
@@ -405,10 +414,10 @@ static int cramfs_physmem_mmap(struct file *file, struct vm_area_struct *vma)
 		/*
 		 * Let's create a mixed map if we can't map it all.
 		 * The normal paging machinery will take care of the
-		 * unpopulated ptes via cramfs_read_folio().
+		 * unpopulated ptes via cramfs_readpage().
 		 */
 		int i;
-		vm_flags_set(vma, VM_MIXEDMAP);
+		vma->vm_flags |= VM_MIXEDMAP;
 		for (i = 0; i < pages && !ret; i++) {
 			vm_fault_t vmf;
 			unsigned long off = i * PAGE_SIZE;
@@ -437,7 +446,7 @@ bailout:
 
 static int cramfs_physmem_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	return is_nommu_shared_mapping(vma->vm_flags) ? 0 : -ENOSYS;
+	return vma->vm_flags & (VM_SHARED | VM_MAYSHARE) ? 0 : -ENOSYS;
 }
 
 static unsigned long cramfs_physmem_get_unmapped_area(struct file *file,
@@ -474,7 +483,7 @@ static unsigned int cramfs_physmem_mmap_capabilities(struct file *file)
 static const struct file_operations cramfs_physmem_fops = {
 	.llseek			= generic_file_llseek,
 	.read_iter		= generic_file_read_iter,
-	.splice_read		= filemap_splice_read,
+	.splice_read		= generic_file_splice_read,
 	.mmap			= cramfs_physmem_mmap,
 #ifndef CONFIG_MMU
 	.get_unmapped_area	= cramfs_physmem_get_unmapped_area,
@@ -486,16 +495,12 @@ static void cramfs_kill_sb(struct super_block *sb)
 {
 	struct cramfs_sb_info *sbi = CRAMFS_SB(sb);
 
-	generic_shutdown_super(sb);
-
 	if (IS_ENABLED(CONFIG_CRAMFS_MTD) && sb->s_mtd) {
 		if (sbi && sbi->mtd_point_size)
 			mtd_unpoint(sb->s_mtd, 0, sbi->mtd_point_size);
-		put_mtd_device(sb->s_mtd);
-		sb->s_mtd = NULL;
+		kill_mtd_super(sb);
 	} else if (IS_ENABLED(CONFIG_CRAMFS_BLOCKDEV) && sb->s_bdev) {
-		sync_blockdev(sb->s_bdev);
-		bdev_fput(sb->s_bdev_file);
+		kill_block_super(sb);
 	}
 	kfree(sbi);
 }
@@ -809,21 +814,20 @@ out:
 	return d_splice_alias(inode, dentry);
 }
 
-static int cramfs_read_folio(struct file *file, struct folio *folio)
+static int cramfs_readpage(struct file *file, struct page *page)
 {
-	struct inode *inode = folio->mapping->host;
+	struct inode *inode = page->mapping->host;
 	u32 maxblock;
 	int bytes_filled;
 	void *pgdata;
-	bool success = false;
 
 	maxblock = (inode->i_size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	bytes_filled = 0;
-	pgdata = kmap_local_folio(folio, 0);
+	pgdata = kmap(page);
 
-	if (folio->index < maxblock) {
+	if (page->index < maxblock) {
 		struct super_block *sb = inode->i_sb;
-		u32 blkptr_offset = OFFSET(inode) + folio->index * 4;
+		u32 blkptr_offset = OFFSET(inode) + page->index * 4;
 		u32 block_ptr, block_start, block_len;
 		bool uncompressed, direct;
 
@@ -844,7 +848,7 @@ static int cramfs_read_folio(struct file *file, struct folio *folio)
 			if (uncompressed) {
 				block_len = PAGE_SIZE;
 				/* if last block: cap to file length */
-				if (folio->index == maxblock - 1)
+				if (page->index == maxblock - 1)
 					block_len =
 						offset_in_page(inode->i_size);
 			} else {
@@ -861,7 +865,7 @@ static int cramfs_read_folio(struct file *file, struct folio *folio)
 			 * from the previous block's pointer.
 			 */
 			block_start = OFFSET(inode) + maxblock * 4;
-			if (folio->index)
+			if (page->index)
 				block_start = *(u32 *)
 					cramfs_read(sb, blkptr_offset - 4, 4);
 			/* Beware... previous ptr might be a direct ptr */
@@ -906,17 +910,22 @@ static int cramfs_read_folio(struct file *file, struct folio *folio)
 	}
 
 	memset(pgdata + bytes_filled, 0, PAGE_SIZE - bytes_filled);
-	flush_dcache_folio(folio);
+	flush_dcache_page(page);
+	kunmap(page);
+	SetPageUptodate(page);
+	unlock_page(page);
+	return 0;
 
-	success = true;
 err:
-	kunmap_local(pgdata);
-	folio_end_read(folio, success);
+	kunmap(page);
+	ClearPageUptodate(page);
+	SetPageError(page);
+	unlock_page(page);
 	return 0;
 }
 
 static const struct address_space_operations cramfs_aops = {
-	.read_folio = cramfs_read_folio
+	.readpage = cramfs_readpage
 };
 
 /*
@@ -998,5 +1007,4 @@ static void __exit exit_cramfs_fs(void)
 
 module_init(init_cramfs_fs)
 module_exit(exit_cramfs_fs)
-MODULE_DESCRIPTION("Compressed ROM file system support");
 MODULE_LICENSE("GPL");

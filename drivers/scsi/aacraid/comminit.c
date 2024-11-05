@@ -272,11 +272,11 @@ static void aac_queue_init(struct aac_dev * dev, struct aac_queue * q, u32 *mem,
 	q->entries = qsize;
 }
 
-static bool wait_for_io_iter(struct scsi_cmnd *cmd, void *data)
+static bool wait_for_io_iter(struct scsi_cmnd *cmd, void *data, bool rsvd)
 {
 	int *active = data;
 
-	if (aac_priv(cmd)->owner == AAC_OWNER_FIRMWARE)
+	if (cmd->SCp.phase == AAC_OWNER_FIRMWARE)
 		*active = *active + 1;
 	return true;
 }
@@ -522,7 +522,8 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	spin_lock_init(&dev->iq_lock);
 	dev->max_fib_size = sizeof(struct hw_fib);
 	dev->sg_tablesize = host->sg_tablesize = (dev->max_fib_size
-		- sizeof(struct aac_fibhdr) - sizeof(struct aac_write))
+		- sizeof(struct aac_fibhdr)
+		- sizeof(struct aac_write) + sizeof(struct sgentry))
 			/ sizeof(struct sgentry);
 	dev->comm_interface = AAC_COMM_PRODUCER;
 	dev->raw_io_interface = dev->raw_io_64 = 0;
@@ -641,7 +642,6 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 
 	if (aac_comm_init(dev)<0){
 		kfree(dev->queues);
-		dev->queues = NULL;
 		return NULL;
 	}
 	/*
@@ -649,7 +649,6 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	 */
 	if (aac_fib_setup(dev) < 0) {
 		kfree(dev->queues);
-		dev->queues = NULL;
 		return NULL;
 	}
 		

@@ -105,7 +105,7 @@ static struct aligninfo spe_aligninfo[32] = {
  * so we don't need the address swizzling.
  */
 static int emulate_spe(struct pt_regs *regs, unsigned int reg,
-		       ppc_inst_t ppc_instr)
+		       struct ppc_inst ppc_instr)
 {
 	union {
 		u64 ll;
@@ -300,7 +300,7 @@ Efault_write:
 
 int fix_alignment(struct pt_regs *regs)
 {
-	ppc_inst_t instr;
+	struct ppc_inst instr;
 	struct instruction_op op;
 	int r, type;
 

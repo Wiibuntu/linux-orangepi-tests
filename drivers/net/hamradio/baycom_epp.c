@@ -438,7 +438,7 @@ static int transmit(struct baycom_state *bc, int cnt, unsigned char stat)
 			if ((--bc->hdlctx.slotcnt) > 0)
 				return 0;
 			bc->hdlctx.slotcnt = bc->ch_params.slottime;
-			if (get_random_u8() > bc->ch_params.ppersist)
+			if ((prandom_u32() % 256) > bc->ch_params.ppersist)
 				return 0;
 		}
 	}
@@ -623,10 +623,16 @@ static int receive(struct net_device *dev, int cnt)
 
 /* --------------------------------------------------------------------- */
 
+#if defined(__i386__) && !defined(CONFIG_UML)
+#include <asm/msr.h>
 #define GETTICK(x)						\
 ({								\
-	x = (unsigned int)get_cycles();				\
+	if (boot_cpu_has(X86_FEATURE_TSC))			\
+		x = (unsigned int)rdtsc();			\
 })
+#else /* __i386__  && !CONFIG_UML */
+#define GETTICK(x)
+#endif /* __i386__  && !CONFIG_UML */
 
 static void epp_bh(struct work_struct *work)
 {
@@ -752,7 +758,7 @@ static void epp_bh(struct work_struct *work)
  * ===================== network driver interface =========================
  */
 
-static netdev_tx_t baycom_send_packet(struct sk_buff *skb, struct net_device *dev)
+static int baycom_send_packet(struct sk_buff *skb, struct net_device *dev)
 {
 	struct baycom_state *bc = netdev_priv(dev);
 
@@ -976,10 +982,10 @@ static int baycom_setmode(struct baycom_state *bc, const char *modestr)
 		bc->cfg.extmodem = 0;
 	if (strstr(modestr,"extmodem"))
 		bc->cfg.extmodem = 1;
+	if (strstr(modestr,"noloopback"))
+		bc->cfg.loopback = 0;
 	if (strstr(modestr,"loopback"))
 		bc->cfg.loopback = 1;
-	if (strstr(modestr, "noloopback"))
-		bc->cfg.loopback = 0;
 	if ((cp = strstr(modestr,"fclk="))) {
 		bc->cfg.fclk = simple_strtoul(cp+5, NULL, 0);
 		if (bc->cfg.fclk < 1000000)
@@ -1074,7 +1080,7 @@ static int baycom_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
 		return 0;
 
 	case HDLCDRVCTL_DRIVERNAME:
-		strscpy_pad(hi.data.drivername, "baycom_epp", sizeof(hi.data.drivername));
+		strncpy(hi.data.drivername, "baycom_epp", sizeof(hi.data.drivername));
 		break;
 		
 	case HDLCDRVCTL_GETMODE:
@@ -1091,7 +1097,7 @@ static int baycom_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
 		return baycom_setmode(bc, hi.data.modename);
 
 	case HDLCDRVCTL_MODELIST:
-		strscpy_pad(hi.data.modename, "intclk,extclk,intmodem,extmodem,divider=x",
+		strncpy(hi.data.modename, "intclk,extclk,intmodem,extmodem,divider=x",
 			sizeof(hi.data.modename));
 		break;
 
@@ -1193,6 +1199,7 @@ static int baycom_epp_par_probe(struct pardevice *par_dev)
 static struct parport_driver baycom_epp_par_driver = {
 	.name = "bce",
 	.probe = baycom_epp_par_probe,
+	.devmodel = true,
 };
 
 static void __init baycom_epp_dev_setup(struct net_device *dev)

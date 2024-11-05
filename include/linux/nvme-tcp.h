@@ -18,12 +18,6 @@ enum nvme_tcp_pfv {
 	NVME_TCP_PFV_1_0 = 0x0,
 };
 
-enum nvme_tcp_tls_cipher {
-	NVME_TCP_TLS_CIPHER_INVALID     = 0,
-	NVME_TCP_TLS_CIPHER_SHA256      = 1,
-	NVME_TCP_TLS_CIPHER_SHA384      = 2,
-};
-
 enum nvme_tcp_fatal_error_status {
 	NVME_TCP_FES_INVALID_PDU_HDR		= 0x01,
 	NVME_TCP_FES_PDU_SEQ_ERR		= 0x02,
@@ -121,9 +115,8 @@ struct nvme_tcp_icresp_pdu {
 struct nvme_tcp_term_pdu {
 	struct nvme_tcp_hdr	hdr;
 	__le16			fes;
-	__le16			feil;
-	__le16			feiu;
-	__u8			rsvd[10];
+	__le32			fei;
+	__u8			rsvd[8];
 };
 
 /**

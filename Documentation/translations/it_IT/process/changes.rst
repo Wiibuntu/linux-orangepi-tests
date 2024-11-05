@@ -11,8 +11,8 @@ Requisiti minimi per compilare il kernel
 Introduzione
 ============
 
-Questo documento fornisce una lista dei software necessari per eseguire questa
-versione del kernel.
+Questo documento fornisce una lista dei software necessari per eseguire i
+kernel 4.x.
 
 Questo documento è basato sul file "Changes" del kernel 2.0.x e quindi le
 persone che lo scrissero meritano credito (Jared Mauch, Axel Boldt,
@@ -32,17 +32,13 @@ PC Card, per esempio, probabilmente non dovreste preoccuparvi di pcmciautils.
 ====================== =================  ========================================
         Programma       Versione minima       Comando per verificare la versione
 ====================== =================  ========================================
-GNU C                  5.1                gcc --version
-Clang/LLVM (optional)  13.0.0             clang --version
-Rust (opzionale)       1.76.0             rustc --version
-bindgen (opzionale)    0.65.1             bindgen --version
+GNU C                  4.9                gcc --version
+Clang/LLVM (optional)  10.0.1             clang --version
 GNU make               3.81               make --version
-bash                   4.2                bash --version
-binutils               2.25               ld -v
+binutils               2.23               ld -v
 flex                   2.5.35             flex --version
 bison                  2.0                bison --version
-pahole                 1.16               pahole --version
-util-linux             2.10o              mount --version
+util-linux             2.10o              fdformat --version
 kmod                   13                 depmod -V
 e2fsprogs              1.41.4             e2fsck -V
 jfsutils               1.1.3              fsck.jfs -V
@@ -61,10 +57,7 @@ mcelog                 0.6                mcelog --version
 iptables               1.4.2              iptables -V
 openssl & libcrypto    1.0.0              openssl version
 bc                     1.06.95            bc --version
-Sphinx\ [#f1]_         2.4.4              sphinx-build --version
-cpio                   any                cpio --version
-GNU tar                1.28               tar --version
-gtags (opzionale)      6.6.5              gtags --version
+Sphinx\ [#f1]_         1.7                sphinx-build --version
 ====================== =================  ========================================
 
 .. [#f1] Sphinx è necessario solo per produrre la documentazione del Kernel
@@ -93,15 +86,10 @@ Make
 
 Per compilare il kernel vi servirà GNU make 3.81 o successivo.
 
-Bash
-----
-Per generare il kernel vengono usati alcuni script per bash.
-Questo richiede bash 4.2 o successivo.
-
 Binutils
 --------
 
-Per generare il kernel è necessario avere Binutils 2.25 o superiore.
+Per generare il kernel è necessario avere Binutils 2.23 o superiore.
 
 pkg-config
 ----------
@@ -122,16 +110,6 @@ Bison
 
 Dalla versione 4.16, il sistema di compilazione, durante l'esecuzione, genera
 un parsificatore.  Questo richiede bison 2.0 o successivo.
-
-pahole
-------
-
-Dalla versione 5.2, quando viene impostato CONFIG_DEBUG_INFO_BTF, il sistema di
-compilazione genera BTF (BPF Type Format) a partire da DWARF per vmlinux. Più
-tardi anche per i moduli. Questo richiede pahole v1.16 o successivo.
-
-A seconda della distribuzione, lo si può trovare nei pacchetti 'dwarves' o
-'pahole'. Oppure lo si può trovare qui: https://fedorapeople.org/~acme/dwarves/.
 
 Perl
 ----
@@ -155,18 +133,6 @@ Se la firma dei moduli è abilitata, allora vi servirà openssl per compilare il
 kernel 3.7 e successivi.  Vi serviranno anche i pacchetti di sviluppo di
 openssl per compilare il kernel 4.3 o successivi.
 
-Tar
----
-
-GNU Tar è necessario per accedere ai file d'intestazione del kernel usando sysfs
-(CONFIG_IKHEADERS)
-
-gtags / GNU GLOBAL (opzionale)
-------------------------------
-
-Il programma GNU GLOBAL versione 6.6.5, o successiva, è necessario quando si
-vuole eseguire ``make gtags`` e generare i relativi indici. Internamente si fa
-uso del parametro gtags ``-C (--directory)`` che compare in questa versione.
 
 Strumenti di sistema
 ********************
@@ -392,11 +358,6 @@ Make
 
 - <ftp://ftp.gnu.org/gnu/make/>
 
-Bash
-----
-
-- <ftp://ftp.gnu.org/gnu/bash/>
-
 Binutils
 --------
 
@@ -450,7 +411,7 @@ E2fsprogs
 JFSutils
 --------
 
-- <https://jfs.sourceforge.net/>
+- <http://jfs.sourceforge.net/>
 
 Reiserfsprogs
 -------------
@@ -471,7 +432,7 @@ Pcmciautils
 Quota-tools
 -----------
 
-- <https://sourceforge.net/projects/linuxquota/>
+- <http://sourceforge.net/projects/linuxquota/>
 
 
 Microcodice Intel P6
@@ -492,12 +453,7 @@ FUSE
 mcelog
 ------
 
-- <https://www.mcelog.org/>
-
-cpio
-----
-
-- <https://www.gnu.org/software/cpio/>
+- <http://www.mcelog.org/>
 
 Rete
 ****
@@ -513,8 +469,7 @@ PPP
 NFS-utils
 ---------
 
-- <https://sourceforge.net/project/showfiles.php?group_id=14>
-- <https://nfs.sourceforge.net/>
+- <http://sourceforge.net/project/showfiles.php?group_id=14>
 
 Iptables
 --------
@@ -529,7 +484,12 @@ Ip-route2
 OProfile
 --------
 
-- <https://oprofile.sf.net/download/>
+- <http://oprofile.sf.net/download/>
+
+NFS-Utils
+---------
+
+- <http://nfs.sourceforge.net/>
 
 Documentazione del kernel
 *************************

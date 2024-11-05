@@ -280,7 +280,7 @@ cia_pci_tbi(struct pci_controller *hose, dma_addr_t start, dma_addr_t end)
 #define CIA_BROKEN_TBIA_SIZE	1024
 
 /* Always called with interrupts disabled */
-static void
+void
 cia_pci_tbi_try2(struct pci_controller *hose,
 		 dma_addr_t start, dma_addr_t end)
 {
@@ -527,7 +527,7 @@ verify_tb_operation(void)
 	if (use_tbia_try2) {
 		alpha_mv.mv_pci_tbi = cia_pci_tbi_try2;
 
-		/* Tags 0-3 must be disabled if we use this workaround. */
+		/* Tags 0-3 must be disabled if we use this workaraund. */
 		wmb();
 		*(vip)CIA_IOC_TB_TAGn(0) = 2;
 		*(vip)CIA_IOC_TB_TAGn(1) = 2;
@@ -576,7 +576,7 @@ struct
     } window[4];
 } saved_config __attribute((common));
 
-static void
+void
 cia_save_srm_settings(int is_pyxis)
 {
 	int i;
@@ -602,7 +602,7 @@ cia_save_srm_settings(int is_pyxis)
 	mb();
 }
 
-static void
+void
 cia_restore_srm_settings(void)
 {
 	int i;

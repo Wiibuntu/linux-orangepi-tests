@@ -120,7 +120,7 @@ void arch_atomic_set(atomic_t *v, int i)
 }
 EXPORT_SYMBOL(arch_atomic_set);
 
-unsigned long sp32___set_bit(unsigned long *addr, unsigned long mask)
+unsigned long ___set_bit(unsigned long *addr, unsigned long mask)
 {
 	unsigned long old, flags;
 
@@ -131,9 +131,9 @@ unsigned long sp32___set_bit(unsigned long *addr, unsigned long mask)
 
 	return old & mask;
 }
-EXPORT_SYMBOL(sp32___set_bit);
+EXPORT_SYMBOL(___set_bit);
 
-unsigned long sp32___clear_bit(unsigned long *addr, unsigned long mask)
+unsigned long ___clear_bit(unsigned long *addr, unsigned long mask)
 {
 	unsigned long old, flags;
 
@@ -144,9 +144,9 @@ unsigned long sp32___clear_bit(unsigned long *addr, unsigned long mask)
 
 	return old & mask;
 }
-EXPORT_SYMBOL(sp32___clear_bit);
+EXPORT_SYMBOL(___clear_bit);
 
-unsigned long sp32___change_bit(unsigned long *addr, unsigned long mask)
+unsigned long ___change_bit(unsigned long *addr, unsigned long mask)
 {
 	unsigned long old, flags;
 
@@ -157,29 +157,34 @@ unsigned long sp32___change_bit(unsigned long *addr, unsigned long mask)
 
 	return old & mask;
 }
-EXPORT_SYMBOL(sp32___change_bit);
+EXPORT_SYMBOL(___change_bit);
 
-#define CMPXCHG(T)						\
-	T __cmpxchg_##T(volatile T *ptr, T old, T new)		\
-	{							\
-		unsigned long flags;				\
-		T prev;						\
-								\
-		spin_lock_irqsave(ATOMIC_HASH(ptr), flags);	\
-		if ((prev = *ptr) == old)			\
-			*ptr = new;				\
-		spin_unlock_irqrestore(ATOMIC_HASH(ptr), flags);\
-								\
-		return prev;					\
-	}
+unsigned long __cmpxchg_u32(volatile u32 *ptr, u32 old, u32 new)
+{
+	unsigned long flags;
+	u32 prev;
 
-CMPXCHG(u8)
-CMPXCHG(u16)
-CMPXCHG(u32)
-CMPXCHG(u64)
-EXPORT_SYMBOL(__cmpxchg_u8);
-EXPORT_SYMBOL(__cmpxchg_u16);
+	spin_lock_irqsave(ATOMIC_HASH(ptr), flags);
+	if ((prev = *ptr) == old)
+		*ptr = new;
+	spin_unlock_irqrestore(ATOMIC_HASH(ptr), flags);
+
+	return (unsigned long)prev;
+}
 EXPORT_SYMBOL(__cmpxchg_u32);
+
+u64 __cmpxchg_u64(u64 *ptr, u64 old, u64 new)
+{
+	unsigned long flags;
+	u64 prev;
+
+	spin_lock_irqsave(ATOMIC_HASH(ptr), flags);
+	if ((prev = *ptr) == old)
+		*ptr = new;
+	spin_unlock_irqrestore(ATOMIC_HASH(ptr), flags);
+
+	return prev;
+}
 EXPORT_SYMBOL(__cmpxchg_u64);
 
 unsigned long __xchg_u32(volatile u32 *ptr, u32 new)

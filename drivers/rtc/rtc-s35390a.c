@@ -50,12 +50,13 @@
 #define S35390A_INT2_MODE_PMIN		(BIT(3) | BIT(2)) /* INT2FE | INT2ME */
 
 static const struct i2c_device_id s35390a_id[] = {
-	{ "s35390a" },
+	{ "s35390a", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, s35390a_id);
 
 static const __maybe_unused struct of_device_id s35390a_of_match[] = {
+	{ .compatible = "s35390a" },
 	{ .compatible = "sii,s35390a" },
 	{ }
 };
@@ -210,7 +211,7 @@ static int s35390a_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct s35390a	*s35390a = i2c_get_clientdata(client);
-	int i;
+	int i, err;
 	char buf[7], status;
 
 	dev_dbg(&client->dev, "%s: tm is secs=%d, mins=%d, hours=%d mday=%d, "
@@ -233,7 +234,9 @@ static int s35390a_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	for (i = 0; i < 7; ++i)
 		buf[i] = bitrev8(buf[i]);
 
-	return s35390a_set_reg(s35390a, S35390A_CMD_TIME1, buf, sizeof(buf));
+	err = s35390a_set_reg(s35390a, S35390A_CMD_TIME1, buf, sizeof(buf));
+
+	return err;
 }
 
 static int s35390a_rtc_read_time(struct device *dev, struct rtc_time *tm)
@@ -417,7 +420,8 @@ static const struct rtc_class_ops s35390a_rtc_ops = {
 	.ioctl          = s35390a_rtc_ioctl,
 };
 
-static int s35390a_probe(struct i2c_client *client)
+static int s35390a_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	int err, err_read;
 	unsigned int i;

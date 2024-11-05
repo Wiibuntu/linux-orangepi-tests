@@ -18,25 +18,24 @@
 #include <linux/delay.h>
 #include <linux/initrd.h>
 #include <linux/platform_device.h>
-#include <linux/printk.h>
 #include <linux/seq_file.h>
 #include <linux/ioport.h>
 #include <linux/console.h>
+#include <linux/screen_info.h>
 #include <linux/root_dev.h>
+#include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/unistd.h>
-#include <linux/seq_buf.h>
 #include <linux/serial.h>
 #include <linux/serial_8250.h>
 #include <linux/percpu.h>
 #include <linux/memblock.h>
-#include <linux/of.h>
-#include <linux/of_fdt.h>
-#include <linux/of_irq.h>
+#include <linux/of_platform.h>
 #include <linux/hugetlb.h>
 #include <linux/pgtable.h>
 #include <asm/io.h>
 #include <asm/paca.h>
+#include <asm/prom.h>
 #include <asm/processor.h>
 #include <asm/vdso_datapage.h>
 #include <asm/smp.h>
@@ -58,7 +57,6 @@
 #include <asm/xmon.h>
 #include <asm/cputhreads.h>
 #include <mm/mmu_decl.h>
-#include <asm/archrandom.h>
 #include <asm/fadump.h>
 #include <asm/udbg.h>
 #include <asm/hugetlb.h>
@@ -85,11 +83,6 @@ EXPORT_SYMBOL(machine_id);
 
 int boot_cpuid = -1;
 EXPORT_SYMBOL_GPL(boot_cpuid);
-int __initdata boot_core_hwid = -1;
-
-#ifdef CONFIG_PPC64
-int boot_cpu_hwid = -1;
-#endif
 
 /*
  * These are used in binfmt_elf.c to put aux entries on the stack
@@ -97,6 +90,21 @@ int boot_cpu_hwid = -1;
  */
 int dcache_bsize;
 int icache_bsize;
+
+/*
+ * This still seems to be needed... -- paulus
+ */ 
+struct screen_info screen_info = {
+	.orig_x = 0,
+	.orig_y = 25,
+	.orig_video_cols = 80,
+	.orig_video_lines = 25,
+	.orig_video_isVGA = 1,
+	.orig_video_points = 16
+};
+#if defined(CONFIG_FB_VGA16_MODULE)
+EXPORT_SYMBOL(screen_info);
+#endif
 
 /* Variables required to store legacy IO irq routing */
 int of_i8042_kbd_irq;
@@ -110,7 +118,7 @@ int ppc_do_canonicalize_irqs;
 EXPORT_SYMBOL(ppc_do_canonicalize_irqs);
 #endif
 
-#ifdef CONFIG_CRASH_DUMP
+#ifdef CONFIG_CRASH_CORE
 /* This keeps a track of which one is the crashing cpu. */
 int crashing_cpu = -1;
 #endif
@@ -153,7 +161,9 @@ void machine_restart(char *cmd)
 void machine_power_off(void)
 {
 	machine_shutdown();
-	do_kernel_power_off();
+	if (pm_power_off)
+		pm_power_off();
+
 	smp_send_stop();
 	machine_hang();
 }
@@ -162,14 +172,6 @@ EXPORT_SYMBOL_GPL(machine_power_off);
 
 void (*pm_power_off)(void);
 EXPORT_SYMBOL_GPL(pm_power_off);
-
-size_t __must_check arch_get_random_seed_longs(unsigned long *v, size_t max_longs)
-{
-	if (max_longs && ppc_md.get_random_seed && ppc_md.get_random_seed(v))
-		return 1;
-	return 0;
-}
-EXPORT_SYMBOL(arch_get_random_seed_longs);
 
 void machine_halt(void)
 {
@@ -277,7 +279,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 			   proc_freq / 1000000, proc_freq % 1000000);
 
 	/* If we are a Freescale core do a simple check so
-	 * we don't have to keep adding cases in the future */
+	 * we dont have to keep adding cases in the future */
 	if (PVR_VER(pvr) & 0x8000) {
 		switch (PVR_VER(pvr)) {
 		case 0x8000:	/* 7441/7450/7451, Voyager */
@@ -405,31 +407,12 @@ static void __init cpu_init_thread_core_maps(int tpc)
 		cpumask_set_cpu(i, &threads_core_mask);
 
 	printk(KERN_INFO "CPU maps initialized for %d thread%s per core\n",
-	       tpc, str_plural(tpc));
+	       tpc, tpc > 1 ? "s" : "");
 	printk(KERN_DEBUG " (thread shift is %d)\n", threads_shift);
 }
 
 
 u32 *cpu_to_phys_id = NULL;
-
-static int assign_threads(unsigned int cpu, unsigned int nthreads, bool present,
-			  const __be32 *hw_ids)
-{
-	for (int i = 0; i < nthreads && cpu < nr_cpu_ids; i++) {
-		__be32 hwid;
-
-		hwid = be32_to_cpu(hw_ids[i]);
-
-		DBG("    thread %d -> cpu %d (hard id %d)\n", i, cpu, hwid);
-
-		set_cpu_present(cpu, present);
-		set_cpu_possible(cpu, true);
-		cpu_to_phys_id[cpu] = hwid;
-		cpu++;
-	}
-
-	return cpu;
-}
 
 /**
  * setup_cpu_maps - initialize the following cpu maps:
@@ -466,15 +449,15 @@ void __init smp_setup_cpu_maps(void)
 	for_each_node_by_type(dn, "cpu") {
 		const __be32 *intserv;
 		__be32 cpu_be;
-		int len;
+		int j, len;
 
 		DBG("  * %pOF...\n", dn);
 
 		intserv = of_get_property(dn, "ibm,ppc-interrupt-server#s",
 				&len);
 		if (intserv) {
-			DBG("    ibm,ppc-interrupt-server#s -> %lu threads\n",
-			    (len / sizeof(int)));
+			DBG("    ibm,ppc-interrupt-server#s -> %d threads\n",
+			    nthreads);
 		} else {
 			DBG("    no ibm,ppc-interrupt-server#s -> 1 thread\n");
 			intserv = of_get_property(dn, "reg", &len);
@@ -488,31 +471,27 @@ void __init smp_setup_cpu_maps(void)
 
 		nthreads = len / sizeof(int);
 
-		bool avail = of_device_is_available(dn);
-		if (!avail)
-			avail = !of_property_match_string(dn,
-					"enable-method", "spin-table");
+		for (j = 0; j < nthreads && cpu < nr_cpu_ids; j++) {
+			bool avail;
 
-		if (boot_core_hwid >= 0) {
-			if (cpu == 0) {
-				pr_info("Skipping CPU node %pOF to allow for boot core.\n", dn);
-				cpu = nthreads;
-				continue;
-			}
+			DBG("    thread %d -> cpu %d (hard id %d)\n",
+			    j, cpu, be32_to_cpu(intserv[j]));
 
-			if (be32_to_cpu(intserv[0]) == boot_core_hwid) {
-				pr_info("Renumbered boot core %pOF to logical 0\n", dn);
-				assign_threads(0, nthreads, avail, intserv);
-				of_node_put(dn);
-				break;
-			}
-		} else if (cpu >= nr_cpu_ids) {
+			avail = of_device_is_available(dn);
+			if (!avail)
+				avail = !of_property_match_string(dn,
+						"enable-method", "spin-table");
+
+			set_cpu_present(cpu, avail);
+			set_cpu_possible(cpu, true);
+			cpu_to_phys_id[cpu] = be32_to_cpu(intserv[j]);
+			cpu++;
+		}
+
+		if (cpu >= nr_cpu_ids) {
 			of_node_put(dn);
 			break;
 		}
-
-		if (cpu < nr_cpu_ids)
-			cpu = assign_threads(cpu, nthreads, avail, intserv);
 	}
 
 	/* If no SMT supported, nthreads is forced to 1 */
@@ -603,15 +582,7 @@ static __init int add_pcspkr(void)
 device_initcall(add_pcspkr);
 #endif	/* CONFIG_PCSPKR_PLATFORM */
 
-static char ppc_hw_desc_buf[128] __initdata;
-
-struct seq_buf ppc_hw_desc __initdata = {
-	.buffer = ppc_hw_desc_buf,
-	.size = sizeof(ppc_hw_desc_buf),
-	.len = 0,
-};
-
-static __init void probe_machine(void)
+void probe_machine(void)
 {
 	extern struct machdep_calls __machine_desc_start;
 	extern struct machdep_calls __machine_desc_end;
@@ -637,16 +608,13 @@ static __init void probe_machine(void)
 	for (machine_id = &__machine_desc_start;
 	     machine_id < &__machine_desc_end;
 	     machine_id++) {
-		DBG("  %s ...\n", machine_id->name);
-		if (machine_id->compatible && !of_machine_is_compatible(machine_id->compatible))
-			continue;
-		if (machine_id->compatibles && !of_machine_compatible_match(machine_id->compatibles))
-			continue;
+		DBG("  %s ...", machine_id->name);
 		memcpy(&ppc_md, machine_id, sizeof(struct machdep_calls));
-		if (ppc_md.probe && !ppc_md.probe())
-			continue;
-		DBG("   %s match !\n", machine_id->name);
-		break;
+		if (ppc_md.probe()) {
+			DBG(" match !\n");
+			break;
+		}
+		DBG("\n");
 	}
 	/* What can we do if we didn't find ? */
 	if (machine_id >= &__machine_desc_end) {
@@ -654,13 +622,7 @@ static __init void probe_machine(void)
 		for (;;);
 	}
 
-	// Append the machine name to other info we've gathered
-	seq_buf_puts(&ppc_hw_desc, ppc_md.name);
-
-	// Set the generic hardware description shown in oopses
-	dump_stack_set_arch_desc(ppc_hw_desc.buffer);
-
-	pr_info("Hardware name: %s\n", ppc_hw_desc.buffer);
+	printk(KERN_INFO "Using %s machine description\n", ppc_md.name);
 }
 
 /* Match a class of boards, not a specific device configuration. */
@@ -718,25 +680,8 @@ int check_legacy_ioport(unsigned long base_port)
 }
 EXPORT_SYMBOL(check_legacy_ioport);
 
-/*
- * Panic notifiers setup
- *
- * We have 3 notifiers for powerpc, each one from a different "nature":
- *
- * - ppc_panic_fadump_handler() is a hypervisor notifier, which hard-disables
- *   IRQs and deal with the Firmware-Assisted dump, when it is configured;
- *   should run early in the panic path.
- *
- * - dump_kernel_offset() is an informative notifier, just showing the KASLR
- *   offset if we have RANDOMIZE_BASE set.
- *
- * - ppc_panic_platform_handler() is a low-level handler that's registered
- *   only if the platform wishes to perform final actions in the panic path,
- *   hence it should run late and might not even return. Currently, only
- *   pseries and ps3 platforms register callbacks.
- */
-static int ppc_panic_fadump_handler(struct notifier_block *this,
-				    unsigned long event, void *ptr)
+static int ppc_panic_event(struct notifier_block *this,
+                             unsigned long event, void *ptr)
 {
 	/*
 	 * panic does a local_irq_disable, but we really
@@ -746,63 +691,45 @@ static int ppc_panic_fadump_handler(struct notifier_block *this,
 
 	/*
 	 * If firmware-assisted dump has been registered then trigger
-	 * its callback and let the firmware handles everything else.
+	 * firmware-assisted dump and let firmware handle everything else.
 	 */
 	crash_fadump(NULL, ptr);
-
+	if (ppc_md.panic)
+		ppc_md.panic(ptr);  /* May not return */
 	return NOTIFY_DONE;
 }
 
+static struct notifier_block ppc_panic_block = {
+	.notifier_call = ppc_panic_event,
+	.priority = INT_MIN /* may not return; must be done last */
+};
+
+/*
+ * Dump out kernel offset information on panic.
+ */
 static int dump_kernel_offset(struct notifier_block *self, unsigned long v,
 			      void *p)
 {
 	pr_emerg("Kernel Offset: 0x%lx from 0x%lx\n",
 		 kaslr_offset(), KERNELBASE);
 
-	return NOTIFY_DONE;
+	return 0;
 }
-
-static int ppc_panic_platform_handler(struct notifier_block *this,
-				      unsigned long event, void *ptr)
-{
-	/*
-	 * This handler is only registered if we have a panic callback
-	 * on ppc_md, hence NULL check is not needed.
-	 * Also, it may not return, so it runs really late on panic path.
-	 */
-	ppc_md.panic(ptr);
-
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block ppc_fadump_block = {
-	.notifier_call = ppc_panic_fadump_handler,
-	.priority = INT_MAX, /* run early, to notify the firmware ASAP */
-};
 
 static struct notifier_block kernel_offset_notifier = {
-	.notifier_call = dump_kernel_offset,
-};
-
-static struct notifier_block ppc_panic_block = {
-	.notifier_call = ppc_panic_platform_handler,
-	.priority = INT_MIN, /* may not return; must be done last */
+	.notifier_call = dump_kernel_offset
 };
 
 void __init setup_panic(void)
 {
-	/* Hard-disables IRQs + deal with FW-assisted dump (fadump) */
-	atomic_notifier_chain_register(&panic_notifier_list,
-				       &ppc_fadump_block);
-
 	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE) && kaslr_offset() > 0)
 		atomic_notifier_chain_register(&panic_notifier_list,
 					       &kernel_offset_notifier);
 
-	/* Low-level platform-specific routines that should run on panic */
-	if (ppc_md.panic)
-		atomic_notifier_chain_register(&panic_notifier_list,
-					       &ppc_panic_block);
+	/* PPC64 always does a hard irq disable in its panic handler */
+	if (!IS_ENABLED(CONFIG_PPC64) && !ppc_md.panic)
+		return;
+	atomic_notifier_chain_register(&panic_notifier_list, &ppc_panic_block);
 }
 
 #ifdef CONFIG_CHECK_CACHE_COHERENCY
@@ -957,9 +884,6 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Parse memory topology */
 	mem_topology_setup();
-	/* Set max_mapnr before paging_init() */
-	set_max_mapnr(max_pfn);
-	high_memory = (void *)__va(max_low_pfn * PAGE_SIZE);
 
 	/*
 	 * Release secondary cpus out of their spinloops at 0x60 now that
@@ -978,15 +902,17 @@ void __init setup_arch(char **cmdline_p)
 	/* Print various info about the machine that has been gathered so far. */
 	print_system_info();
 
+	/* Reserve large chunks of memory for use by CMA for KVM. */
+	kvm_cma_reserve();
+
+	/*  Reserve large chunks of memory for us by CMA for hugetlb */
+	gigantic_hugetlb_cma_reserve();
+
 	klp_init_thread_info(&init_task);
 
 	setup_initial_init_mm(_stext, _etext, _edata, _end);
-	/* sched_init() does the mmgrab(&init_mm) for the primary CPU */
-	VM_WARN_ON(cpumask_test_cpu(smp_processor_id(), mm_cpumask(&init_mm)));
-	cpumask_set_cpu(smp_processor_id(), mm_cpumask(&init_mm));
-	inc_mm_active_cpus(&init_mm);
-	mm_iommu_init(&init_mm);
 
+	mm_iommu_init(&init_mm);
 	irqstack_early_init();
 	exc_lvl_early_init();
 	emergency_stack_init();
@@ -995,13 +921,6 @@ void __init setup_arch(char **cmdline_p)
 	smp_release_cpus();
 
 	initmem_init();
-
-	/*
-	 * Reserve large chunks of memory for use by CMA for KVM and hugetlb. These must
-	 * be called after initmem_init(), so that pageblock_order is initialised.
-	 */
-	kvm_cma_reserve();
-	gigantic_hugetlb_cma_reserve();
 
 	early_memtest(min_low_pfn << PAGE_SHIFT, max_low_pfn << PAGE_SHIFT);
 

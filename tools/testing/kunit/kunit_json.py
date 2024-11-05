@@ -6,58 +6,60 @@
 # Copyright (C) 2020, Google LLC.
 # Author: Heidi Fahim <heidifahim@google.com>
 
-from dataclasses import dataclass
 import json
-from typing import Any, Dict
+import os
 
-from kunit_parser import Test, TestStatus
+import kunit_parser
 
-@dataclass
-class Metadata:
-	"""Stores metadata about this run to include in get_json_result()."""
-	arch: str = ''
-	def_config: str = ''
-	build_dir: str = ''
+from kunit_parser import Test, TestResult, TestStatus
+from typing import Any, Dict, Optional
 
 JsonObj = Dict[str, Any]
 
-_status_map: Dict[TestStatus, str] = {
-	TestStatus.SUCCESS: "PASS",
-	TestStatus.SKIPPED: "SKIP",
-	TestStatus.TEST_CRASHED: "ERROR",
-}
-
-def _get_group_json(test: Test, common_fields: JsonObj) -> JsonObj:
+def _get_group_json(test: Test, def_config: str,
+		build_dir: Optional[str]) -> JsonObj:
 	sub_groups = []  # List[JsonObj]
 	test_cases = []  # List[JsonObj]
 
 	for subtest in test.subtests:
-		if subtest.subtests:
-			sub_group = _get_group_json(subtest, common_fields)
+		if len(subtest.subtests):
+			sub_group = _get_group_json(subtest, def_config,
+				build_dir)
 			sub_groups.append(sub_group)
-			continue
-		status = _status_map.get(subtest.status, "FAIL")
-		test_cases.append({"name": subtest.name, "status": status})
+		else:
+			test_case = {"name": subtest.name, "status": "FAIL"}
+			if subtest.status == TestStatus.SUCCESS:
+				test_case["status"] = "PASS"
+			elif subtest.status == TestStatus.SKIPPED:
+				test_case["status"] = "SKIP"
+			elif subtest.status == TestStatus.TEST_CRASHED:
+				test_case["status"] = "ERROR"
+			test_cases.append(test_case)
 
 	test_group = {
 		"name": test.name,
+		"arch": "UM",
+		"defconfig": def_config,
+		"build_environment": build_dir,
 		"sub_groups": sub_groups,
 		"test_cases": test_cases,
-	}
-	test_group.update(common_fields)
-	return test_group
-
-def get_json_result(test: Test, metadata: Metadata) -> str:
-	common_fields = {
-		"arch": metadata.arch,
-		"defconfig": metadata.def_config,
-		"build_environment": metadata.build_dir,
 		"lab_name": None,
 		"kernel": None,
 		"job": None,
 		"git_branch": "kselftest",
 	}
+	return test_group
 
-	test_group = _get_group_json(test, common_fields)
+def get_json_result(test_result: TestResult, def_config: str,
+		build_dir: Optional[str], json_path: str) -> str:
+	test_group = _get_group_json(test_result.test, def_config, build_dir)
 	test_group["name"] = "KUnit Test Group"
-	return json.dumps(test_group, indent=4)
+	json_obj = json.dumps(test_group, indent=4)
+	if json_path != 'stdout':
+		with open(json_path, 'w') as result_path:
+			result_path.write(json_obj)
+		root = __file__.split('tools/testing/kunit/')[0]
+		kunit_parser.print_with_timestamp(
+			"Test results stored in %s" %
+			os.path.join(root, result_path.name))
+	return json_obj

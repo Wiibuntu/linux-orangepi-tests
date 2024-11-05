@@ -152,6 +152,21 @@ static void print_cpuinfo(void)
 		printk(KERN_INFO "-- custom unit(s)\n");
 }
 
+static struct device_node *setup_find_cpu_node(int cpu)
+{
+	u32 hwid;
+	struct device_node *cpun;
+
+	for_each_of_cpu_node(cpun) {
+		if (of_property_read_u32(cpun, "reg", &hwid))
+			continue;
+		if (hwid == cpu)
+			return cpun;
+	}
+
+	return NULL;
+}
+
 void __init setup_cpuinfo(void)
 {
 	struct device_node *cpu;
@@ -160,7 +175,7 @@ void __init setup_cpuinfo(void)
 	int cpu_id = smp_processor_id();
 	struct cpuinfo_or1k *cpuinfo = &cpuinfo_or1k[cpu_id];
 
-	cpu = of_get_cpu_node(cpu_id, NULL);
+	cpu = setup_find_cpu_node(cpu_id);
 	if (!cpu)
 		panic("Couldn't find CPU%d in device tree...\n", cpu_id);
 
@@ -240,7 +255,7 @@ static inline unsigned long extract_value(unsigned long reg, unsigned long mask)
 void calibrate_delay(void)
 {
 	const int *val;
-	struct device_node *cpu = of_get_cpu_node(smp_processor_id(), NULL);
+	struct device_node *cpu = setup_find_cpu_node(smp_processor_id());
 
 	val = of_get_property(cpu, "clock-frequency", NULL);
 	if (!val)
@@ -255,9 +270,6 @@ void calibrate_delay(void)
 
 void __init setup_arch(char **cmdline_p)
 {
-	/* setup memblock allocator */
-	setup_memory();
-
 	unflatten_and_copy_device_tree();
 
 	setup_cpuinfo();
@@ -280,6 +292,9 @@ void __init setup_arch(char **cmdline_p)
 		initrd_below_start_ok = 1;
 	}
 #endif
+
+	/* setup memblock allocator */
+	setup_memory();
 
 	/* paging_init() sets up the MMU and marks all pages as reserved */
 	paging_init();

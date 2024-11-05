@@ -10,9 +10,11 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of_gpio.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/spi/spi.h>
 #include <linux/i2c.h>
 
@@ -330,7 +332,7 @@ static int rx6110_probe(struct rx6110_data *rx6110, struct device *dev)
 }
 
 #if IS_ENABLED(CONFIG_SPI_MASTER)
-static const struct regmap_config regmap_spi_config = {
+static struct regmap_config regmap_spi_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = RX6110_REG_IRQ,
@@ -374,7 +376,7 @@ static const struct spi_device_id rx6110_spi_id[] = {
 };
 MODULE_DEVICE_TABLE(spi, rx6110_spi_id);
 
-static const __maybe_unused struct of_device_id rx6110_spi_of_match[] = {
+static const struct of_device_id rx6110_spi_of_match[] = {
 	{ .compatible = "epson,rx6110" },
 	{ },
 };
@@ -410,14 +412,15 @@ static void rx6110_spi_unregister(void)
 #endif /* CONFIG_SPI_MASTER */
 
 #if IS_ENABLED(CONFIG_I2C)
-static const struct regmap_config regmap_i2c_config = {
+static struct regmap_config regmap_i2c_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = RX6110_REG_IRQ,
 	.read_flag_mask = 0x80,
 };
 
-static int rx6110_i2c_probe(struct i2c_client *client)
+static int rx6110_i2c_probe(struct i2c_client *client,
+			    const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adapter = client->adapter;
 	struct rx6110_data *rx6110;
@@ -451,7 +454,7 @@ static const struct acpi_device_id rx6110_i2c_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, rx6110_i2c_acpi_match);
 
 static const struct i2c_device_id rx6110_i2c_id[] = {
-	{ "rx6110" },
+	{ "rx6110", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rx6110_i2c_id);

@@ -6,7 +6,6 @@
  * Copyright (c) 2021 Google
  */
 
-#include <linux/compat.h>
 #include <linux/if_arp.h>
 #include <linux/net.h>
 #include <linux/mctp.h>
@@ -21,8 +20,6 @@
 #include <trace/events/mctp.h>
 
 /* socket implementation */
-
-static void mctp_sk_expire_keys(struct timer_list *timer);
 
 static int mctp_release(struct socket *sock)
 {
@@ -93,29 +90,22 @@ out_release:
 static int mctp_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 {
 	DECLARE_SOCKADDR(struct sockaddr_mctp *, addr, msg->msg_name);
+	const int hlen = MCTP_HEADER_MAXLEN + sizeof(struct mctp_hdr);
 	int rc, addrlen = msg->msg_namelen;
 	struct sock *sk = sock->sk;
 	struct mctp_sock *msk = container_of(sk, struct mctp_sock, sk);
 	struct mctp_skb_cb *cb;
 	struct mctp_route *rt;
-	struct sk_buff *skb = NULL;
-	int hlen;
+	struct sk_buff *skb;
 
 	if (addr) {
-		const u8 tagbits = MCTP_TAG_MASK | MCTP_TAG_OWNER |
-			MCTP_TAG_PREALLOC;
-
 		if (addrlen < sizeof(struct sockaddr_mctp))
 			return -EINVAL;
 		if (addr->smctp_family != AF_MCTP)
 			return -EINVAL;
 		if (!mctp_sockaddr_is_ok(addr))
 			return -EINVAL;
-		if (addr->smctp_tag & ~tagbits)
-			return -EINVAL;
-		/* can't preallocate a non-owned tag */
-		if (addr->smctp_tag & MCTP_TAG_PREALLOC &&
-		    !(addr->smctp_tag & MCTP_TAG_OWNER))
+		if (addr->smctp_tag & ~(MCTP_TAG_MASK | MCTP_TAG_OWNER))
 			return -EINVAL;
 
 	} else {
@@ -128,34 +118,6 @@ static int mctp_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 
 	if (addr->smctp_network == MCTP_NET_ANY)
 		addr->smctp_network = mctp_default_net(sock_net(sk));
-
-	/* direct addressing */
-	if (msk->addr_ext && addrlen >= sizeof(struct sockaddr_mctp_ext)) {
-		DECLARE_SOCKADDR(struct sockaddr_mctp_ext *,
-				 extaddr, msg->msg_name);
-		struct net_device *dev;
-
-		rc = -EINVAL;
-		rcu_read_lock();
-		dev = dev_get_by_index_rcu(sock_net(sk), extaddr->smctp_ifindex);
-		/* check for correct halen */
-		if (dev && extaddr->smctp_halen == dev->addr_len) {
-			hlen = LL_RESERVED_SPACE(dev) + sizeof(struct mctp_hdr);
-			rc = 0;
-		}
-		rcu_read_unlock();
-		if (rc)
-			goto err_free;
-		rt = NULL;
-	} else {
-		rt = mctp_route_lookup(sock_net(sk), addr->smctp_network,
-				       addr->smctp_addr.s_addr);
-		if (!rt) {
-			rc = -EHOSTUNREACH;
-			goto err_free;
-		}
-		hlen = LL_RESERVED_SPACE(rt->dev->dev) + sizeof(struct mctp_hdr);
-	}
 
 	skb = sock_alloc_send_skb(sk, hlen + 1 + len,
 				  msg->msg_flags & MSG_DONTWAIT, &rc);
@@ -175,8 +137,8 @@ static int mctp_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	cb = __mctp_cb(skb);
 	cb->net = addr->smctp_network;
 
-	if (!rt) {
-		/* fill extended address in cb */
+	/* direct addressing */
+	if (msk->addr_ext && addrlen >= sizeof(struct sockaddr_mctp_ext)) {
 		DECLARE_SOCKADDR(struct sockaddr_mctp_ext *,
 				 extaddr, msg->msg_name);
 
@@ -187,9 +149,17 @@ static int mctp_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 		}
 
 		cb->ifindex = extaddr->smctp_ifindex;
-		/* smctp_halen is checked above */
 		cb->halen = extaddr->smctp_halen;
 		memcpy(cb->haddr, extaddr->smctp_haddr, cb->halen);
+
+		rt = NULL;
+	} else {
+		rt = mctp_route_lookup(sock_net(sk), addr->smctp_network,
+				       addr->smctp_addr.s_addr);
+		if (!rt) {
+			rc = -EHOSTUNREACH;
+			goto err_free;
+		}
 	}
 
 	rc = mctp_local_output(sk, rt, skb, addr->smctp_addr.s_addr,
@@ -216,7 +186,7 @@ static int mctp_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	if (flags & ~(MSG_DONTWAIT | MSG_TRUNC | MSG_PEEK))
 		return -EOPNOTSUPP;
 
-	skb = skb_recv_datagram(sk, flags, &rc);
+	skb = skb_recv_datagram(sk, flags, flags & MSG_DONTWAIT, &rc);
 	if (!skb)
 		return rc;
 
@@ -238,7 +208,7 @@ static int mctp_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	if (rc < 0)
 		goto out_free;
 
-	sock_recv_cmsgs(msg, sk, skb);
+	sock_recv_ts_and_drops(msg, sk, skb);
 
 	if (addr) {
 		struct mctp_skb_cb *cb = mctp_cb(skb);
@@ -276,33 +246,6 @@ static int mctp_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 out_free:
 	skb_free_datagram(sk, skb);
 	return rc;
-}
-
-/* We're done with the key; invalidate, stop reassembly, and remove from lists.
- */
-static void __mctp_key_remove(struct mctp_sk_key *key, struct net *net,
-			      unsigned long flags, unsigned long reason)
-__releases(&key->lock)
-__must_hold(&net->mctp.keys_lock)
-{
-	struct sk_buff *skb;
-
-	trace_mctp_key_release(key, reason);
-	skb = key->reasm_head;
-	key->reasm_head = NULL;
-	key->reasm_dead = true;
-	key->valid = false;
-	mctp_dev_release_key(key->dev, key);
-	spin_unlock_irqrestore(&key->lock, flags);
-
-	if (!hlist_unhashed(&key->hlist)) {
-		hlist_del_init(&key->hlist);
-		hlist_del_init(&key->sklist);
-		/* unref for the lists */
-		mctp_key_unref(key);
-	}
-
-	kfree_skb(skb);
 }
 
 static int mctp_setsockopt(struct socket *sock, int level, int optname,
@@ -350,203 +293,6 @@ static int mctp_getsockopt(struct socket *sock, int level, int optname,
 	return -EINVAL;
 }
 
-/* helpers for reading/writing the tag ioc, handling compatibility across the
- * two versions, and some basic API error checking
- */
-static int mctp_ioctl_tag_copy_from_user(unsigned long arg,
-					 struct mctp_ioc_tag_ctl2 *ctl,
-					 bool tagv2)
-{
-	struct mctp_ioc_tag_ctl ctl_compat;
-	unsigned long size;
-	void *ptr;
-	int rc;
-
-	if (tagv2) {
-		size = sizeof(*ctl);
-		ptr = ctl;
-	} else {
-		size = sizeof(ctl_compat);
-		ptr = &ctl_compat;
-	}
-
-	rc = copy_from_user(ptr, (void __user *)arg, size);
-	if (rc)
-		return -EFAULT;
-
-	if (!tagv2) {
-		/* compat, using defaults for new fields */
-		ctl->net = MCTP_INITIAL_DEFAULT_NET;
-		ctl->peer_addr = ctl_compat.peer_addr;
-		ctl->local_addr = MCTP_ADDR_ANY;
-		ctl->flags = ctl_compat.flags;
-		ctl->tag = ctl_compat.tag;
-	}
-
-	if (ctl->flags)
-		return -EINVAL;
-
-	if (ctl->local_addr != MCTP_ADDR_ANY &&
-	    ctl->local_addr != MCTP_ADDR_NULL)
-		return -EINVAL;
-
-	return 0;
-}
-
-static int mctp_ioctl_tag_copy_to_user(unsigned long arg,
-				       struct mctp_ioc_tag_ctl2 *ctl,
-				       bool tagv2)
-{
-	struct mctp_ioc_tag_ctl ctl_compat;
-	unsigned long size;
-	void *ptr;
-	int rc;
-
-	if (tagv2) {
-		ptr = ctl;
-		size = sizeof(*ctl);
-	} else {
-		ctl_compat.peer_addr = ctl->peer_addr;
-		ctl_compat.tag = ctl->tag;
-		ctl_compat.flags = ctl->flags;
-
-		ptr = &ctl_compat;
-		size = sizeof(ctl_compat);
-	}
-
-	rc = copy_to_user((void __user *)arg, ptr, size);
-	if (rc)
-		return -EFAULT;
-
-	return 0;
-}
-
-static int mctp_ioctl_alloctag(struct mctp_sock *msk, bool tagv2,
-			       unsigned long arg)
-{
-	struct net *net = sock_net(&msk->sk);
-	struct mctp_sk_key *key = NULL;
-	struct mctp_ioc_tag_ctl2 ctl;
-	unsigned long flags;
-	u8 tag;
-	int rc;
-
-	rc = mctp_ioctl_tag_copy_from_user(arg, &ctl, tagv2);
-	if (rc)
-		return rc;
-
-	if (ctl.tag)
-		return -EINVAL;
-
-	key = mctp_alloc_local_tag(msk, ctl.net, MCTP_ADDR_ANY,
-				   ctl.peer_addr, true, &tag);
-	if (IS_ERR(key))
-		return PTR_ERR(key);
-
-	ctl.tag = tag | MCTP_TAG_OWNER | MCTP_TAG_PREALLOC;
-	rc = mctp_ioctl_tag_copy_to_user(arg, &ctl, tagv2);
-	if (rc) {
-		unsigned long fl2;
-		/* Unwind our key allocation: the keys list lock needs to be
-		 * taken before the individual key locks, and we need a valid
-		 * flags value (fl2) to pass to __mctp_key_remove, hence the
-		 * second spin_lock_irqsave() rather than a plain spin_lock().
-		 */
-		spin_lock_irqsave(&net->mctp.keys_lock, flags);
-		spin_lock_irqsave(&key->lock, fl2);
-		__mctp_key_remove(key, net, fl2, MCTP_TRACE_KEY_DROPPED);
-		mctp_key_unref(key);
-		spin_unlock_irqrestore(&net->mctp.keys_lock, flags);
-		return rc;
-	}
-
-	mctp_key_unref(key);
-	return 0;
-}
-
-static int mctp_ioctl_droptag(struct mctp_sock *msk, bool tagv2,
-			      unsigned long arg)
-{
-	struct net *net = sock_net(&msk->sk);
-	struct mctp_ioc_tag_ctl2 ctl;
-	unsigned long flags, fl2;
-	struct mctp_sk_key *key;
-	struct hlist_node *tmp;
-	int rc;
-	u8 tag;
-
-	rc = mctp_ioctl_tag_copy_from_user(arg, &ctl, tagv2);
-	if (rc)
-		return rc;
-
-	/* Must be a local tag, TO set, preallocated */
-	if ((ctl.tag & ~MCTP_TAG_MASK) != (MCTP_TAG_OWNER | MCTP_TAG_PREALLOC))
-		return -EINVAL;
-
-	tag = ctl.tag & MCTP_TAG_MASK;
-	rc = -EINVAL;
-
-	if (ctl.peer_addr == MCTP_ADDR_NULL)
-		ctl.peer_addr = MCTP_ADDR_ANY;
-
-	spin_lock_irqsave(&net->mctp.keys_lock, flags);
-	hlist_for_each_entry_safe(key, tmp, &msk->keys, sklist) {
-		/* we do an irqsave here, even though we know the irq state,
-		 * so we have the flags to pass to __mctp_key_remove
-		 */
-		spin_lock_irqsave(&key->lock, fl2);
-		if (key->manual_alloc &&
-		    ctl.net == key->net &&
-		    ctl.peer_addr == key->peer_addr &&
-		    tag == key->tag) {
-			__mctp_key_remove(key, net, fl2,
-					  MCTP_TRACE_KEY_DROPPED);
-			rc = 0;
-		} else {
-			spin_unlock_irqrestore(&key->lock, fl2);
-		}
-	}
-	spin_unlock_irqrestore(&net->mctp.keys_lock, flags);
-
-	return rc;
-}
-
-static int mctp_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
-{
-	struct mctp_sock *msk = container_of(sock->sk, struct mctp_sock, sk);
-	bool tagv2 = false;
-
-	switch (cmd) {
-	case SIOCMCTPALLOCTAG2:
-	case SIOCMCTPALLOCTAG:
-		tagv2 = cmd == SIOCMCTPALLOCTAG2;
-		return mctp_ioctl_alloctag(msk, tagv2, arg);
-	case SIOCMCTPDROPTAG:
-	case SIOCMCTPDROPTAG2:
-		tagv2 = cmd == SIOCMCTPDROPTAG2;
-		return mctp_ioctl_droptag(msk, tagv2, arg);
-	}
-
-	return -EINVAL;
-}
-
-#ifdef CONFIG_COMPAT
-static int mctp_compat_ioctl(struct socket *sock, unsigned int cmd,
-			     unsigned long arg)
-{
-	void __user *argp = compat_ptr(arg);
-
-	switch (cmd) {
-	/* These have compatible ptr layouts */
-	case SIOCMCTPALLOCTAG:
-	case SIOCMCTPDROPTAG:
-		return mctp_ioctl(sock, cmd, (unsigned long)argp);
-	}
-
-	return -ENOIOCTLCMD;
-}
-#endif
-
 static const struct proto_ops mctp_dgram_ops = {
 	.family		= PF_MCTP,
 	.release	= mctp_release,
@@ -556,7 +302,7 @@ static const struct proto_ops mctp_dgram_ops = {
 	.accept		= sock_no_accept,
 	.getname	= sock_no_getname,
 	.poll		= datagram_poll,
-	.ioctl		= mctp_ioctl,
+	.ioctl		= sock_no_ioctl,
 	.gettstamp	= sock_gettstamp,
 	.listen		= sock_no_listen,
 	.shutdown	= sock_no_shutdown,
@@ -565,9 +311,7 @@ static const struct proto_ops mctp_dgram_ops = {
 	.sendmsg	= mctp_sendmsg,
 	.recvmsg	= mctp_recvmsg,
 	.mmap		= sock_no_mmap,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl	= mctp_compat_ioctl,
-#endif
+	.sendpage	= sock_no_sendpage,
 };
 
 static void mctp_sk_expire_keys(struct timer_list *timer)
@@ -575,7 +319,7 @@ static void mctp_sk_expire_keys(struct timer_list *timer)
 	struct mctp_sock *msk = container_of(timer, struct mctp_sock,
 					     key_expiry);
 	struct net *net = sock_net(&msk->sk);
-	unsigned long next_expiry, flags, fl2;
+	unsigned long next_expiry, flags;
 	struct mctp_sk_key *key;
 	struct hlist_node *tmp;
 	bool next_expiry_valid = false;
@@ -583,16 +327,15 @@ static void mctp_sk_expire_keys(struct timer_list *timer)
 	spin_lock_irqsave(&net->mctp.keys_lock, flags);
 
 	hlist_for_each_entry_safe(key, tmp, &msk->keys, sklist) {
-		/* don't expire. manual_alloc is immutable, no locking
-		 * required.
-		 */
-		if (key->manual_alloc)
-			continue;
+		spin_lock(&key->lock);
 
-		spin_lock_irqsave(&key->lock, fl2);
 		if (!time_after_eq(key->expiry, jiffies)) {
-			__mctp_key_remove(key, net, fl2,
-					  MCTP_TRACE_KEY_TIMEOUT);
+			trace_mctp_key_release(key, MCTP_TRACE_KEY_TIMEOUT);
+			key->valid = false;
+			hlist_del_rcu(&key->hlist);
+			hlist_del_rcu(&key->sklist);
+			spin_unlock(&key->lock);
+			mctp_key_unref(key);
 			continue;
 		}
 
@@ -603,7 +346,7 @@ static void mctp_sk_expire_keys(struct timer_list *timer)
 			next_expiry = key->expiry;
 			next_expiry_valid = true;
 		}
-		spin_unlock_irqrestore(&key->lock, fl2);
+		spin_unlock(&key->lock);
 	}
 
 	spin_unlock_irqrestore(&net->mctp.keys_lock, flags);
@@ -623,6 +366,9 @@ static int mctp_sk_init(struct sock *sk)
 
 static void mctp_sk_close(struct sock *sk, long timeout)
 {
+	struct mctp_sock *msk = container_of(sk, struct mctp_sock, sk);
+
+	del_timer_sync(&msk->key_expiry);
 	sk_common_release(sk);
 }
 
@@ -641,9 +387,9 @@ static void mctp_sk_unhash(struct sock *sk)
 {
 	struct mctp_sock *msk = container_of(sk, struct mctp_sock, sk);
 	struct net *net = sock_net(sk);
-	unsigned long flags, fl2;
 	struct mctp_sk_key *key;
 	struct hlist_node *tmp;
+	unsigned long flags;
 
 	/* remove from any type-based binds */
 	mutex_lock(&net->mctp.bind_lock);
@@ -653,22 +399,23 @@ static void mctp_sk_unhash(struct sock *sk)
 	/* remove tag allocations */
 	spin_lock_irqsave(&net->mctp.keys_lock, flags);
 	hlist_for_each_entry_safe(key, tmp, &msk->keys, sklist) {
-		spin_lock_irqsave(&key->lock, fl2);
-		__mctp_key_remove(key, net, fl2, MCTP_TRACE_KEY_CLOSED);
+		hlist_del(&key->sklist);
+		hlist_del(&key->hlist);
+
+		trace_mctp_key_release(key, MCTP_TRACE_KEY_CLOSED);
+
+		spin_lock(&key->lock);
+		if (key->reasm_head)
+			kfree_skb(key->reasm_head);
+		key->reasm_head = NULL;
+		key->reasm_dead = true;
+		key->valid = false;
+		spin_unlock(&key->lock);
+
+		/* key is no longer on the lookup lists, unref */
+		mctp_key_unref(key);
 	}
-	sock_set_flag(sk, SOCK_DEAD);
 	spin_unlock_irqrestore(&net->mctp.keys_lock, flags);
-
-	/* Since there are no more tag allocations (we have removed all of the
-	 * keys), stop any pending expiry events. the timer cannot be re-queued
-	 * as the sk is no longer observable
-	 */
-	del_timer_sync(&msk->key_expiry);
-}
-
-static void mctp_sk_destruct(struct sock *sk)
-{
-	skb_queue_purge(&sk->sk_receive_queue);
 }
 
 static struct proto mctp_proto = {
@@ -707,7 +454,6 @@ static int mctp_pf_create(struct net *net, struct socket *sock,
 		return -ENOMEM;
 
 	sock_init_data(sock, sk);
-	sk->sk_destruct = mctp_sk_destruct;
 
 	rc = 0;
 	if (sk->sk_prot->init)
@@ -754,18 +500,12 @@ static __init int mctp_init(void)
 
 	rc = mctp_neigh_init();
 	if (rc)
-		goto err_unreg_routes;
+		goto err_unreg_proto;
 
-	rc = mctp_device_init();
-	if (rc)
-		goto err_unreg_neigh;
+	mctp_device_init();
 
 	return 0;
 
-err_unreg_neigh:
-	mctp_neigh_exit();
-err_unreg_routes:
-	mctp_routes_exit();
 err_unreg_proto:
 	proto_unregister(&mctp_proto);
 err_unreg_sock:
@@ -787,6 +527,7 @@ subsys_initcall(mctp_init);
 module_exit(mctp_exit);
 
 MODULE_DESCRIPTION("MCTP core");
+MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Jeremy Kerr <jk@codeconstruct.com.au>");
 
 MODULE_ALIAS_NETPROTO(PF_MCTP);

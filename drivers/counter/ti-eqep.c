@@ -6,9 +6,7 @@
  */
 
 #include <linux/bitops.h>
-#include <linux/clk.h>
 #include <linux/counter.h>
-#include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
@@ -69,44 +67,6 @@
 #define QEPCTL_UTE		BIT(1)
 #define QEPCTL_WDE		BIT(0)
 
-#define QEINT_UTO		BIT(11)
-#define QEINT_IEL		BIT(10)
-#define QEINT_SEL		BIT(9)
-#define QEINT_PCM		BIT(8)
-#define QEINT_PCR		BIT(7)
-#define QEINT_PCO		BIT(6)
-#define QEINT_PCU		BIT(5)
-#define QEINT_WTO		BIT(4)
-#define QEINT_QDC		BIT(3)
-#define QEINT_PHE		BIT(2)
-#define QEINT_PCE		BIT(1)
-
-#define QFLG_UTO		BIT(11)
-#define QFLG_IEL		BIT(10)
-#define QFLG_SEL		BIT(9)
-#define QFLG_PCM		BIT(8)
-#define QFLG_PCR		BIT(7)
-#define QFLG_PCO		BIT(6)
-#define QFLG_PCU		BIT(5)
-#define QFLG_WTO		BIT(4)
-#define QFLG_QDC		BIT(3)
-#define QFLG_PHE		BIT(2)
-#define QFLG_PCE		BIT(1)
-#define QFLG_INT		BIT(0)
-
-#define QCLR_UTO		BIT(11)
-#define QCLR_IEL		BIT(10)
-#define QCLR_SEL		BIT(9)
-#define QCLR_PCM		BIT(8)
-#define QCLR_PCR		BIT(7)
-#define QCLR_PCO		BIT(6)
-#define QCLR_PCU		BIT(5)
-#define QCLR_WTO		BIT(4)
-#define QCLR_QDC		BIT(3)
-#define QCLR_PHE		BIT(2)
-#define QCLR_PCE		BIT(1)
-#define QCLR_INT		BIT(0)
-
 /* EQEP Inputs */
 enum {
 	TI_EQEP_SIGNAL_QEPA,	/* QEPA/XCLK */
@@ -122,6 +82,7 @@ enum ti_eqep_count_func {
 };
 
 struct ti_eqep_cnt {
+	struct counter_device counter;
 	struct regmap *regmap32;
 	struct regmap *regmap16;
 };
@@ -129,7 +90,7 @@ struct ti_eqep_cnt {
 static int ti_eqep_count_read(struct counter_device *counter,
 			      struct counter_count *count, u64 *val)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 	u32 cnt;
 
 	regmap_read(priv->regmap32, QPOSCNT, &cnt);
@@ -141,7 +102,7 @@ static int ti_eqep_count_read(struct counter_device *counter,
 static int ti_eqep_count_write(struct counter_device *counter,
 			       struct counter_count *count, u64 val)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 	u32 max;
 
 	regmap_read(priv->regmap32, QPOSMAX, &max);
@@ -155,7 +116,7 @@ static int ti_eqep_function_read(struct counter_device *counter,
 				 struct counter_count *count,
 				 enum counter_function *function)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 	u32 qdecctl;
 
 	regmap_read(priv->regmap16, QDECCTL, &qdecctl);
@@ -182,7 +143,7 @@ static int ti_eqep_function_write(struct counter_device *counter,
 				  struct counter_count *count,
 				  enum counter_function function)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 	enum ti_eqep_count_func qsrc;
 
 	switch (function) {
@@ -212,7 +173,7 @@ static int ti_eqep_action_read(struct counter_device *counter,
 			       struct counter_synapse *synapse,
 			       enum counter_synapse_action *action)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 	enum counter_function function;
 	u32 qdecctl;
 	int err;
@@ -272,56 +233,19 @@ static int ti_eqep_action_read(struct counter_device *counter,
 	}
 }
 
-static int ti_eqep_events_configure(struct counter_device *counter)
-{
-	struct ti_eqep_cnt *priv = counter_priv(counter);
-	struct counter_event_node *event_node;
-	u32 qeint = 0;
-
-	list_for_each_entry(event_node, &counter->events_list, l) {
-		switch (event_node->event) {
-		case COUNTER_EVENT_OVERFLOW:
-			qeint |= QEINT_PCO;
-			break;
-		case COUNTER_EVENT_UNDERFLOW:
-			qeint |= QEINT_PCU;
-			break;
-		}
-	}
-
-	return regmap_write(priv->regmap16, QEINT, qeint);
-}
-
-static int ti_eqep_watch_validate(struct counter_device *counter,
-				  const struct counter_watch *watch)
-{
-	switch (watch->event) {
-	case COUNTER_EVENT_OVERFLOW:
-	case COUNTER_EVENT_UNDERFLOW:
-		if (watch->channel != 0)
-			return -EINVAL;
-
-		return 0;
-	default:
-		return -EINVAL;
-	}
-}
-
 static const struct counter_ops ti_eqep_counter_ops = {
 	.count_read	= ti_eqep_count_read,
 	.count_write	= ti_eqep_count_write,
 	.function_read	= ti_eqep_function_read,
 	.function_write	= ti_eqep_function_write,
 	.action_read	= ti_eqep_action_read,
-	.events_configure = ti_eqep_events_configure,
-	.watch_validate	= ti_eqep_watch_validate,
 };
 
 static int ti_eqep_position_ceiling_read(struct counter_device *counter,
 					 struct counter_count *count,
 					 u64 *ceiling)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 	u32 qposmax;
 
 	regmap_read(priv->regmap32, QPOSMAX, &qposmax);
@@ -335,7 +259,7 @@ static int ti_eqep_position_ceiling_write(struct counter_device *counter,
 					  struct counter_count *count,
 					  u64 ceiling)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 
 	if (ceiling != (u32)ceiling)
 		return -ERANGE;
@@ -348,7 +272,7 @@ static int ti_eqep_position_ceiling_write(struct counter_device *counter,
 static int ti_eqep_position_enable_read(struct counter_device *counter,
 					struct counter_count *count, u8 *enable)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 	u32 qepctl;
 
 	regmap_read(priv->regmap16, QEPCTL, &qepctl);
@@ -361,7 +285,7 @@ static int ti_eqep_position_enable_read(struct counter_device *counter,
 static int ti_eqep_position_enable_write(struct counter_device *counter,
 					 struct counter_count *count, u8 enable)
 {
-	struct ti_eqep_cnt *priv = counter_priv(counter);
+	struct ti_eqep_cnt *priv = counter->priv;
 
 	regmap_write_bits(priv->regmap16, QEPCTL, QEPCTL_PHEN, enable ? -1 : 0);
 
@@ -425,25 +349,6 @@ static struct counter_count ti_eqep_counts[] = {
 	},
 };
 
-static irqreturn_t ti_eqep_irq_handler(int irq, void *dev_id)
-{
-	struct counter_device *counter = dev_id;
-	struct ti_eqep_cnt *priv = counter_priv(counter);
-	u32 qflg;
-
-	regmap_read(priv->regmap16, QFLG, &qflg);
-
-	if (qflg & QFLG_PCO)
-		counter_push_event(counter, COUNTER_EVENT_OVERFLOW, 0);
-
-	if (qflg & QFLG_PCU)
-		counter_push_event(counter, COUNTER_EVENT_UNDERFLOW, 0);
-
-	regmap_write(priv->regmap16, QCLR, qflg);
-
-	return IRQ_HANDLED;
-}
-
 static const struct regmap_config ti_eqep_regmap32_config = {
 	.name = "32-bit",
 	.reg_bits = 32,
@@ -463,16 +368,13 @@ static const struct regmap_config ti_eqep_regmap16_config = {
 static int ti_eqep_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct counter_device *counter;
 	struct ti_eqep_cnt *priv;
 	void __iomem *base;
-	struct clk *clk;
-	int err, irq;
+	int err;
 
-	counter = devm_counter_alloc(dev, sizeof(*priv));
-	if (!counter)
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
-	priv = counter_priv(counter);
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
@@ -488,24 +390,16 @@ static int ti_eqep_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->regmap16))
 		return PTR_ERR(priv->regmap16);
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	priv->counter.name = dev_name(dev);
+	priv->counter.parent = dev;
+	priv->counter.ops = &ti_eqep_counter_ops;
+	priv->counter.counts = ti_eqep_counts;
+	priv->counter.num_counts = ARRAY_SIZE(ti_eqep_counts);
+	priv->counter.signals = ti_eqep_signals;
+	priv->counter.num_signals = ARRAY_SIZE(ti_eqep_signals);
+	priv->counter.priv = priv;
 
-	err = devm_request_threaded_irq(dev, irq, NULL, ti_eqep_irq_handler,
-					IRQF_ONESHOT, dev_name(dev), counter);
-	if (err < 0)
-		return dev_err_probe(dev, err, "failed to request IRQ\n");
-
-	counter->name = dev_name(dev);
-	counter->parent = dev;
-	counter->ops = &ti_eqep_counter_ops;
-	counter->counts = ti_eqep_counts;
-	counter->num_counts = ARRAY_SIZE(ti_eqep_counts);
-	counter->signals = ti_eqep_signals;
-	counter->num_signals = ARRAY_SIZE(ti_eqep_signals);
-
-	platform_set_drvdata(pdev, counter);
+	platform_set_drvdata(pdev, priv);
 
 	/*
 	 * Need to make sure power is turned on. On AM33xx, this comes from the
@@ -515,11 +409,7 @@ static int ti_eqep_probe(struct platform_device *pdev)
 	pm_runtime_enable(dev);
 	pm_runtime_get_sync(dev);
 
-	clk = devm_clk_get_enabled(dev, NULL);
-	if (IS_ERR(clk))
-		return dev_err_probe(dev, PTR_ERR(clk), "failed to enable clock\n");
-
-	err = counter_add(counter);
+	err = counter_register(&priv->counter);
 	if (err < 0) {
 		pm_runtime_put_sync(dev);
 		pm_runtime_disable(dev);
@@ -529,26 +419,27 @@ static int ti_eqep_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void ti_eqep_remove(struct platform_device *pdev)
+static int ti_eqep_remove(struct platform_device *pdev)
 {
-	struct counter_device *counter = platform_get_drvdata(pdev);
+	struct ti_eqep_cnt *priv = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
 
-	counter_unregister(counter);
+	counter_unregister(&priv->counter);
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
+
+	return 0;
 }
 
 static const struct of_device_id ti_eqep_of_match[] = {
 	{ .compatible = "ti,am3352-eqep", },
-	{ .compatible = "ti,am62-eqep", },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, ti_eqep_of_match);
 
 static struct platform_driver ti_eqep_driver = {
 	.probe = ti_eqep_probe,
-	.remove_new = ti_eqep_remove,
+	.remove = ti_eqep_remove,
 	.driver = {
 		.name = "ti-eqep-cnt",
 		.of_match_table = ti_eqep_of_match,
@@ -559,4 +450,3 @@ module_platform_driver(ti_eqep_driver);
 MODULE_AUTHOR("David Lechner <david@lechnology.com>");
 MODULE_DESCRIPTION("TI eQEP counter driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS(COUNTER);

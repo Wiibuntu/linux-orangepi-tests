@@ -16,6 +16,8 @@
 #include "kvm_util.h"
 #include "processor.h"
 
+#define VCPU_ID 0
+
 struct test_case {
 	uint64_t kvmclock_base;
 	int64_t realtime_offset;
@@ -71,7 +73,8 @@ static void handle_sync(struct ucall *uc, struct kvm_clock_data *start,
 
 static void handle_abort(struct ucall *uc)
 {
-	REPORT_GUEST_ASSERT(*uc);
+	TEST_FAIL("%s at %s:%ld", (const char *)uc->args[0],
+		  __FILE__, uc->args[1]);
 }
 
 static void setup_clock(struct kvm_vm *vm, struct test_case *test_case)
@@ -92,7 +95,7 @@ static void setup_clock(struct kvm_vm *vm, struct test_case *test_case)
 				break;
 		} while (errno == EINTR);
 
-		TEST_ASSERT(!r, "clock_gettime() failed: %d", r);
+		TEST_ASSERT(!r, "clock_gettime() failed: %d\n", r);
 
 		data.realtime = ts.tv_sec * NSEC_PER_SEC;
 		data.realtime += ts.tv_nsec;
@@ -102,24 +105,29 @@ static void setup_clock(struct kvm_vm *vm, struct test_case *test_case)
 	vm_ioctl(vm, KVM_SET_CLOCK, &data);
 }
 
-static void enter_guest(struct kvm_vcpu *vcpu)
+static void enter_guest(struct kvm_vm *vm)
 {
 	struct kvm_clock_data start, end;
-	struct kvm_vm *vm = vcpu->vm;
+	struct kvm_run *run;
 	struct ucall uc;
-	int i;
+	int i, r;
+
+	run = vcpu_state(vm, VCPU_ID);
 
 	for (i = 0; i < ARRAY_SIZE(test_cases); i++) {
 		setup_clock(vm, &test_cases[i]);
 
 		vm_ioctl(vm, KVM_GET_CLOCK, &start);
 
-		vcpu_run(vcpu);
+		r = _vcpu_run(vm, VCPU_ID);
 		vm_ioctl(vm, KVM_GET_CLOCK, &end);
 
-		TEST_ASSERT_KVM_EXIT_REASON(vcpu, KVM_EXIT_IO);
+		TEST_ASSERT(!r, "vcpu_run failed: %d\n", r);
+		TEST_ASSERT(run->exit_reason == KVM_EXIT_IO,
+			    "unexpected exit reason: %u (%s)",
+			    run->exit_reason, exit_reason_str(run->exit_reason));
 
-		switch (get_ucall(vcpu, &uc)) {
+		switch (get_ucall(vm, VCPU_ID, &uc)) {
 		case UCALL_SYNC:
 			handle_sync(&uc, &start, &end);
 			break;
@@ -127,30 +135,69 @@ static void enter_guest(struct kvm_vcpu *vcpu)
 			handle_abort(&uc);
 			return;
 		default:
-			TEST_ASSERT(0, "unhandled ucall: %ld", uc.cmd);
+			TEST_ASSERT(0, "unhandled ucall: %ld\n", uc.cmd);
 		}
 	}
 }
 
+#define CLOCKSOURCE_PATH "/sys/devices/system/clocksource/clocksource0/current_clocksource"
+
+static void check_clocksource(void)
+{
+	char *clk_name;
+	struct stat st;
+	FILE *fp;
+
+	fp = fopen(CLOCKSOURCE_PATH, "r");
+	if (!fp) {
+		pr_info("failed to open clocksource file: %d; assuming TSC.\n",
+			errno);
+		return;
+	}
+
+	if (fstat(fileno(fp), &st)) {
+		pr_info("failed to stat clocksource file: %d; assuming TSC.\n",
+			errno);
+		goto out;
+	}
+
+	clk_name = malloc(st.st_size);
+	TEST_ASSERT(clk_name, "failed to allocate buffer to read file\n");
+
+	if (!fgets(clk_name, st.st_size, fp)) {
+		pr_info("failed to read clocksource file: %d; assuming TSC.\n",
+			ferror(fp));
+		goto out;
+	}
+
+	TEST_ASSERT(!strncmp(clk_name, "tsc\n", st.st_size),
+		    "clocksource not supported: %s", clk_name);
+out:
+	fclose(fp);
+}
+
 int main(void)
 {
-	struct kvm_vcpu *vcpu;
 	vm_vaddr_t pvti_gva;
 	vm_paddr_t pvti_gpa;
 	struct kvm_vm *vm;
 	int flags;
 
 	flags = kvm_check_cap(KVM_CAP_ADJUST_CLOCK);
-	TEST_REQUIRE(flags & KVM_CLOCK_REALTIME);
+	if (!(flags & KVM_CLOCK_REALTIME)) {
+		print_skip("KVM_CLOCK_REALTIME not supported; flags: %x",
+			   flags);
+		exit(KSFT_SKIP);
+	}
 
-	TEST_REQUIRE(sys_clocksource_is_based_on_tsc());
+	check_clocksource();
 
-	vm = vm_create_with_one_vcpu(&vcpu, guest_main);
+	vm = vm_create_default(VCPU_ID, 0, guest_main);
 
 	pvti_gva = vm_vaddr_alloc(vm, getpagesize(), 0x10000);
 	pvti_gpa = addr_gva2gpa(vm, pvti_gva);
-	vcpu_args_set(vcpu, 2, pvti_gpa, pvti_gva);
+	vcpu_args_set(vm, VCPU_ID, 2, pvti_gpa, pvti_gva);
 
-	enter_guest(vcpu);
+	enter_guest(vm);
 	kvm_vm_free(vm);
 }

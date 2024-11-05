@@ -218,9 +218,7 @@ static int snd_at73c213_pcm_open(struct snd_pcm_substream *substream)
 	runtime->hw = snd_at73c213_playback_hw;
 	chip->substream = substream;
 
-	err = clk_enable(chip->ssc->clk);
-	if (err)
-		return err;
+	clk_enable(chip->ssc->clk);
 
 	return 0;
 }
@@ -726,8 +724,12 @@ static int snd_at73c213_mixer(struct snd_at73c213 *chip)
 	return 0;
 
 cleanup:
-	for (idx = 1; idx < ARRAY_SIZE(snd_at73c213_controls) + 1; idx++)
-		snd_ctl_remove(card, snd_ctl_find_numid(card, idx));
+	for (idx = 1; idx < ARRAY_SIZE(snd_at73c213_controls) + 1; idx++) {
+		struct snd_kcontrol *kctl;
+		kctl = snd_ctl_find_numid(card, idx);
+		if (kctl)
+			snd_ctl_remove(card, kctl);
+	}
 	return errval;
 }
 
@@ -774,9 +776,7 @@ static int snd_at73c213_chip_init(struct snd_at73c213 *chip)
 		goto out;
 
 	/* Enable DAC master clock. */
-	retval = clk_enable(chip->board->dac_clk);
-	if (retval)
-		goto out;
+	clk_enable(chip->board->dac_clk);
 
 	/* Initialize at73c213 on SPI bus. */
 	retval = snd_at73c213_write_reg(chip, DAC_RST, 0x04);
@@ -889,9 +889,7 @@ static int snd_at73c213_dev_init(struct snd_card *card,
 	chip->card = card;
 	chip->irq = -1;
 
-	retval = clk_enable(chip->ssc->clk);
-	if (retval)
-		return retval;
+	clk_enable(chip->ssc->clk);
 
 	retval = request_irq(irq, snd_at73c213_interrupt, 0, "at73c213", chip);
 	if (retval) {
@@ -1003,16 +1001,14 @@ out:
 	return retval;
 }
 
-static void snd_at73c213_remove(struct spi_device *spi)
+static int snd_at73c213_remove(struct spi_device *spi)
 {
 	struct snd_card *card = dev_get_drvdata(&spi->dev);
 	struct snd_at73c213 *chip = card->private_data;
 	int retval;
 
 	/* Stop playback. */
-	retval = clk_enable(chip->ssc->clk);
-	if (retval)
-		goto out;
+	clk_enable(chip->ssc->clk);
 	ssc_writel(chip->ssc->regs, CR, SSC_BIT(CR_TXDIS));
 	clk_disable(chip->ssc->clk);
 
@@ -1070,7 +1066,11 @@ out:
 
 	ssc_free(chip->ssc);
 	snd_card_free(card);
+
+	return 0;
 }
+
+#ifdef CONFIG_PM_SLEEP
 
 static int snd_at73c213_suspend(struct device *dev)
 {
@@ -1088,28 +1088,26 @@ static int snd_at73c213_resume(struct device *dev)
 {
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_at73c213 *chip = card->private_data;
-	int retval;
 
-	retval = clk_enable(chip->board->dac_clk);
-	if (retval)
-		return retval;
-	retval = clk_enable(chip->ssc->clk);
-	if (retval) {
-		clk_disable(chip->board->dac_clk);
-		return retval;
-	}
+	clk_enable(chip->board->dac_clk);
+	clk_enable(chip->ssc->clk);
 	ssc_writel(chip->ssc->regs, CR, SSC_BIT(CR_TXEN));
 
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(at73c213_pm_ops, snd_at73c213_suspend,
+static SIMPLE_DEV_PM_OPS(at73c213_pm_ops, snd_at73c213_suspend,
 		snd_at73c213_resume);
+#define AT73C213_PM_OPS (&at73c213_pm_ops)
+
+#else
+#define AT73C213_PM_OPS NULL
+#endif
 
 static struct spi_driver at73c213_driver = {
 	.driver		= {
 		.name	= "at73c213",
-		.pm	= &at73c213_pm_ops,
+		.pm	= AT73C213_PM_OPS,
 	},
 	.probe		= snd_at73c213_probe,
 	.remove		= snd_at73c213_remove,

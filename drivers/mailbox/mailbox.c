@@ -17,7 +17,6 @@
 #include <linux/bitops.h>
 #include <linux/mailbox_client.h>
 #include <linux/mailbox_controller.h>
-#include <linux/of.h>
 
 #include "mailbox.h"
 
@@ -83,11 +82,13 @@ static void msg_submit(struct mbox_chan *chan)
 exit:
 	spin_unlock_irqrestore(&chan->lock, flags);
 
+	/* kick start the timer immediately to avoid delays */
 	if (!err && (chan->txdone_method & TXDONE_BY_POLL)) {
-		/* kick start the timer immediately to avoid delays */
-		spin_lock_irqsave(&chan->mbox->poll_hrt_lock, flags);
-		hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL);
-		spin_unlock_irqrestore(&chan->mbox->poll_hrt_lock, flags);
+		if (!timekeeping_suspended) {
+			/* but only if not already active */
+			if (!hrtimer_active(&chan->mbox->poll_hrt))
+				hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL);
+		}
 	}
 }
 
@@ -121,26 +122,20 @@ static enum hrtimer_restart txdone_hrtimer(struct hrtimer *hrtimer)
 		container_of(hrtimer, struct mbox_controller, poll_hrt);
 	bool txdone, resched = false;
 	int i;
-	unsigned long flags;
 
 	for (i = 0; i < mbox->num_chans; i++) {
 		struct mbox_chan *chan = &mbox->chans[i];
 
 		if (chan->active_req && chan->cl) {
+			resched = true;
 			txdone = chan->mbox->ops->last_tx_done(chan);
 			if (txdone)
 				tx_tick(chan, 0);
-			else
-				resched = true;
 		}
 	}
 
 	if (resched) {
-		spin_lock_irqsave(&mbox->poll_hrt_lock, flags);
-		if (!hrtimer_is_queued(hrtimer))
-			hrtimer_forward_now(hrtimer, ms_to_ktime(mbox->txpoll_period));
-		spin_unlock_irqrestore(&mbox->poll_hrt_lock, flags);
-
+		hrtimer_forward_now(hrtimer, ms_to_ktime(mbox->txpoll_period));
 		return HRTIMER_RESTART;
 	}
 	return HRTIMER_NORESTART;
@@ -269,6 +264,24 @@ int mbox_send_message(struct mbox_chan *chan, void *mssg)
 
 	msg_submit(chan);
 
+	if (chan->cl->tx_block && timekeeping_suspended) {
+		int i = chan->cl->tx_tout * 10;
+		bool txdone;
+
+		while (i--) {
+			txdone = chan->mbox->ops->last_tx_done(chan);
+			if (txdone) {
+				tx_tick(chan, 0);
+				return 0;
+			}
+
+			udelay(100);
+		}
+
+		tx_tick(chan, -ETIME);
+		return -ETIME;
+	}
+
 	if (chan->cl->tx_block) {
 		unsigned long wait;
 		int ret;
@@ -318,71 +331,6 @@ int mbox_flush(struct mbox_chan *chan, unsigned long timeout)
 }
 EXPORT_SYMBOL_GPL(mbox_flush);
 
-static int __mbox_bind_client(struct mbox_chan *chan, struct mbox_client *cl)
-{
-	struct device *dev = cl->dev;
-	unsigned long flags;
-	int ret;
-
-	if (chan->cl || !try_module_get(chan->mbox->dev->driver->owner)) {
-		dev_dbg(dev, "%s: mailbox not free\n", __func__);
-		return -EBUSY;
-	}
-
-	spin_lock_irqsave(&chan->lock, flags);
-	chan->msg_free = 0;
-	chan->msg_count = 0;
-	chan->active_req = NULL;
-	chan->cl = cl;
-	init_completion(&chan->tx_complete);
-
-	if (chan->txdone_method	== TXDONE_BY_POLL && cl->knows_txdone)
-		chan->txdone_method = TXDONE_BY_ACK;
-
-	spin_unlock_irqrestore(&chan->lock, flags);
-
-	if (chan->mbox->ops->startup) {
-		ret = chan->mbox->ops->startup(chan);
-
-		if (ret) {
-			dev_err(dev, "Unable to startup the chan (%d)\n", ret);
-			mbox_free_channel(chan);
-			return ret;
-		}
-	}
-
-	return 0;
-}
-
-/**
- * mbox_bind_client - Request a mailbox channel.
- * @chan: The mailbox channel to bind the client to.
- * @cl: Identity of the client requesting the channel.
- *
- * The Client specifies its requirements and capabilities while asking for
- * a mailbox channel. It can't be called from atomic context.
- * The channel is exclusively allocated and can't be used by another
- * client before the owner calls mbox_free_channel.
- * After assignment, any packet received on this channel will be
- * handed over to the client via the 'rx_callback'.
- * The framework holds reference to the client, so the mbox_client
- * structure shouldn't be modified until the mbox_free_channel returns.
- *
- * Return: 0 if the channel was assigned to the client successfully.
- *         <0 for request failure.
- */
-int mbox_bind_client(struct mbox_chan *chan, struct mbox_client *cl)
-{
-	int ret;
-
-	mutex_lock(&con_mutex);
-	ret = __mbox_bind_client(chan, cl);
-	mutex_unlock(&con_mutex);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(mbox_bind_client);
-
 /**
  * mbox_request_channel - Request a mailbox channel.
  * @cl: Identity of the client requesting the channel.
@@ -406,6 +354,7 @@ struct mbox_chan *mbox_request_channel(struct mbox_client *cl, int index)
 	struct mbox_controller *mbox;
 	struct of_phandle_args spec;
 	struct mbox_chan *chan;
+	unsigned long flags;
 	int ret;
 
 	if (!dev || !dev->of_node) {
@@ -437,9 +386,33 @@ struct mbox_chan *mbox_request_channel(struct mbox_client *cl, int index)
 		return chan;
 	}
 
-	ret = __mbox_bind_client(chan, cl);
-	if (ret)
-		chan = ERR_PTR(ret);
+	if (chan->cl || !try_module_get(mbox->dev->driver->owner)) {
+		dev_dbg(dev, "%s: mailbox not free\n", __func__);
+		mutex_unlock(&con_mutex);
+		return ERR_PTR(-EBUSY);
+	}
+
+	spin_lock_irqsave(&chan->lock, flags);
+	chan->msg_free = 0;
+	chan->msg_count = 0;
+	chan->active_req = NULL;
+	chan->cl = cl;
+	init_completion(&chan->tx_complete);
+
+	if (chan->txdone_method	== TXDONE_BY_POLL && cl->knows_txdone)
+		chan->txdone_method = TXDONE_BY_ACK;
+
+	spin_unlock_irqrestore(&chan->lock, flags);
+
+	if (chan->mbox->ops->startup) {
+		ret = chan->mbox->ops->startup(chan);
+
+		if (ret) {
+			dev_err(dev, "Unable to startup the chan (%d)\n", ret);
+			mbox_free_channel(chan);
+			chan = ERR_PTR(ret);
+		}
+	}
 
 	mutex_unlock(&con_mutex);
 	return chan;
@@ -450,20 +423,30 @@ struct mbox_chan *mbox_request_channel_byname(struct mbox_client *cl,
 					      const char *name)
 {
 	struct device_node *np = cl->dev->of_node;
-	int index;
+	struct property *prop;
+	const char *mbox_name;
+	int index = 0;
 
 	if (!np) {
 		dev_err(cl->dev, "%s() currently only supports DT\n", __func__);
 		return ERR_PTR(-EINVAL);
 	}
 
-	index = of_property_match_string(np, "mbox-names", name);
-	if (index < 0) {
-		dev_err(cl->dev, "%s() could not locate channel named \"%s\"\n",
-			__func__, name);
+	if (!of_get_property(np, "mbox-names", NULL)) {
+		dev_err(cl->dev,
+			"%s() requires an \"mbox-names\" property\n", __func__);
 		return ERR_PTR(-EINVAL);
 	}
-	return mbox_request_channel(cl, index);
+
+	of_property_for_each_string(np, "mbox-names", prop, mbox_name) {
+		if (!strncmp(name, mbox_name, strlen(name)))
+			return mbox_request_channel(cl, index);
+		index++;
+	}
+
+	dev_err(cl->dev, "%s() could not locate channel named \"%s\"\n",
+		__func__, name);
+	return ERR_PTR(-EINVAL);
 }
 EXPORT_SYMBOL_GPL(mbox_request_channel_byname);
 
@@ -537,7 +520,6 @@ int mbox_controller_register(struct mbox_controller *mbox)
 		hrtimer_init(&mbox->poll_hrt, CLOCK_MONOTONIC,
 			     HRTIMER_MODE_REL);
 		mbox->poll_hrt.function = txdone_hrtimer;
-		spin_lock_init(&mbox->poll_hrt_lock);
 	}
 
 	for (i = 0; i < mbox->num_chans; i++) {

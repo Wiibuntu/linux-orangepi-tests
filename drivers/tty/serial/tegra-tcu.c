@@ -7,6 +7,7 @@
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/serial.h>
 #include <linux/serial_core.h>
@@ -91,18 +92,16 @@ static void tegra_tcu_write(struct tegra_tcu *tcu, const char *s,
 static void tegra_tcu_uart_start_tx(struct uart_port *port)
 {
 	struct tegra_tcu *tcu = port->private_data;
-	struct tty_port *tport = &port->state->port;
-	unsigned char *tail;
-	unsigned int count;
+	struct circ_buf *xmit = &port->state->xmit;
+	unsigned long count;
 
 	for (;;) {
-		count = kfifo_out_linear_ptr(&tport->xmit_fifo, &tail,
-				UART_XMIT_SIZE);
+		count = CIRC_CNT_TO_END(xmit->head, xmit->tail, UART_XMIT_SIZE);
 		if (!count)
 			break;
 
-		tegra_tcu_write(tcu, tail, count);
-		uart_xmit_advance(port, count);
+		tegra_tcu_write(tcu, &xmit->buf[xmit->tail], count);
+		xmit->tail = (xmit->tail + count) & (UART_XMIT_SIZE - 1);
 	}
 
 	uart_write_wakeup(port);
@@ -127,7 +126,7 @@ static void tegra_tcu_uart_shutdown(struct uart_port *port)
 
 static void tegra_tcu_uart_set_termios(struct uart_port *port,
 				       struct ktermios *new,
-				       const struct ktermios *old)
+				       struct ktermios *old)
 {
 }
 
@@ -268,7 +267,7 @@ free_tx:
 	return err;
 }
 
-static void tegra_tcu_remove(struct platform_device *pdev)
+static int tegra_tcu_remove(struct platform_device *pdev)
 {
 	struct tegra_tcu *tcu = platform_get_drvdata(pdev);
 
@@ -279,6 +278,8 @@ static void tegra_tcu_remove(struct platform_device *pdev)
 	uart_remove_one_port(&tcu->driver, &tcu->port);
 	uart_unregister_driver(&tcu->driver);
 	mbox_free_channel(tcu->tx);
+
+	return 0;
 }
 
 static const struct of_device_id tegra_tcu_match[] = {
@@ -293,7 +294,7 @@ static struct platform_driver tegra_tcu_driver = {
 		.of_match_table = tegra_tcu_match,
 	},
 	.probe = tegra_tcu_probe,
-	.remove_new = tegra_tcu_remove,
+	.remove = tegra_tcu_remove,
 };
 module_platform_driver(tegra_tcu_driver);
 

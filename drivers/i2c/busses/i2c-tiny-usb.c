@@ -54,6 +54,8 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs, int num)
 	struct i2c_msg *pmsg;
 	int i, ret;
 
+	dev_dbg(&adapter->dev, "master xfer %d messages:\n", num);
+
 	pstatus = kmalloc(sizeof(*pstatus), GFP_KERNEL);
 	if (!pstatus)
 		return -ENOMEM;
@@ -140,8 +142,8 @@ out:
 
 /* This is the actual algorithm we define */
 static const struct i2c_algorithm usb_algorithm = {
-	.xfer = usb_xfer,
-	.functionality = usb_func,
+	.master_xfer	= usb_xfer,
+	.functionality	= usb_func,
 };
 
 /* ----- end of i2c layer ------------------------------------------------ */
@@ -220,16 +222,14 @@ static int i2c_tiny_usb_probe(struct usb_interface *interface,
 	int retval = -ENOMEM;
 	u16 version;
 
-	if (interface->intf_assoc &&
-	    interface->intf_assoc->bFunctionClass != USB_CLASS_VENDOR_SPEC)
-		return -ENODEV;
-
 	dev_dbg(&interface->dev, "probing usb device\n");
 
 	/* allocate memory for our device state and initialize it */
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev)
+	if (dev == NULL) {
+		dev_err(&interface->dev, "Out of memory\n");
 		goto error;
+	}
 
 	dev->usb_dev = usb_get_dev(interface_to_usbdev(interface));
 	dev->interface = interface;

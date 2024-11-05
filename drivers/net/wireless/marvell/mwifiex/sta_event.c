@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * NXP Wireless LAN device driver: station event handling
  *
  * Copyright 2011-2020 NXP
+ *
+ * This software file (the "File") is distributed by NXP
+ * under the terms of the GNU General Public License Version 2, June 1991
+ * (the "License").  You may use, redistribute and/or modify this File in
+ * accordance with the terms and conditions of the License, a copy of which
+ * is available by writing to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+ * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *
+ * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+ * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+ * this warranty disclaimer.
  */
 
 #include "decl.h"
@@ -135,9 +147,6 @@ void mwifiex_reset_connect_state(struct mwifiex_private *priv, u16 reason_code,
 
 	priv->media_connected = false;
 
-	priv->auth_flag = 0;
-	priv->auth_alg = WLAN_AUTH_NONE;
-
 	priv->scan_block = false;
 	priv->port_open = false;
 
@@ -225,12 +234,8 @@ void mwifiex_reset_connect_state(struct mwifiex_private *priv, u16 reason_code,
 		    priv->cfg_bssid, reason_code);
 	if (priv->bss_mode == NL80211_IFTYPE_STATION ||
 	    priv->bss_mode == NL80211_IFTYPE_P2P_CLIENT) {
-		if (adapter->host_mlme_enabled && adapter->host_mlme_link_lost)
-			mwifiex_host_mlme_disconnect(adapter->priv_link_lost,
-						     reason_code, NULL);
-		else
-			cfg80211_disconnected(priv->netdev, reason_code, NULL,
-					      0, !from_ap, GFP_KERNEL);
+		cfg80211_disconnected(priv->netdev, reason_code, NULL, 0,
+				      !from_ap, GFP_KERNEL);
 	}
 	eth_zero_addr(priv->cfg_bssid);
 
@@ -618,8 +623,8 @@ mwifiex_fw_dump_info_event(struct mwifiex_private *priv,
 		 * transmission event get lost, in this cornel case,
 		 * user would still get partial of the dump.
 		 */
-		schedule_delayed_work(&adapter->devdump_work,
-				      msecs_to_jiffies(MWIFIEX_TIMER_10S));
+		mod_timer(&adapter->devdump_timer,
+			  jiffies + msecs_to_jiffies(MWIFIEX_TIMER_10S));
 	}
 
 	/* Overflow check */
@@ -630,7 +635,7 @@ mwifiex_fw_dump_info_event(struct mwifiex_private *priv,
 		adapter->event_skb->data, event_skb->len);
 	adapter->devdump_len += event_skb->len;
 
-	if (le16_to_cpu(fw_dump_hdr->type) == FW_DUMP_INFO_ENDED) {
+	if (le16_to_cpu(fw_dump_hdr->type == FW_DUMP_INFO_ENDED)) {
 		mwifiex_dbg(adapter, MSG,
 			    "receive end of transmission flag event!\n");
 		goto upload_dump;
@@ -638,7 +643,7 @@ mwifiex_fw_dump_info_event(struct mwifiex_private *priv,
 	return;
 
 upload_dump:
-	cancel_delayed_work_sync(&adapter->devdump_work);
+	del_timer_sync(&adapter->devdump_timer);
 	mwifiex_upload_device_dump(adapter);
 }
 
@@ -753,15 +758,7 @@ int mwifiex_process_sta_event(struct mwifiex_private *priv)
 		if (priv->media_connected) {
 			reason_code =
 				get_unaligned_le16(adapter->event_body);
-			if (adapter->host_mlme_enabled) {
-				adapter->priv_link_lost = priv;
-				adapter->host_mlme_link_lost = true;
-				queue_work(adapter->host_mlme_workqueue,
-					   &adapter->host_mlme_work);
-			} else {
-				mwifiex_reset_connect_state(priv, reason_code,
-							    true);
-			}
+			mwifiex_reset_connect_state(priv, reason_code, true);
 		}
 		break;
 
@@ -1014,17 +1011,10 @@ int mwifiex_process_sta_event(struct mwifiex_private *priv)
 	case EVENT_REMAIN_ON_CHAN_EXPIRED:
 		mwifiex_dbg(adapter, EVENT,
 			    "event: Remain on channel expired\n");
-
-		if (adapter->host_mlme_enabled &&
-		    (priv->auth_flag & HOST_MLME_AUTH_PENDING)) {
-			priv->auth_flag = 0;
-			priv->auth_alg = WLAN_AUTH_NONE;
-		} else {
-			cfg80211_remain_on_channel_expired(&priv->wdev,
-							   priv->roc_cfg.cookie,
-							   &priv->roc_cfg.chan,
-							   GFP_ATOMIC);
-		}
+		cfg80211_remain_on_channel_expired(&priv->wdev,
+						   priv->roc_cfg.cookie,
+						   &priv->roc_cfg.chan,
+						   GFP_ATOMIC);
 
 		memset(&priv->roc_cfg, 0x00, sizeof(struct mwifiex_roc_cfg));
 
@@ -1072,9 +1062,6 @@ int mwifiex_process_sta_event(struct mwifiex_private *priv)
 		break;
 	case EVENT_BT_COEX_WLAN_PARA_CHANGE:
 		dev_dbg(adapter->dev, "EVENT: BT coex wlan param update\n");
-		if (adapter->ignore_btcoex_events)
-			break;
-
 		mwifiex_bt_coex_wlan_param_update_event(priv,
 							adapter->event_skb);
 		break;

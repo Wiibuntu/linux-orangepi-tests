@@ -654,6 +654,7 @@ static int snd_als300_create(struct snd_card *card,
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int snd_als300_suspend(struct device *dev)
 {
 	struct snd_card *card = dev_get_drvdata(dev);
@@ -676,7 +677,11 @@ static int snd_als300_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(snd_als300_pm, snd_als300_suspend, snd_als300_resume);
+static SIMPLE_DEV_PM_OPS(snd_als300_pm, snd_als300_suspend, snd_als300_resume);
+#define SND_ALS300_PM_OPS	&snd_als300_pm
+#else
+#define SND_ALS300_PM_OPS	NULL
+#endif
 
 static int snd_als300_probe(struct pci_dev *pci,
                              const struct pci_device_id *pci_id)
@@ -703,7 +708,7 @@ static int snd_als300_probe(struct pci_dev *pci,
 
 	err = snd_als300_create(card, pci, chip_type);
 	if (err < 0)
-		goto error;
+		return err;
 
 	strcpy(card->driver, "ALS300");
 	if (chip->chip_type == DEVICE_ALS300_PLUS)
@@ -718,15 +723,11 @@ static int snd_als300_probe(struct pci_dev *pci,
 
 	err = snd_card_register(card);
 	if (err < 0)
-		goto error;
+		return err;
 
 	pci_set_drvdata(pci, card);
 	dev++;
 	return 0;
-
- error:
-	snd_card_free(card);
-	return err;
 }
 
 static struct pci_driver als300_driver = {
@@ -734,7 +735,7 @@ static struct pci_driver als300_driver = {
 	.id_table = snd_als300_ids,
 	.probe = snd_als300_probe,
 	.driver = {
-		.pm = &snd_als300_pm,
+		.pm = SND_ALS300_PM_OPS,
 	},
 };
 

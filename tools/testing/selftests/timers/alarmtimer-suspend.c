@@ -79,7 +79,7 @@ char *clockstring(int clockid)
 		return "CLOCK_BOOTTIME_ALARM";
 	case CLOCK_TAI:
 		return "CLOCK_TAI";
-	}
+	};
 	return "UNKNOWN_CLOCKID";
 }
 
@@ -92,7 +92,7 @@ long long timespec_sub(struct timespec a, struct timespec b)
 	return ret;
 }
 
-int final_ret;
+int final_ret = 0;
 
 void sigalarm(int signo)
 {
@@ -173,6 +173,6 @@ int main(void)
 		timer_delete(tm1);
 	}
 	if (final_ret)
-		ksft_exit_fail();
-	ksft_exit_pass();
+		return ksft_exit_fail();
+	return ksft_exit_pass();
 }

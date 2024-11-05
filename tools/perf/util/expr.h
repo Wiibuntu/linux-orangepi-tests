@@ -2,22 +2,27 @@
 #ifndef PARSE_CTX_H
 #define PARSE_CTX_H 1
 
-struct hashmap;
-struct metric_ref;
+// There are fixes that need to land upstream before we can use libbpf's headers,
+// for now use our copy unconditionally, since the data structures at this point
+// are exactly the same, no problem.
+//#ifdef HAVE_LIBBPF_SUPPORT
+//#include <bpf/hashmap.h>
+//#else
+#include "util/hashmap.h"
+//#endif
 
-struct expr_scanner_ctx {
-	char *user_requested_cpu_list;
-	int runtime;
-	bool system_wide;
-	bool is_test;
-};
+struct metric_ref;
 
 struct expr_parse_ctx {
 	struct hashmap	*ids;
-	struct expr_scanner_ctx sctx;
+	int runtime;
 };
 
 struct expr_id_data;
+
+struct expr_scanner_ctx {
+	int runtime;
+};
 
 struct hashmap *ids__new(void);
 void ids__free(struct hashmap *ids);
@@ -53,8 +58,6 @@ int expr__find_ids(const char *expr, const char *one,
 
 double expr_id_data__value(const struct expr_id_data *data);
 double expr_id_data__source_count(const struct expr_id_data *data);
-double expr__get_literal(const char *literal, const struct expr_scanner_ctx *ctx);
-double expr__has_event(const struct expr_parse_ctx *ctx, bool compute_ids, const char *id);
-double expr__strcmp_cpuid_str(const struct expr_parse_ctx *ctx, bool compute_ids, const char *id);
+double expr__get_literal(const char *literal);
 
 #endif

@@ -383,7 +383,8 @@ static irqreturn_t tcs3472_trigger_handler(int irq, void *p)
 	if (ret < 0)
 		goto done;
 
-	iio_for_each_active_channel(indio_dev, i) {
+	for_each_set_bit(i, indio_dev->active_scan_mask,
+		indio_dev->masklength) {
 		ret = i2c_smbus_read_word_data(data->client,
 			TCS3472_CDATA + 2*i);
 		if (ret < 0)
@@ -441,7 +442,8 @@ static const struct iio_info tcs3472_info = {
 	.attrs = &tcs3472_attribute_group,
 };
 
-static int tcs3472_probe(struct i2c_client *client)
+static int tcs3472_probe(struct i2c_client *client,
+			   const struct i2c_device_id *id)
 {
 	struct tcs3472_data *data;
 	struct iio_dev *indio_dev;
@@ -557,7 +559,7 @@ static int tcs3472_powerdown(struct tcs3472_data *data)
 	return ret;
 }
 
-static void tcs3472_remove(struct i2c_client *client)
+static int tcs3472_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 
@@ -566,8 +568,11 @@ static void tcs3472_remove(struct i2c_client *client)
 		free_irq(client->irq, indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 	tcs3472_powerdown(iio_priv(indio_dev));
+
+	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int tcs3472_suspend(struct device *dev)
 {
 	struct tcs3472_data *data = iio_priv(i2c_get_clientdata(
@@ -593,12 +598,12 @@ static int tcs3472_resume(struct device *dev)
 
 	return ret;
 }
+#endif
 
-static DEFINE_SIMPLE_DEV_PM_OPS(tcs3472_pm_ops, tcs3472_suspend,
-				tcs3472_resume);
+static SIMPLE_DEV_PM_OPS(tcs3472_pm_ops, tcs3472_suspend, tcs3472_resume);
 
 static const struct i2c_device_id tcs3472_id[] = {
-	{ "tcs3472" },
+	{ "tcs3472", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tcs3472_id);
@@ -606,7 +611,7 @@ MODULE_DEVICE_TABLE(i2c, tcs3472_id);
 static struct i2c_driver tcs3472_driver = {
 	.driver = {
 		.name	= TCS3472_DRV_NAME,
-		.pm	= pm_sleep_ptr(&tcs3472_pm_ops),
+		.pm	= &tcs3472_pm_ops,
 	},
 	.probe		= tcs3472_probe,
 	.remove		= tcs3472_remove,

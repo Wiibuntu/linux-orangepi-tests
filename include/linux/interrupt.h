@@ -5,14 +5,13 @@
 
 #include <linux/kernel.h>
 #include <linux/bitops.h>
-#include <linux/cleanup.h>
+#include <linux/cpumask.h>
 #include <linux/irqreturn.h>
 #include <linux/irqnr.h>
 #include <linux/hardirq.h>
 #include <linux/irqflags.h>
 #include <linux/hrtimer.h>
 #include <linux/kref.h>
-#include <linux/cpumask_types.h>
 #include <linux/workqueue.h>
 #include <linux/jump_label.h>
 
@@ -68,8 +67,6 @@
  *                later.
  * IRQF_NO_DEBUG - Exclude from runnaway detection for IPI and similar handlers,
  *		   depends on IRQF_PERCPU.
- * IRQF_COND_ONESHOT - Agree to do IRQF_ONESHOT if already set for a shared
- *                 interrupt.
  */
 #define IRQF_SHARED		0x00000080
 #define IRQF_PROBE_SHARED	0x00000100
@@ -85,7 +82,6 @@
 #define IRQF_COND_SUSPEND	0x00040000
 #define IRQF_NO_AUTOEN		0x00080000
 #define IRQF_NO_DEBUG		0x00100000
-#define IRQF_COND_ONESHOT	0x00200000
 
 #define IRQF_TIMER		(__IRQF_TIMER | IRQF_NO_SUSPEND | IRQF_NO_THREAD)
 
@@ -169,7 +165,7 @@ static inline int __must_check
 request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags,
 	    const char *name, void *dev)
 {
-	return request_threaded_irq(irq, handler, NULL, flags | IRQF_COND_ONESHOT, name, dev);
+	return request_threaded_irq(irq, handler, NULL, flags, name, dev);
 }
 
 extern int __must_check
@@ -226,6 +222,24 @@ devm_request_any_context_irq(struct device *dev, unsigned int irq,
 
 extern void devm_free_irq(struct device *dev, unsigned int irq, void *dev_id);
 
+/*
+ * On lockdep we dont want to enable hardirqs in hardirq
+ * context. Use local_irq_enable_in_hardirq() to annotate
+ * kernel code that has to do this nevertheless (pretty much
+ * the only valid case is for old/broken hardware that is
+ * insanely slow).
+ *
+ * NOTE: in theory this might break fragile code that relies
+ * on hardirq delivery - in practice we dont seem to have such
+ * places left. So the only effect should be slightly increased
+ * irqs-off latencies.
+ */
+#ifdef CONFIG_LOCKDEP
+# define local_irq_enable_in_hardirq()	do { } while (0)
+#else
+# define local_irq_enable_in_hardirq()	local_irq_enable()
+#endif
+
 bool irq_has_action(unsigned int irq);
 extern void disable_irq_nosync(unsigned int irq);
 extern bool disable_hardirq(unsigned int irq);
@@ -235,9 +249,6 @@ extern void enable_irq(unsigned int irq);
 extern void enable_percpu_irq(unsigned int irq, unsigned int type);
 extern bool irq_percpu_is_enabled(unsigned int irq);
 extern void irq_wake_thread(unsigned int irq, void *dev_id);
-
-DEFINE_LOCK_GUARD_1(disable_irq, int,
-		    disable_irq(*_T->lock), enable_irq(*_T->lock))
 
 extern void disable_nmi_nosync(unsigned int irq);
 extern void disable_percpu_nmi(unsigned int irq);
@@ -276,7 +287,7 @@ struct irq_affinity_notify {
 #define	IRQ_AFFINITY_MAX_SETS  4
 
 /**
- * struct irq_affinity - Description for automatic irq affinity assignments
+ * struct irq_affinity - Description for automatic irq affinity assignements
  * @pre_vectors:	Don't apply affinity to @pre_vectors at beginning of
  *			the MSI(-X) vector space
  * @post_vectors:	Don't apply affinity to @post_vectors at end of
@@ -318,46 +329,7 @@ extern int irq_force_affinity(unsigned int irq, const struct cpumask *cpumask);
 extern int irq_can_set_affinity(unsigned int irq);
 extern int irq_select_affinity(unsigned int irq);
 
-extern int __irq_apply_affinity_hint(unsigned int irq, const struct cpumask *m,
-				     bool setaffinity);
-
-/**
- * irq_update_affinity_hint - Update the affinity hint
- * @irq:	Interrupt to update
- * @m:		cpumask pointer (NULL to clear the hint)
- *
- * Updates the affinity hint, but does not change the affinity of the interrupt.
- */
-static inline int
-irq_update_affinity_hint(unsigned int irq, const struct cpumask *m)
-{
-	return __irq_apply_affinity_hint(irq, m, false);
-}
-
-/**
- * irq_set_affinity_and_hint - Update the affinity hint and apply the provided
- *			     cpumask to the interrupt
- * @irq:	Interrupt to update
- * @m:		cpumask pointer (NULL to clear the hint)
- *
- * Updates the affinity hint and if @m is not NULL it applies it as the
- * affinity of that interrupt.
- */
-static inline int
-irq_set_affinity_and_hint(unsigned int irq, const struct cpumask *m)
-{
-	return __irq_apply_affinity_hint(irq, m, true);
-}
-
-/*
- * Deprecated. Use irq_update_affinity_hint() or irq_set_affinity_and_hint()
- * instead.
- */
-static inline int irq_set_affinity_hint(unsigned int irq, const struct cpumask *m)
-{
-	return irq_set_affinity_and_hint(irq, m);
-}
-
+extern int irq_set_affinity_hint(unsigned int irq, const struct cpumask *m);
 extern int irq_update_affinity_desc(unsigned int irq,
 				    struct irq_affinity_desc *affinity);
 
@@ -388,18 +360,6 @@ static inline int irq_can_set_affinity(unsigned int irq)
 }
 
 static inline int irq_select_affinity(unsigned int irq)  { return 0; }
-
-static inline int irq_update_affinity_hint(unsigned int irq,
-					   const struct cpumask *m)
-{
-	return -EINVAL;
-}
-
-static inline int irq_set_affinity_and_hint(unsigned int irq,
-					    const struct cpumask *m)
-{
-	return -EINVAL;
-}
 
 static inline int irq_set_affinity_hint(unsigned int irq,
 					const struct cpumask *m)
@@ -568,20 +528,7 @@ enum
 	NR_SOFTIRQS
 };
 
-/*
- * The following vectors can be safely ignored after ksoftirqd is parked:
- *
- * _ RCU:
- * 	1) rcutree_migrate_callbacks() migrates the queue.
- * 	2) rcutree_report_cpu_dead() reports the final quiescent states.
- *
- * _ IRQ_POLL: irq_poll_cpu_dead() migrates the queue
- *
- * _ (HR)TIMER_SOFTIRQ: (hr)timers_dead_cpu() migrates the queue
- */
-#define SOFTIRQ_HOTPLUG_SAFE_MASK (BIT(TIMER_SOFTIRQ) | BIT(IRQ_POLL_SOFTIRQ) |\
-				   BIT(HRTIMER_SOFTIRQ) | BIT(RCU_SOFTIRQ))
-
+#define SOFTIRQ_STOP_IDLE_MASK (~(1 << RCU_SOFTIRQ))
 
 /* map softirq index to softirq name. update 'softirq_to_name' in
  * kernel/softirq.c when adding a new softirq.
@@ -594,22 +541,13 @@ extern const char * const softirq_to_name[NR_SOFTIRQS];
 
 struct softirq_action
 {
-	void	(*action)(void);
+	void	(*action)(struct softirq_action *);
 };
 
 asmlinkage void do_softirq(void);
 asmlinkage void __do_softirq(void);
 
-#ifdef CONFIG_PREEMPT_RT
-extern void do_softirq_post_smp_call_flush(unsigned int was_pending);
-#else
-static inline void do_softirq_post_smp_call_flush(unsigned int unused)
-{
-	do_softirq();
-}
-#endif
-
-extern void open_softirq(int nr, void (*action)(void));
+extern void open_softirq(int nr, void (*action)(struct softirq_action *));
 extern void softirq_init(void);
 extern void __raise_softirq_irqoff(unsigned int nr);
 

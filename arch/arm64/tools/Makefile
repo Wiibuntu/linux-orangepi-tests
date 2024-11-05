@@ -3,26 +3,20 @@
 gen := arch/$(ARCH)/include/generated
 kapi := $(gen)/asm
 
-kapisyshdr-y := cpucap-defs.h sysreg-defs.h
+kapi-hdrs-y := $(kapi)/cpucaps.h
 
-kapi-hdrs-y := $(addprefix $(kapi)/, $(kapisyshdr-y))
-
-targets += $(addprefix ../../../, $(kapi-hdrs-y))
+targets += $(addprefix ../../../,$(gen-y) $(kapi-hdrs-y))
 
 PHONY += kapi
 
-all: $(syscall64) kapi
+kapi:   $(kapi-hdrs-y) $(gen-y)
 
-kapi:   $(kapi-hdrs-y)
+# Create output directory if not already present
+_dummy := $(shell [ -d '$(kapi)' ] || mkdir -p '$(kapi)')
 
 quiet_cmd_gen_cpucaps = GEN     $@
-      cmd_gen_cpucaps = mkdir -p $(dir $@); $(AWK) -f $(real-prereqs) > $@
+      cmd_gen_cpucaps = mkdir -p $(dir $@) && \
+                     $(AWK) -f $(filter-out $(PHONY),$^) > $@
 
-quiet_cmd_gen_sysreg = GEN     $@
-      cmd_gen_sysreg = mkdir -p $(dir $@); $(AWK) -f $(real-prereqs) > $@
-
-$(kapi)/cpucap-defs.h: $(src)/gen-cpucaps.awk $(src)/cpucaps FORCE
+$(kapi)/cpucaps.h: $(src)/gen-cpucaps.awk $(src)/cpucaps FORCE
 	$(call if_changed,gen_cpucaps)
-
-$(kapi)/sysreg-defs.h: $(src)/gen-sysreg.awk $(src)/sysreg FORCE
-	$(call if_changed,gen_sysreg)

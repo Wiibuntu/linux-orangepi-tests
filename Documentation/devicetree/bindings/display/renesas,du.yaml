@@ -40,7 +40,6 @@ properties:
       - renesas,du-r8a77990 # for R-Car E3 compatible DU
       - renesas,du-r8a77995 # for R-Car D3 compatible DU
       - renesas,du-r8a779a0 # for R-Car V3U compatible DU
-      - renesas,du-r8a779g0 # for R-Car V4H compatible DU
 
   reg:
     maxItems: 1
@@ -76,22 +75,18 @@ properties:
     unevaluatedProperties: false
 
   renesas,cmms:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    items:
-      maxItems: 1
+    $ref: "/schemas/types.yaml#/definitions/phandle-array"
     description:
       A list of phandles to the CMM instances present in the SoC, one for each
       available DU channel.
 
   renesas,vsps:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    items:
-      items:
-        - description: phandle to VSP instance that serves the DU channel
-        - description: Channel index identifying the LIF instance in that VSP
+    $ref: "/schemas/types.yaml#/definitions/phandle-array"
     description:
       A list of phandle and channel index tuples to the VSPs that handle the
-      memory interfaces for the DU channels.
+      memory interfaces for the DU channels. The phandle identifies the VSP
+      instance that serves the DU channel, and the channel index identifies
+      the LIF instance in that VSP.
 
 required:
   - compatible
@@ -110,6 +105,7 @@ allOf:
       properties:
         clocks:
           minItems: 1
+          maxItems: 3
           items:
             - description: Functional clock
             - description: DU_DOTCLKIN0 input clock
@@ -117,6 +113,7 @@ allOf:
 
         clock-names:
           minItems: 1
+          maxItems: 3
           items:
             - const: du.0
             - pattern: '^dclkin\.[01]$'
@@ -158,6 +155,7 @@ allOf:
       properties:
         clocks:
           minItems: 2
+          maxItems: 4
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -166,6 +164,7 @@ allOf:
 
         clock-names:
           minItems: 2
+          maxItems: 4
           items:
             - const: du.0
             - const: du.1
@@ -213,6 +212,7 @@ allOf:
       properties:
         clocks:
           minItems: 2
+          maxItems: 4
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -221,6 +221,7 @@ allOf:
 
         clock-names:
           minItems: 2
+          maxItems: 4
           items:
             - const: du.0
             - const: du.1
@@ -266,6 +267,7 @@ allOf:
       properties:
         clocks:
           minItems: 2
+          maxItems: 4
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -274,6 +276,7 @@ allOf:
 
         clock-names:
           minItems: 2
+          maxItems: 4
           items:
             - const: du.0
             - const: du.1
@@ -320,6 +323,7 @@ allOf:
       properties:
         clocks:
           minItems: 2
+          maxItems: 4
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -328,6 +332,7 @@ allOf:
 
         clock-names:
           minItems: 2
+          maxItems: 4
           items:
             - const: du.0
             - const: du.1
@@ -377,6 +382,7 @@ allOf:
       properties:
         clocks:
           minItems: 3
+          maxItems: 6
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -387,6 +393,7 @@ allOf:
 
         clock-names:
           minItems: 3
+          maxItems: 6
           items:
             - const: du.0
             - const: du.1
@@ -437,6 +444,7 @@ allOf:
       properties:
         clocks:
           minItems: 4
+          maxItems: 8
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -449,6 +457,7 @@ allOf:
 
         clock-names:
           minItems: 4
+          maxItems: 8
           items:
             - const: du.0
             - const: du.1
@@ -512,6 +521,7 @@ allOf:
       properties:
         clocks:
           minItems: 3
+          maxItems: 6
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -522,6 +532,7 @@ allOf:
 
         clock-names:
           minItems: 3
+          maxItems: 6
           items:
             - const: du.0
             - const: du.1
@@ -581,6 +592,7 @@ allOf:
       properties:
         clocks:
           minItems: 3
+          maxItems: 6
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -591,6 +603,7 @@ allOf:
 
         clock-names:
           minItems: 3
+          maxItems: 6
           items:
             - const: du.0
             - const: du.1
@@ -649,12 +662,14 @@ allOf:
       properties:
         clocks:
           minItems: 1
+          maxItems: 2
           items:
             - description: Functional clock for DU0
             - description: DU_DOTCLKIN0 input clock
 
         clock-names:
           minItems: 1
+          maxItems: 2
           items:
             - const: du.0
             - const: dclkin.0
@@ -704,6 +719,7 @@ allOf:
       properties:
         clocks:
           minItems: 2
+          maxItems: 4
           items:
             - description: Functional clock for DU0
             - description: Functional clock for DU1
@@ -712,6 +728,7 @@ allOf:
 
         clock-names:
           minItems: 2
+          maxItems: 4
           items:
             - const: du.0
             - const: du.1
@@ -763,7 +780,6 @@ allOf:
           contains:
             enum:
               - renesas,du-r8a779a0
-              - renesas,du-r8a779g0
     then:
       properties:
         clocks:
@@ -771,6 +787,7 @@ allOf:
             - description: Functional clock
 
         clock-names:
+          maxItems: 1
           items:
             - const: du.0
 

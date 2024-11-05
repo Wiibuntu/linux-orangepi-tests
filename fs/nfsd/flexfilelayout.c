@@ -15,7 +15,6 @@
 
 #include "flexfilelayoutxdr.h"
 #include "pnfs.h"
-#include "vfs.h"
 
 #define NFSDDBG_FACILITY	NFSDDBG_PNFS
 
@@ -118,7 +117,7 @@ nfsd4_ff_proc_getdeviceinfo(struct super_block *sb, struct svc_rqst *rqstp,
 
 	da->netaddr.addr_len =
 		snprintf(da->netaddr.addr, FF_ADDR_LEN + 1,
-			 "%s.%d.%d", addr, port >> 8, port & 0xff);
+			 "%s.%hhu.%hhu", addr, port >> 8, port & 0xff);
 
 	da->tightly_coupled = false;
 

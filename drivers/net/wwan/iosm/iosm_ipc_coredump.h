@@ -14,6 +14,9 @@
 /* Max buffer allocated to receive coredump data */
 #define MAX_DATA_SIZE 0x00010000
 
+/* Max number of file entries */
+#define MAX_NOF_ENTRY 256
+
 /* Max length */
 #define MAX_SIZE_LEN 32
 
@@ -35,7 +38,7 @@ struct iosm_cd_list_entry {
  */
 struct iosm_cd_list {
 	__le32 num_entries;
-	struct iosm_cd_list_entry entry[];
+	struct iosm_cd_list_entry entry[MAX_NOF_ENTRY];
 } __packed;
 
 /**

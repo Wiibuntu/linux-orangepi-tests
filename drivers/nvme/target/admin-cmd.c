@@ -9,7 +9,7 @@
 #include <linux/part_stat.h>
 
 #include <generated/utsrelease.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include "nvmet.h"
 
 u32 nvmet_get_log_page_len(struct nvme_command *cmd)
@@ -164,31 +164,26 @@ out:
 
 static void nvmet_get_cmd_effects_nvm(struct nvme_effects_log *log)
 {
-	log->acs[nvme_admin_get_log_page] =
-	log->acs[nvme_admin_identify] =
-	log->acs[nvme_admin_abort_cmd] =
-	log->acs[nvme_admin_set_features] =
-	log->acs[nvme_admin_get_features] =
-	log->acs[nvme_admin_async_event] =
-	log->acs[nvme_admin_keep_alive] =
-		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP);
+	log->acs[nvme_admin_get_log_page]	= cpu_to_le32(1 << 0);
+	log->acs[nvme_admin_identify]		= cpu_to_le32(1 << 0);
+	log->acs[nvme_admin_abort_cmd]		= cpu_to_le32(1 << 0);
+	log->acs[nvme_admin_set_features]	= cpu_to_le32(1 << 0);
+	log->acs[nvme_admin_get_features]	= cpu_to_le32(1 << 0);
+	log->acs[nvme_admin_async_event]	= cpu_to_le32(1 << 0);
+	log->acs[nvme_admin_keep_alive]		= cpu_to_le32(1 << 0);
 
-	log->iocs[nvme_cmd_read] =
-	log->iocs[nvme_cmd_flush] =
-	log->iocs[nvme_cmd_dsm]	=
-		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP);
-	log->iocs[nvme_cmd_write] =
-	log->iocs[nvme_cmd_write_zeroes] =
-		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP | NVME_CMD_EFFECTS_LBCC);
+	log->iocs[nvme_cmd_read]		= cpu_to_le32(1 << 0);
+	log->iocs[nvme_cmd_write]		= cpu_to_le32(1 << 0);
+	log->iocs[nvme_cmd_flush]		= cpu_to_le32(1 << 0);
+	log->iocs[nvme_cmd_dsm]			= cpu_to_le32(1 << 0);
+	log->iocs[nvme_cmd_write_zeroes]	= cpu_to_le32(1 << 0);
 }
 
 static void nvmet_get_cmd_effects_zns(struct nvme_effects_log *log)
 {
-	log->iocs[nvme_cmd_zone_append] =
-	log->iocs[nvme_cmd_zone_mgmt_send] =
-		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP | NVME_CMD_EFFECTS_LBCC);
-	log->iocs[nvme_cmd_zone_mgmt_recv] =
-		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP);
+	log->iocs[nvme_cmd_zone_append]		= cpu_to_le32(1 << 0);
+	log->iocs[nvme_cmd_zone_mgmt_send]	= cpu_to_le32(1 << 0);
+	log->iocs[nvme_cmd_zone_mgmt_recv]	= cpu_to_le32(1 << 0);
 }
 
 static void nvmet_execute_get_log_cmd_effects_ns(struct nvmet_req *req)
@@ -344,7 +339,7 @@ static void nvmet_execute_get_log_page(struct nvmet_req *req)
 	pr_debug("unhandled lid %d on qid %d\n",
 	       req->cmd->get_log_page.lid, req->sq->qid);
 	req->error_loc = offsetof(struct nvme_get_log_page_command, lid);
-	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
+	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_SC_DNR);
 }
 
 static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
@@ -375,9 +370,7 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	memcpy_and_pad(id->mn, sizeof(id->mn), subsys->model_number,
 		       strlen(subsys->model_number), ' ');
 	memcpy_and_pad(id->fr, sizeof(id->fr),
-		       subsys->firmware_rev, strlen(subsys->firmware_rev), ' ');
-
-	put_unaligned_le24(subsys->ieee_oui, id->ieee);
+		       UTS_RELEASE, strlen(UTS_RELEASE), ' ');
 
 	id->rab = 6;
 
@@ -385,6 +378,11 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 		id->cntrltype = NVME_CTRL_DISC;
 	else
 		id->cntrltype = NVME_CTRL_IO;
+
+	/*
+	 * XXX: figure out how we can assign a IEEE OUI, but until then
+	 * the safest is to leave it as zeroes.
+	 */
 
 	/* we support multiple ports, multiples hosts and ANA: */
 	id->cmic = NVME_CTRL_CMIC_MULTI_PORT | NVME_CTRL_CMIC_MULTI_CTRL |
@@ -428,7 +426,7 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	id->cqes = (0x4 << 4) | 0x4;
 
 	/* no enforcement soft-limit for maxcmd - pick arbitrary high value */
-	id->maxcmd = cpu_to_le16(NVMET_MAX_CMD(ctrl));
+	id->maxcmd = cpu_to_le16(NVMET_MAX_CMD);
 
 	id->nn = cpu_to_le32(NVMET_MAX_NAMESPACES);
 	id->mnan = cpu_to_le32(NVMET_MAX_NAMESPACES);
@@ -451,7 +449,7 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	if (req->port->inline_data_size)
 		id->sgls |= cpu_to_le32(1 << 20);
 
-	strscpy(id->subnqn, ctrl->subsys->subsysnqn, sizeof(id->subnqn));
+	strlcpy(id->subnqn, ctrl->subsys->subsysnqn, sizeof(id->subnqn));
 
 	/*
 	 * Max command capsule size is sqe + in-capsule data size.
@@ -496,7 +494,7 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 
 	if (le32_to_cpu(req->cmd->identify.nsid) == NVME_NSID_ALL) {
 		req->error_loc = offsetof(struct nvme_identify, nsid);
-		status = NVME_SC_INVALID_NS | NVME_STATUS_DNR;
+		status = NVME_SC_INVALID_NS | NVME_SC_DNR;
 		goto out;
 	}
 
@@ -513,11 +511,7 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 		goto done;
 	}
 
-	if (nvmet_ns_revalidate(req->ns)) {
-		mutex_lock(&req->ns->subsys->lock);
-		nvmet_ns_changed(req->ns->subsys, req->ns->nsid);
-		mutex_unlock(&req->ns->subsys->lock);
-	}
+	nvmet_ns_revalidate(req->ns);
 
 	/*
 	 * nuse = ncap = nsze isn't always true, but we have no way to find
@@ -566,7 +560,7 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 	}
 
 	if (req->ns->readonly)
-		id->nsattr |= NVME_NS_ATTR_RO;
+		id->nsattr |= (1 << 0);
 done:
 	if (!status)
 		status = nvmet_copy_to_sgl(req, 0, id, sizeof(*id));
@@ -586,16 +580,6 @@ static void nvmet_execute_identify_nslist(struct nvmet_req *req)
 	__le32 *list;
 	u16 status = 0;
 	int i = 0;
-
-	/*
-	 * NSID values 0xFFFFFFFE and NVME_NSID_ALL are invalid
-	 * See NVMe Base Specification, Active Namespace ID list (CNS 02h).
-	 */
-	if (min_nsid == 0xFFFFFFFE || min_nsid == NVME_NSID_ALL) {
-		req->error_loc = offsetof(struct nvme_identify, nsid);
-		status = NVME_SC_INVALID_NS | NVME_STATUS_DNR;
-		goto out;
-	}
 
 	list = kzalloc(buf_size, GFP_KERNEL);
 	if (!list) {
@@ -672,17 +656,27 @@ static void nvmet_execute_identify_desclist(struct nvmet_req *req)
 
 	if (sg_zero_buffer(req->sg, req->sg_cnt, NVME_IDENTIFY_DATA_SIZE - off,
 			off) != NVME_IDENTIFY_DATA_SIZE - off)
-		status = NVME_SC_INTERNAL | NVME_STATUS_DNR;
+		status = NVME_SC_INTERNAL | NVME_SC_DNR;
 
 out:
 	nvmet_req_complete(req, status);
 }
 
-static void nvmet_execute_identify_ctrl_nvm(struct nvmet_req *req)
+static bool nvmet_handle_identify_desclist(struct nvmet_req *req)
 {
-	/* Not supported: return zeroes */
-	nvmet_req_complete(req,
-		   nvmet_zero_sgl(req, 0, sizeof(struct nvme_id_ctrl_nvm)));
+	switch (req->cmd->identify.csi) {
+	case NVME_CSI_NVM:
+		nvmet_execute_identify_desclist(req);
+		return true;
+	case NVME_CSI_ZNS:
+		if (IS_ENABLED(CONFIG_BLK_DEV_ZONED)) {
+			nvmet_execute_identify_desclist(req);
+			return true;
+		}
+		return false;
+	default:
+		return false;
+	}
 }
 
 static void nvmet_execute_identify(struct nvmet_req *req)
@@ -692,49 +686,54 @@ static void nvmet_execute_identify(struct nvmet_req *req)
 
 	switch (req->cmd->identify.cns) {
 	case NVME_ID_CNS_NS:
-		nvmet_execute_identify_ns(req);
-		return;
-	case NVME_ID_CNS_CTRL:
-		nvmet_execute_identify_ctrl(req);
-		return;
-	case NVME_ID_CNS_NS_ACTIVE_LIST:
-		nvmet_execute_identify_nslist(req);
-		return;
-	case NVME_ID_CNS_NS_DESC_LIST:
-		nvmet_execute_identify_desclist(req);
-		return;
-	case NVME_ID_CNS_CS_NS:
 		switch (req->cmd->identify.csi) {
 		case NVME_CSI_NVM:
-			/* Not supported */
+			return nvmet_execute_identify_ns(req);
+		default:
 			break;
-		case NVME_CSI_ZNS:
-			if (IS_ENABLED(CONFIG_BLK_DEV_ZONED)) {
-				nvmet_execute_identify_ns_zns(req);
-				return;
+		}
+		break;
+	case NVME_ID_CNS_CS_NS:
+		if (IS_ENABLED(CONFIG_BLK_DEV_ZONED)) {
+			switch (req->cmd->identify.csi) {
+			case NVME_CSI_ZNS:
+				return nvmet_execute_identify_cns_cs_ns(req);
+			default:
+				break;
 			}
-			break;
+		}
+		break;
+	case NVME_ID_CNS_CTRL:
+		switch (req->cmd->identify.csi) {
+		case NVME_CSI_NVM:
+			return nvmet_execute_identify_ctrl(req);
 		}
 		break;
 	case NVME_ID_CNS_CS_CTRL:
+		if (IS_ENABLED(CONFIG_BLK_DEV_ZONED)) {
+			switch (req->cmd->identify.csi) {
+			case NVME_CSI_ZNS:
+				return nvmet_execute_identify_cns_cs_ctrl(req);
+			default:
+				break;
+			}
+		}
+		break;
+	case NVME_ID_CNS_NS_ACTIVE_LIST:
 		switch (req->cmd->identify.csi) {
 		case NVME_CSI_NVM:
-			nvmet_execute_identify_ctrl_nvm(req);
-			return;
-		case NVME_CSI_ZNS:
-			if (IS_ENABLED(CONFIG_BLK_DEV_ZONED)) {
-				nvmet_execute_identify_ctrl_zns(req);
-				return;
-			}
+			return nvmet_execute_identify_nslist(req);
+		default:
 			break;
 		}
 		break;
+	case NVME_ID_CNS_NS_DESC_LIST:
+		if (nvmet_handle_identify_desclist(req) == true)
+			return;
+		break;
 	}
 
-	pr_debug("unhandled identify cns %d on qid %d\n",
-	       req->cmd->identify.cns, req->sq->qid);
-	req->error_loc = offsetof(struct nvme_identify, cns);
-	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
+	nvmet_req_cns_error_complete(req);
 }
 
 /*
@@ -817,7 +816,7 @@ u16 nvmet_set_feat_async_event(struct nvmet_req *req, u32 mask)
 
 	if (val32 & ~mask) {
 		req->error_loc = offsetof(struct nvme_common_command, cdw11);
-		return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+		return NVME_SC_INVALID_FIELD | NVME_SC_DNR;
 	}
 
 	WRITE_ONCE(req->sq->ctrl->aen_enabled, val32);
@@ -835,7 +834,7 @@ void nvmet_execute_set_features(struct nvmet_req *req)
 	u16 nsqr;
 	u16 ncqr;
 
-	if (!nvmet_check_data_len_lte(req, 0))
+	if (!nvmet_check_transfer_len(req, 0))
 		return;
 
 	switch (cdw10 & 0xff) {
@@ -843,7 +842,7 @@ void nvmet_execute_set_features(struct nvmet_req *req)
 		ncqr = (cdw11 >> 16) & 0xffff;
 		nsqr = cdw11 & 0xffff;
 		if (ncqr == 0xffff || nsqr == 0xffff) {
-			status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+			status = NVME_SC_INVALID_FIELD | NVME_SC_DNR;
 			break;
 		}
 		nvmet_set_result(req,
@@ -856,14 +855,14 @@ void nvmet_execute_set_features(struct nvmet_req *req)
 		status = nvmet_set_feat_async_event(req, NVMET_AEN_CFG_ALL);
 		break;
 	case NVME_FEAT_HOST_ID:
-		status = NVME_SC_CMD_SEQ_ERROR | NVME_STATUS_DNR;
+		status = NVME_SC_CMD_SEQ_ERROR | NVME_SC_DNR;
 		break;
 	case NVME_FEAT_WRITE_PROTECT:
 		status = nvmet_set_feat_write_protect(req);
 		break;
 	default:
 		req->error_loc = offsetof(struct nvme_common_command, cdw10);
-		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+		status = NVME_SC_INVALID_FIELD | NVME_SC_DNR;
 		break;
 	}
 
@@ -949,7 +948,7 @@ void nvmet_execute_get_features(struct nvmet_req *req)
 		if (!(req->cmd->common.cdw11 & cpu_to_le32(1 << 0))) {
 			req->error_loc =
 				offsetof(struct nvme_common_command, cdw11);
-			status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+			status = NVME_SC_INVALID_FIELD | NVME_SC_DNR;
 			break;
 		}
 
@@ -962,7 +961,7 @@ void nvmet_execute_get_features(struct nvmet_req *req)
 	default:
 		req->error_loc =
 			offsetof(struct nvme_common_command, cdw10);
-		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+		status = NVME_SC_INVALID_FIELD | NVME_SC_DNR;
 		break;
 	}
 
@@ -979,13 +978,13 @@ void nvmet_execute_async_event(struct nvmet_req *req)
 	mutex_lock(&ctrl->lock);
 	if (ctrl->nr_async_event_cmds >= NVMET_ASYNC_EVENTS) {
 		mutex_unlock(&ctrl->lock);
-		nvmet_req_complete(req, NVME_SC_ASYNC_LIMIT | NVME_STATUS_DNR);
+		nvmet_req_complete(req, NVME_SC_ASYNC_LIMIT | NVME_SC_DNR);
 		return;
 	}
 	ctrl->async_event_cmds[ctrl->nr_async_event_cmds++] = req;
 	mutex_unlock(&ctrl->lock);
 
-	queue_work(nvmet_wq, &ctrl->async_event_work);
+	schedule_work(&ctrl->async_event_work);
 }
 
 void nvmet_execute_keep_alive(struct nvmet_req *req)
@@ -1014,7 +1013,7 @@ u16 nvmet_parse_admin_cmd(struct nvmet_req *req)
 	u16 ret;
 
 	if (nvme_is_fabrics(cmd))
-		return nvmet_parse_fabrics_admin_cmd(req);
+		return nvmet_parse_fabrics_cmd(req);
 	if (nvmet_is_disc_subsys(nvmet_req_subsys(req)))
 		return nvmet_parse_discovery_cmd(req);
 

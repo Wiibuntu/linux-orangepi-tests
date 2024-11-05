@@ -150,7 +150,16 @@ static inline resource_size_t p2_size(struct pci_dev *dev)
 
 static int find_cxl_vsec(struct pci_dev *dev)
 {
-	return pci_find_vsec_capability(dev, PCI_VENDOR_ID_IBM, CXL_PCI_VSEC_ID);
+	int vsec = 0;
+	u16 val;
+
+	while ((vsec = pci_find_next_ext_capability(dev, vsec, PCI_EXT_CAP_ID_VNDR))) {
+		pci_read_config_word(dev, vsec + 0x4, &val);
+		if (val == CXL_PCI_VSEC_ID)
+			return vsec;
+	}
+	return 0;
+
 }
 
 static void dump_cxl_config_space(struct pci_dev *dev)
@@ -363,22 +372,21 @@ int cxl_calc_capp_routing(struct pci_dev *dev, u64 *chipid,
 {
 	int rc;
 	struct device_node *np;
-	u32 id;
+	const __be32 *prop;
 
 	if (!(np = pnv_pci_get_phb_node(dev)))
 		return -ENODEV;
 
-	while (np && of_property_read_u32(np, "ibm,chip-id", &id))
+	while (np && !(prop = of_get_property(np, "ibm,chip-id", NULL)))
 		np = of_get_next_parent(np);
 	if (!np)
 		return -ENODEV;
 
-	*chipid = id;
+	*chipid = be32_to_cpup(prop);
 
 	rc = get_phb_index(np, phb_index);
 	if (rc) {
 		pr_err("cxl: invalid phb index\n");
-		of_node_put(np);
 		return rc;
 	}
 
@@ -398,26 +406,32 @@ static DEFINE_MUTEX(indications_mutex);
 static int get_phb_indications(struct pci_dev *dev, u64 *capiind, u64 *asnind,
 			       u64 *nbwind)
 {
-	static u32 val[3];
+	static u64 nbw, asn, capi = 0;
 	struct device_node *np;
+	const __be32 *prop;
 
 	mutex_lock(&indications_mutex);
-	if (!val[0]) {
+	if (!capi) {
 		if (!(np = pnv_pci_get_phb_node(dev))) {
 			mutex_unlock(&indications_mutex);
 			return -ENODEV;
 		}
 
-		if (of_property_read_u32_array(np, "ibm,phb-indications", val, 3)) {
-			val[2] = 0x0300UL; /* legacy values */
-			val[1] = 0x0400UL;
-			val[0] = 0x0200UL;
+		prop = of_get_property(np, "ibm,phb-indications", NULL);
+		if (!prop) {
+			nbw = 0x0300UL; /* legacy values */
+			asn = 0x0400UL;
+			capi = 0x0200UL;
+		} else {
+			nbw = (u64)be32_to_cpu(prop[2]);
+			asn = (u64)be32_to_cpu(prop[1]);
+			capi = (u64)be32_to_cpu(prop[0]);
 		}
 		of_node_put(np);
 	}
-	*capiind = val[0];
-	*asnind = val[1];
-	*nbwind = val[2];
+	*capiind = capi;
+	*asnind = asn;
+	*nbwind = nbw;
 	mutex_unlock(&indications_mutex);
 	return 0;
 }
@@ -599,7 +613,7 @@ static void cxl_setup_psl_timebase(struct cxl *adapter, struct pci_dev *dev)
 
 	/* Do not fail when CAPP timebase sync is not supported by OPAL */
 	of_node_get(np);
-	if (!of_property_present(np, "ibm,capp-timebase-sync")) {
+	if (! of_get_property(np, "ibm,capp-timebase-sync", NULL)) {
 		of_node_put(np);
 		dev_info(&dev->dev, "PSL timebase inactive: OPAL support missing\n");
 		return;
@@ -1150,10 +1164,10 @@ static int pci_init_afu(struct cxl *adapter, int slice, struct pci_dev *dev)
 	 * if it returns an error!
 	 */
 	if ((rc = cxl_register_afu(afu)))
-		goto err_put_dev;
+		goto err_put1;
 
 	if ((rc = cxl_sysfs_afu_add(afu)))
-		goto err_del_dev;
+		goto err_put1;
 
 	adapter->afu[afu->slice] = afu;
 
@@ -1162,12 +1176,10 @@ static int pci_init_afu(struct cxl *adapter, int slice, struct pci_dev *dev)
 
 	return 0;
 
-err_del_dev:
-	device_del(&afu->dev);
-err_put_dev:
+err_put1:
 	pci_deconfigure_afu(afu);
 	cxl_debugfs_afu_remove(afu);
-	put_device(&afu->dev);
+	device_unregister(&afu->dev);
 	return rc;
 
 err_free_native:
@@ -1655,25 +1667,23 @@ static struct cxl *cxl_pci_init_adapter(struct pci_dev *dev)
 	 * even if it returns an error!
 	 */
 	if ((rc = cxl_register_adapter(adapter)))
-		goto err_put_dev;
+		goto err_put1;
 
 	if ((rc = cxl_sysfs_adapter_add(adapter)))
-		goto err_del_dev;
+		goto err_put1;
 
 	/* Release the context lock as adapter is configured */
 	cxl_adapter_context_unlock(adapter);
 
 	return adapter;
 
-err_del_dev:
-	device_del(&adapter->dev);
-err_put_dev:
+err_put1:
 	/* This should mirror cxl_remove_adapter, except without the
 	 * sysfs parts
 	 */
 	cxl_debugfs_adapter_remove(adapter);
 	cxl_deconfigure_adapter(adapter);
-	put_device(&adapter->dev);
+	device_unregister(&adapter->dev);
 	return ERR_PTR(rc);
 
 err_release:

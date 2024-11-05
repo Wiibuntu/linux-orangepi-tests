@@ -9,16 +9,15 @@
 #define _MISC_CGROUP_H_
 
 /**
- * enum misc_res_type - Types of misc cgroup entries supported by the host.
+ * Types of misc cgroup entries supported by the host.
  */
 enum misc_res_type {
 #ifdef CONFIG_KVM_AMD_SEV
-	/** @MISC_CG_RES_SEV: AMD SEV ASIDs resource */
+	/* AMD SEV ASIDs resource */
 	MISC_CG_RES_SEV,
-	/** @MISC_CG_RES_SEV_ES: AMD SEV-ES ASIDs resource */
+	/* AMD SEV-ES ASIDs resource */
 	MISC_CG_RES_SEV_ES,
 #endif
-	/** @MISC_CG_RES_TYPES: count of enum misc_res_type constants */
 	MISC_CG_RES_TYPES
 };
 
@@ -31,22 +30,18 @@ struct misc_cg;
 /**
  * struct misc_res: Per cgroup per misc type resource
  * @max: Maximum limit on the resource.
- * @watermark: Historical maximum usage of the resource.
  * @usage: Current usage of the resource.
- * @events: Number of times, the resource limit exceeded.
+ * @failed: True if charged failed for the resource in a cgroup.
  */
 struct misc_res {
-	u64 max;
-	atomic64_t watermark;
-	atomic64_t usage;
-	atomic64_t events;
-	atomic64_t events_local;
+	unsigned long max;
+	atomic_long_t usage;
+	atomic_long_t events;
 };
 
 /**
  * struct misc_cg - Miscellaneous controller's cgroup structure.
  * @css: cgroup subsys state object.
- * @events_file: Handle for the misc resources events file.
  * @res: Array of misc resources usage in the cgroup.
  */
 struct misc_cg {
@@ -54,16 +49,16 @@ struct misc_cg {
 
 	/* misc.events */
 	struct cgroup_file events_file;
-	/* misc.events.local */
-	struct cgroup_file events_local_file;
 
 	struct misc_res res[MISC_CG_RES_TYPES];
 };
 
-u64 misc_cg_res_total_usage(enum misc_res_type type);
-int misc_cg_set_capacity(enum misc_res_type type, u64 capacity);
-int misc_cg_try_charge(enum misc_res_type type, struct misc_cg *cg, u64 amount);
-void misc_cg_uncharge(enum misc_res_type type, struct misc_cg *cg, u64 amount);
+unsigned long misc_cg_res_total_usage(enum misc_res_type type);
+int misc_cg_set_capacity(enum misc_res_type type, unsigned long capacity);
+int misc_cg_try_charge(enum misc_res_type type, struct misc_cg *cg,
+		       unsigned long amount);
+void misc_cg_uncharge(enum misc_res_type type, struct misc_cg *cg,
+		      unsigned long amount);
 
 /**
  * css_misc() - Get misc cgroup from the css.
@@ -104,26 +99,27 @@ static inline void put_misc_cg(struct misc_cg *cg)
 
 #else /* !CONFIG_CGROUP_MISC */
 
-static inline u64 misc_cg_res_total_usage(enum misc_res_type type)
+static inline unsigned long misc_cg_res_total_usage(enum misc_res_type type)
 {
 	return 0;
 }
 
-static inline int misc_cg_set_capacity(enum misc_res_type type, u64 capacity)
+static inline int misc_cg_set_capacity(enum misc_res_type type,
+				       unsigned long capacity)
 {
 	return 0;
 }
 
 static inline int misc_cg_try_charge(enum misc_res_type type,
 				     struct misc_cg *cg,
-				     u64 amount)
+				     unsigned long amount)
 {
 	return 0;
 }
 
 static inline void misc_cg_uncharge(enum misc_res_type type,
 				    struct misc_cg *cg,
-				    u64 amount)
+				    unsigned long amount)
 {
 }
 

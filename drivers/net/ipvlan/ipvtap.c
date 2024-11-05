@@ -30,14 +30,15 @@
 static dev_t ipvtap_major;
 static struct cdev ipvtap_cdev;
 
-static const void *ipvtap_net_namespace(const struct device *d)
+static const void *ipvtap_net_namespace(struct device *d)
 {
-	const struct net_device *dev = to_net_dev(d->parent);
+	struct net_device *dev = to_net_dev(d->parent);
 	return dev_net(dev);
 }
 
 static struct class ipvtap_class = {
 	 .name = "ipvtap",
+	 .owner = THIS_MODULE,
 	 .ns_type = &net_ns_type_operations,
 	 .namespace = ipvtap_net_namespace,
 };
@@ -193,7 +194,7 @@ static struct notifier_block ipvtap_notifier_block __read_mostly = {
 	.notifier_call	= ipvtap_device_event,
 };
 
-static int __init ipvtap_init(void)
+static int ipvtap_init(void)
 {
 	int err;
 
@@ -227,7 +228,7 @@ out1:
 }
 module_init(ipvtap_init);
 
-static void __exit ipvtap_exit(void)
+static void ipvtap_exit(void)
 {
 	rtnl_link_unregister(&ipvtap_link_ops);
 	unregister_netdevice_notifier(&ipvtap_notifier_block);
@@ -237,5 +238,4 @@ static void __exit ipvtap_exit(void)
 module_exit(ipvtap_exit);
 MODULE_ALIAS_RTNL_LINK("ipvtap");
 MODULE_AUTHOR("Sainath Grandhi <sainath.grandhi@intel.com>");
-MODULE_DESCRIPTION("IP-VLAN based tap driver");
 MODULE_LICENSE("GPL");

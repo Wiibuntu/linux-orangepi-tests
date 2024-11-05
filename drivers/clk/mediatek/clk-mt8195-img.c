@@ -85,17 +85,12 @@ static const struct of_device_id of_match_clk_mt8195_img[] = {
 		/* sentinel */
 	}
 };
-MODULE_DEVICE_TABLE(of, of_match_clk_mt8195_img);
 
 static struct platform_driver clk_mt8195_img_drv = {
 	.probe = mtk_clk_simple_probe,
-	.remove = mtk_clk_simple_remove,
 	.driver = {
 		.name = "clk-mt8195-img",
 		.of_match_table = of_match_clk_mt8195_img,
 	},
 };
-module_platform_driver(clk_mt8195_img_drv);
-
-MODULE_DESCRIPTION("MediaTek MT8195 imgsys clocks driver");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(clk_mt8195_img_drv);

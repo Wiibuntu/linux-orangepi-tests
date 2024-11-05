@@ -80,7 +80,7 @@ static int go7007_load_encoder(struct go7007 *go)
 	const struct firmware *fw_entry;
 	char fw_name[] = "go7007/go7007fw.bin";
 	void *bounce;
-	int fw_len;
+	int fw_len, rv = 0;
 	u16 intr_val, intr_data;
 
 	if (go->boot_fw == NULL) {
@@ -109,11 +109,9 @@ static int go7007_load_encoder(struct go7007 *go)
 	    go7007_read_interrupt(go, &intr_val, &intr_data) < 0 ||
 			(intr_val & ~0x1) != 0x5a5a) {
 		v4l2_err(go, "error transferring firmware\n");
-		kfree(go->boot_fw);
-		go->boot_fw = NULL;
-		return -1;
+		rv = -1;
 	}
-	return 0;
+	return rv;
 }
 
 MODULE_FIRMWARE("go7007/go7007fw.bin");
@@ -518,7 +516,7 @@ void go7007_parse_video_stream(struct go7007 *go, u8 *buf, int length)
 		if (vb && vb->vb.vb2_buf.planes[0].bytesused >=
 				GO7007_BUF_SIZE - 3) {
 			v4l2_info(&go->v4l2_dev, "dropping oversized frame\n");
-			vb2_set_plane_payload(&vb->vb.vb2_buf, 0, 0);
+			vb->vb.vb2_buf.planes[0].bytesused = 0;
 			vb->frame_offset = 0;
 			vb->modet_active = 0;
 			vb = go->active_buf = NULL;
@@ -736,5 +734,4 @@ void go7007_update_board(struct go7007 *go)
 }
 EXPORT_SYMBOL(go7007_update_board);
 
-MODULE_DESCRIPTION("WIS GO7007 MPEG encoder support");
 MODULE_LICENSE("GPL v2");

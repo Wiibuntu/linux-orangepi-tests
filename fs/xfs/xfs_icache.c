@@ -23,8 +23,6 @@
 #include "xfs_reflink.h"
 #include "xfs_ialloc.h"
 #include "xfs_ag.h"
-#include "xfs_log_priv.h"
-#include "xfs_health.h"
 
 #include <linux/iversion.h>
 
@@ -65,18 +63,6 @@ static int xfs_icwalk_ag(struct xfs_perag *pag,
 					 XFS_ICWALK_FLAG_RECLAIM_SICK | \
 					 XFS_ICWALK_FLAG_UNION)
 
-/* Marks for the perag xarray */
-#define XFS_PERAG_RECLAIM_MARK	XA_MARK_0
-#define XFS_PERAG_BLOCKGC_MARK	XA_MARK_1
-
-static inline xa_mark_t ici_tag_to_mark(unsigned int tag)
-{
-	if (tag == XFS_ICI_RECLAIM_TAG)
-		return XFS_PERAG_RECLAIM_MARK;
-	ASSERT(tag == XFS_ICI_BLOCKGC_TAG);
-	return XFS_PERAG_BLOCKGC_MARK;
-}
-
 /*
  * Allocate and initialise an xfs_inode.
  */
@@ -91,17 +77,16 @@ xfs_inode_alloc(
 	 * XXX: If this didn't occur in transactions, we could drop GFP_NOFAIL
 	 * and return NULL here on ENOMEM.
 	 */
-	ip = alloc_inode_sb(mp->m_super, xfs_inode_cache, GFP_KERNEL | __GFP_NOFAIL);
+	ip = kmem_cache_alloc(xfs_inode_cache, GFP_KERNEL | __GFP_NOFAIL);
 
 	if (inode_init_always(mp->m_super, VFS_I(ip))) {
 		kmem_cache_free(xfs_inode_cache, ip);
 		return NULL;
 	}
 
-	/* VFS doesn't initialise i_mode! */
+	/* VFS doesn't initialise i_mode or i_state! */
 	VFS_I(ip)->i_mode = 0;
-	mapping_set_folio_min_order(VFS_I(ip)->i_mapping,
-				    M_IGEO(mp)->min_folio_order);
+	VFS_I(ip)->i_state = 0;
 
 	XFS_STATS_INC(mp, vn_active);
 	ASSERT(atomic_read(&ip->i_pincount) == 0);
@@ -111,9 +96,8 @@ xfs_inode_alloc(
 	ip->i_ino = ino;
 	ip->i_mount = mp;
 	memset(&ip->i_imap, 0, sizeof(struct xfs_imap));
+	ip->i_afp = NULL;
 	ip->i_cowfp = NULL;
-	memset(&ip->i_af, 0, sizeof(ip->i_af));
-	ip->i_af.if_format = XFS_DINODE_FMT_EXTENTS;
 	memset(&ip->i_df, 0, sizeof(ip->i_df));
 	ip->i_flags = 0;
 	ip->i_delayed_blks = 0;
@@ -125,8 +109,6 @@ xfs_inode_alloc(
 	INIT_WORK(&ip->i_ioend_work, xfs_end_io);
 	INIT_LIST_HEAD(&ip->i_ioend_list);
 	spin_lock_init(&ip->i_ioend_lock);
-	ip->i_next_unlinked = NULLAGINO;
-	ip->i_prev_unlinked = 0;
 
 	return ip;
 }
@@ -146,8 +128,10 @@ xfs_inode_free_callback(
 		break;
 	}
 
-	xfs_ifork_zap_attr(ip);
-
+	if (ip->i_afp) {
+		xfs_idestroy_fork(ip->i_afp);
+		kmem_cache_free(xfs_ifork_cache, ip->i_afp);
+	}
 	if (ip->i_cowfp) {
 		xfs_idestroy_fork(ip->i_cowfp);
 		kmem_cache_free(xfs_ifork_cache, ip->i_cowfp);
@@ -204,7 +188,7 @@ xfs_reclaim_work_queue(
 {
 
 	rcu_read_lock();
-	if (xa_marked(&mp->m_perags, XFS_PERAG_RECLAIM_MARK)) {
+	if (radix_tree_tagged(&mp->m_perag_tree, XFS_ICI_RECLAIM_TAG)) {
 		queue_delayed_work(mp->m_reclaim_workqueue, &mp->m_reclaim_work,
 			msecs_to_jiffies(xfs_syncd_centisecs / 6 * 10));
 	}
@@ -254,7 +238,9 @@ xfs_perag_set_inode_tag(
 		return;
 
 	/* propagate the tag up into the perag radix tree */
-	xa_set_mark(&mp->m_perags, pag->pag_agno, ici_tag_to_mark(tag));
+	spin_lock(&mp->m_perag_lock);
+	radix_tree_tag_set(&mp->m_perag_tree, pag->pag_agno, tag);
+	spin_unlock(&mp->m_perag_lock);
 
 	/* start background work */
 	switch (tag) {
@@ -266,7 +252,7 @@ xfs_perag_set_inode_tag(
 		break;
 	}
 
-	trace_xfs_perag_set_inode_tag(pag, _RET_IP_);
+	trace_xfs_perag_set_inode_tag(mp, pag->pag_agno, tag, _RET_IP_);
 }
 
 /* Clear a tag on both the AG incore inode tree and the AG radix tree. */
@@ -296,36 +282,11 @@ xfs_perag_clear_inode_tag(
 		return;
 
 	/* clear the tag from the perag radix tree */
-	xa_clear_mark(&mp->m_perags, pag->pag_agno, ici_tag_to_mark(tag));
+	spin_lock(&mp->m_perag_lock);
+	radix_tree_tag_clear(&mp->m_perag_tree, pag->pag_agno, tag);
+	spin_unlock(&mp->m_perag_lock);
 
-	trace_xfs_perag_clear_inode_tag(pag, _RET_IP_);
-}
-
-/*
- * Find the next AG after @pag, or the first AG if @pag is NULL.
- */
-static struct xfs_perag *
-xfs_perag_grab_next_tag(
-	struct xfs_mount	*mp,
-	struct xfs_perag	*pag,
-	int			tag)
-{
-	unsigned long		index = 0;
-
-	if (pag) {
-		index = pag->pag_agno + 1;
-		xfs_perag_rele(pag);
-	}
-
-	rcu_read_lock();
-	pag = xa_find(&mp->m_perags, &index, ULONG_MAX, ici_tag_to_mark(tag));
-	if (pag) {
-		trace_xfs_perag_grab_next_tag(pag, _RET_IP_);
-		if (!atomic_inc_not_zero(&pag->pag_active_ref))
-			pag = NULL;
-	}
-	rcu_read_unlock();
-	return pag;
+	trace_xfs_perag_clear_inode_tag(mp, pag->pag_agno, tag, _RET_IP_);
 }
 
 /*
@@ -349,7 +310,6 @@ xfs_reinit_inode(
 	dev_t			dev = inode->i_rdev;
 	kuid_t			uid = inode->i_uid;
 	kgid_t			gid = inode->i_gid;
-	unsigned long		state = inode->i_state;
 
 	error = inode_init_always(mp->m_super, inode);
 
@@ -360,9 +320,6 @@ xfs_reinit_inode(
 	inode->i_rdev = dev;
 	inode->i_uid = uid;
 	inode->i_gid = gid;
-	inode->i_state = state;
-	mapping_set_folio_min_order(inode->i_mapping,
-				    M_IGEO(mp)->min_folio_order);
 	return error;
 }
 
@@ -381,9 +338,6 @@ xfs_iget_recycle(
 
 	trace_xfs_iget_recycle(ip);
 
-	if (!xfs_ilock_nowait(ip, XFS_ILOCK_EXCL))
-		return -EAGAIN;
-
 	/*
 	 * We need to make it look like the inode is being reclaimed to prevent
 	 * the actual reclaim workers from stomping over us while we recycle
@@ -397,7 +351,6 @@ xfs_iget_recycle(
 
 	ASSERT(!rwsem_is_locked(&inode->i_rwsem));
 	error = xfs_reinit_inode(mp, inode);
-	xfs_iunlock(ip, XFS_ILOCK_EXCL);
 	if (error) {
 		/*
 		 * Re-initializing the inode failed, and we are in deep
@@ -454,9 +407,6 @@ xfs_iget_check_free_state(
 			xfs_warn(ip->i_mount,
 "Corruption detected! Free inode 0x%llx not marked free! (mode 0x%x)",
 				ip->i_ino, VFS_I(ip)->i_mode);
-			xfs_agno_mark_sick(ip->i_mount,
-					XFS_INO_TO_AGNO(ip->i_mount, ip->i_ino),
-					XFS_SICK_AG_INOBT);
 			return -EFSCORRUPTED;
 		}
 
@@ -464,9 +414,6 @@ xfs_iget_check_free_state(
 			xfs_warn(ip->i_mount,
 "Corruption detected! Free inode 0x%llx has blocks allocated!",
 				ip->i_ino);
-			xfs_agno_mark_sick(ip->i_mount,
-					XFS_INO_TO_AGNO(ip->i_mount, ip->i_ino),
-					XFS_SICK_AG_INOBT);
 			return -EFSCORRUPTED;
 		}
 		return 0;
@@ -480,44 +427,18 @@ xfs_iget_check_free_state(
 }
 
 /* Make all pending inactivation work start immediately. */
-static bool
+static void
 xfs_inodegc_queue_all(
 	struct xfs_mount	*mp)
 {
 	struct xfs_inodegc	*gc;
 	int			cpu;
-	bool			ret = false;
 
-	for_each_cpu(cpu, &mp->m_inodegc_cpumask) {
+	for_each_online_cpu(cpu) {
 		gc = per_cpu_ptr(mp->m_inodegc, cpu);
-		if (!llist_empty(&gc->list)) {
-			mod_delayed_work_on(cpu, mp->m_inodegc_wq, &gc->work, 0);
-			ret = true;
-		}
+		if (!llist_empty(&gc->list))
+			queue_work_on(cpu, mp->m_inodegc_wq, &gc->work);
 	}
-
-	return ret;
-}
-
-/* Wait for all queued work and collect errors */
-static int
-xfs_inodegc_wait_all(
-	struct xfs_mount	*mp)
-{
-	int			cpu;
-	int			error = 0;
-
-	flush_workqueue(mp->m_inodegc_wq);
-	for_each_cpu(cpu, &mp->m_inodegc_cpumask) {
-		struct xfs_inodegc	*gc;
-
-		gc = per_cpu_ptr(mp->m_inodegc, cpu);
-		if (gc->error && !error)
-			error = gc->error;
-		gc->error = 0;
-	}
-
-	return error;
 }
 
 /*
@@ -593,8 +514,6 @@ xfs_iget_cache_hit(
 	if (ip->i_flags & XFS_IRECLAIMABLE) {
 		/* Drops i_flags_lock and RCU read lock. */
 		error = xfs_iget_recycle(pag, ip);
-		if (error == -EAGAIN)
-			goto out_skip;
 		if (error)
 			return error;
 	} else {
@@ -651,12 +570,13 @@ xfs_iget_cache_miss(
 	struct xfs_inode	*ip;
 	int			error;
 	xfs_agino_t		agino = XFS_INO_TO_AGINO(mp, ino);
+	int			iflags;
 
 	ip = xfs_inode_alloc(mp, ino);
 	if (!ip)
 		return -ENOMEM;
 
-	error = xfs_imap(pag, tp, ip->i_ino, &ip->i_imap, flags);
+	error = xfs_imap(mp, tp, ip->i_ino, &ip->i_imap, flags);
 	if (error)
 		goto out_destroy;
 
@@ -672,7 +592,7 @@ xfs_iget_cache_miss(
 	 */
 	if (xfs_has_v3inodes(mp) &&
 	    (flags & XFS_IGET_CREATE) && !xfs_has_ikeep(mp)) {
-		VFS_I(ip)->i_generation = get_random_u32();
+		VFS_I(ip)->i_generation = prandom_u32();
 	} else {
 		struct xfs_buf		*bp;
 
@@ -684,8 +604,6 @@ xfs_iget_cache_miss(
 				xfs_buf_offset(bp, ip->i_imap.im_boffset));
 		if (!error)
 			xfs_buf_set_ref(bp, XFS_INO_REF);
-		else
-			xfs_inode_mark_sick(ip, XFS_SICK_INO_CORE);
 		xfs_trans_brelse(tp, bp);
 
 		if (error)
@@ -705,9 +623,10 @@ xfs_iget_cache_miss(
 	/*
 	 * Preload the radix tree so we can insert safely under the
 	 * write spinlock. Note that we cannot sleep inside the preload
-	 * region.
+	 * region. Since we can be called from transaction context, don't
+	 * recurse into the file system.
 	 */
-	if (radix_tree_preload(GFP_KERNEL | __GFP_NOLOCKDEP)) {
+	if (radix_tree_preload(GFP_NOFS)) {
 		error = -EAGAIN;
 		goto out_destroy;
 	}
@@ -730,12 +649,13 @@ xfs_iget_cache_miss(
 	 * memory barrier that ensures this detection works correctly at lookup
 	 * time.
 	 */
+	iflags = XFS_INEW;
 	if (flags & XFS_IGET_DONTCACHE)
 		d_mark_dontcache(VFS_I(ip));
 	ip->i_udquot = NULL;
 	ip->i_gdquot = NULL;
 	ip->i_pdquot = NULL;
-	xfs_iflags_set(ip, XFS_INEW);
+	xfs_iflags_set(ip, iflags);
 
 	/* insert the new inode */
 	spin_lock(&pag->pag_ici_lock);
@@ -792,7 +712,7 @@ xfs_iget(
 	ASSERT((lock_flags & (XFS_IOLOCK_EXCL | XFS_IOLOCK_SHARED)) == 0);
 
 	/* reject inode numbers outside existing AGs */
-	if (!xfs_verify_ino(mp, ino))
+	if (!ino || XFS_INO_TO_AGNO(mp, ino) >= mp->m_sb.sb_agcount)
 		return -EINVAL;
 
 	XFS_STATS_INC(mp, xs_ig_attempts);
@@ -829,21 +749,57 @@ again:
 
 	/*
 	 * If we have a real type for an on-disk inode, we can setup the inode
-	 * now.	 If it's a new inode being created, xfs_init_new_inode will
-	 * handle it.
+	 * now.	 If it's a new inode being created, xfs_ialloc will handle it.
 	 */
 	if (xfs_iflags_test(ip, XFS_INEW) && VFS_I(ip)->i_mode != 0)
 		xfs_setup_existing_inode(ip);
 	return 0;
 
 out_error_or_again:
-	if (!(flags & (XFS_IGET_INCORE | XFS_IGET_NORETRY)) &&
-	    error == -EAGAIN) {
+	if (!(flags & XFS_IGET_INCORE) && error == -EAGAIN) {
 		delay(1);
 		goto again;
 	}
 	xfs_perag_put(pag);
 	return error;
+}
+
+/*
+ * "Is this a cached inode that's also allocated?"
+ *
+ * Look up an inode by number in the given file system.  If the inode is
+ * in cache and isn't in purgatory, return 1 if the inode is allocated
+ * and 0 if it is not.  For all other cases (not in cache, being torn
+ * down, etc.), return a negative error code.
+ *
+ * The caller has to prevent inode allocation and freeing activity,
+ * presumably by locking the AGI buffer.   This is to ensure that an
+ * inode cannot transition from allocated to freed until the caller is
+ * ready to allow that.  If the inode is in an intermediate state (new,
+ * reclaimable, or being reclaimed), -EAGAIN will be returned; if the
+ * inode is not in the cache, -ENOENT will be returned.  The caller must
+ * deal with these scenarios appropriately.
+ *
+ * This is a specialized use case for the online scrubber; if you're
+ * reading this, you probably want xfs_iget.
+ */
+int
+xfs_icache_inode_is_allocated(
+	struct xfs_mount	*mp,
+	struct xfs_trans	*tp,
+	xfs_ino_t		ino,
+	bool			*inuse)
+{
+	struct xfs_inode	*ip;
+	int			error;
+
+	error = xfs_iget(mp, tp, ino, XFS_IGET_INCORE, 0, &ip);
+	if (error)
+		return error;
+
+	*inuse = !!(VFS_I(ip)->i_mode);
+	xfs_irele(ip);
+	return 0;
 }
 
 /*
@@ -914,16 +870,9 @@ xfs_reclaim_inode(
 	if (xfs_iflags_test_and_set(ip, XFS_IFLUSHING))
 		goto out_iunlock;
 
-	/*
-	 * Check for log shutdown because aborting the inode can move the log
-	 * tail and corrupt in memory state. This is fine if the log is shut
-	 * down, but if the log is still active and only the mount is shut down
-	 * then the in-memory log tail movement caused by the abort can be
-	 * incorrectly propagated to disk.
-	 */
-	if (xlog_is_shutdown(ip->i_mount->m_log)) {
+	if (xfs_is_shutdown(ip->i_mount)) {
 		xfs_iunpin_wait(ip);
-		xfs_iflush_shutdown_abort(ip);
+		xfs_iflush_abort(ip);
 		goto reclaim;
 	}
 	if (xfs_ipincount(ip))
@@ -952,7 +901,6 @@ reclaim:
 	ip->i_checked = 0;
 	spin_unlock(&ip->i_flags_lock);
 
-	ASSERT(!ip->i_itemp || ip->i_itemp->ili_item.li_buf == NULL);
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
 
 	XFS_STATS_INC(ip->i_mount, xs_ig_reclaims);
@@ -1014,7 +962,7 @@ xfs_reclaim_inodes(
 	if (xfs_want_reclaim_sick(mp))
 		icw.icw_flags |= XFS_ICWALK_FLAG_RECLAIM_SICK;
 
-	while (xa_marked(&mp->m_perags, XFS_PERAG_RECLAIM_MARK)) {
+	while (radix_tree_tagged(&mp->m_perag_tree, XFS_ICI_RECLAIM_TAG)) {
 		xfs_ail_push_all_sync(mp->m_ail);
 		xfs_icwalk(mp, XFS_ICWALK_RECLAIM, &icw);
 	}
@@ -1056,17 +1004,15 @@ long
 xfs_reclaim_inodes_count(
 	struct xfs_mount	*mp)
 {
-	XA_STATE		(xas, &mp->m_perags, 0);
-	long			reclaimable = 0;
 	struct xfs_perag	*pag;
+	xfs_agnumber_t		ag = 0;
+	long			reclaimable = 0;
 
-	rcu_read_lock();
-	xas_for_each_marked(&xas, pag, ULONG_MAX, XFS_PERAG_RECLAIM_MARK) {
-		trace_xfs_reclaim_inodes_count(pag, _THIS_IP_);
+	while ((pag = xfs_perag_get_tag(mp, ag, XFS_ICI_RECLAIM_TAG))) {
+		ag = pag->pag_agno + 1;
 		reclaimable += pag->pag_ici_reclaimable;
+		xfs_perag_put(pag);
 	}
-	rcu_read_unlock();
-
 	return reclaimable;
 }
 
@@ -1195,10 +1141,10 @@ xfs_inode_free_eofblocks(
 	}
 	*lockflags |= XFS_IOLOCK_EXCL;
 
-	if (xfs_can_free_eofblocks(ip))
+	if (xfs_can_free_eofblocks(ip, false))
 		return xfs_free_eofblocks(ip);
 
-	/* inode could be preallocated */
+	/* inode could be preallocated or append-only */
 	trace_xfs_inode_free_eofblocks_invalid(ip);
 	xfs_inode_clear_eofblocks_tag(ip);
 	return 0;
@@ -1280,17 +1226,14 @@ xfs_inode_clear_eofblocks_tag(
 }
 
 /*
- * Prepare to free COW fork blocks from an inode.
+ * Set ourselves up to free CoW blocks from this file.  If it's already clean
+ * then we can bail out quickly, but otherwise we must back off if the file
+ * is undergoing some kind of write.
  */
 static bool
 xfs_prep_free_cowblocks(
-	struct xfs_inode	*ip,
-	struct xfs_icwalk	*icw)
+	struct xfs_inode	*ip)
 {
-	bool			sync;
-
-	sync = icw && (icw->icw_flags & XFS_ICWALK_FLAG_SYNC);
-
 	/*
 	 * Just clear the tag if we have an empty cow fork or none at all. It's
 	 * possible the inode was fully unshared since it was originally tagged.
@@ -1302,22 +1245,16 @@ xfs_prep_free_cowblocks(
 	}
 
 	/*
-	 * A cowblocks trim of an inode can have a significant effect on
-	 * fragmentation even when a reasonable COW extent size hint is set.
-	 * Therefore, we prefer to not process cowblocks unless they are clean
-	 * and idle. We can never process a cowblocks inode that is dirty or has
-	 * in-flight I/O under any circumstances, because outstanding writeback
-	 * or dio expects targeted COW fork blocks exist through write
-	 * completion where they can be remapped into the data fork.
-	 *
-	 * Therefore, the heuristic used here is to never process inodes
-	 * currently opened for write from background (i.e. non-sync) scans. For
-	 * sync scans, use the pagecache/dio state of the inode to ensure we
-	 * never free COW fork blocks out from under pending I/O.
+	 * If the mapping is dirty or under writeback we cannot touch the
+	 * CoW fork.  Leave it alone if we're in the midst of a directio.
 	 */
-	if (!sync && inode_is_open_for_write(VFS_I(ip)))
+	if ((VFS_I(ip)->i_state & I_DIRTY_PAGES) ||
+	    mapping_tagged(VFS_I(ip)->i_mapping, PAGECACHE_TAG_DIRTY) ||
+	    mapping_tagged(VFS_I(ip)->i_mapping, PAGECACHE_TAG_WRITEBACK) ||
+	    atomic_read(&VFS_I(ip)->i_dio_count))
 		return false;
-	return xfs_can_free_cowblocks(ip);
+
+	return true;
 }
 
 /*
@@ -1346,7 +1283,7 @@ xfs_inode_free_cowblocks(
 	if (!xfs_iflags_test(ip, XFS_ICOWBLOCKS))
 		return 0;
 
-	if (!xfs_prep_free_cowblocks(ip, icw))
+	if (!xfs_prep_free_cowblocks(ip))
 		return 0;
 
 	if (!xfs_icwalk_match(ip, icw))
@@ -1375,7 +1312,7 @@ xfs_inode_free_cowblocks(
 	 * Check again, nobody else should be able to dirty blocks or change
 	 * the reflink iflag now that we have the first two locks held.
 	 */
-	if (xfs_prep_free_cowblocks(ip, icw))
+	if (xfs_prep_free_cowblocks(ip))
 		ret = xfs_reflink_cancel_cow_range(ip, 0, NULLFILEOFF, false);
 	return ret;
 }
@@ -1417,13 +1354,14 @@ void
 xfs_blockgc_start(
 	struct xfs_mount	*mp)
 {
-	struct xfs_perag	*pag = NULL;
+	struct xfs_perag	*pag;
+	xfs_agnumber_t		agno;
 
 	if (xfs_set_blockgc_enabled(mp))
 		return;
 
 	trace_xfs_blockgc_start(mp, __return_address);
-	while ((pag = xfs_perag_grab_next_tag(mp, pag, XFS_ICI_BLOCKGC_TAG)))
+	for_each_perag_tag(mp, agno, pag, XFS_ICI_BLOCKGC_TAG)
 		xfs_blockgc_queue(pag);
 }
 
@@ -1528,33 +1466,36 @@ xfs_blockgc_free_space(
 	if (error)
 		return error;
 
-	return xfs_inodegc_flush(mp);
+	xfs_inodegc_flush(mp);
+	return 0;
 }
 
 /*
  * Reclaim all the free space that we can by scheduling the background blockgc
  * and inodegc workers immediately and waiting for them all to clear.
  */
-int
+void
 xfs_blockgc_flush_all(
 	struct xfs_mount	*mp)
 {
-	struct xfs_perag	*pag = NULL;
+	struct xfs_perag	*pag;
+	xfs_agnumber_t		agno;
 
 	trace_xfs_blockgc_flush_all(mp, __return_address);
 
 	/*
-	 * For each blockgc worker, move its queue time up to now.  If it wasn't
-	 * queued, it will not be requeued.  Then flush whatever is left.
+	 * For each blockgc worker, move its queue time up to now.  If it
+	 * wasn't queued, it will not be requeued.  Then flush whatever's
+	 * left.
 	 */
-	while ((pag = xfs_perag_grab_next_tag(mp, pag, XFS_ICI_BLOCKGC_TAG)))
+	for_each_perag_tag(mp, agno, pag, XFS_ICI_BLOCKGC_TAG)
 		mod_delayed_work(pag->pag_mount->m_blockgc_wq,
 				&pag->pag_blockgc_work, 0);
 
-	while ((pag = xfs_perag_grab_next_tag(mp, pag, XFS_ICI_BLOCKGC_TAG)))
+	for_each_perag_tag(mp, agno, pag, XFS_ICI_BLOCKGC_TAG)
 		flush_delayed_work(&pag->pag_blockgc_work);
 
-	return xfs_inodegc_flush(mp);
+	xfs_inodegc_flush(mp);
 }
 
 /*
@@ -1797,16 +1738,17 @@ xfs_icwalk(
 	enum xfs_icwalk_goal	goal,
 	struct xfs_icwalk	*icw)
 {
-	struct xfs_perag	*pag = NULL;
+	struct xfs_perag	*pag;
 	int			error = 0;
 	int			last_error = 0;
+	xfs_agnumber_t		agno;
 
-	while ((pag = xfs_perag_grab_next_tag(mp, pag, goal))) {
+	for_each_perag_tag(mp, agno, pag, goal) {
 		error = xfs_icwalk_ag(pag, goal, icw);
 		if (error) {
 			last_error = error;
 			if (error == -EFSCORRUPTED) {
-				xfs_perag_rele(pag);
+				xfs_perag_put(pag);
 				break;
 			}
 		}
@@ -1821,7 +1763,7 @@ xfs_check_delalloc(
 	struct xfs_inode	*ip,
 	int			whichfork)
 {
-	struct xfs_ifork	*ifp = xfs_ifork_ptr(ip, whichfork);
+	struct xfs_ifork	*ifp = XFS_IFORK_PTR(ip, whichfork);
 	struct xfs_bmbt_irec	got;
 	struct xfs_iext_cursor	icur;
 
@@ -1875,131 +1817,90 @@ xfs_inodegc_set_reclaimable(
  * This is the last chance to make changes to an otherwise unreferenced file
  * before incore reclamation happens.
  */
-static int
+static void
 xfs_inodegc_inactivate(
 	struct xfs_inode	*ip)
 {
-	int			error;
-
 	trace_xfs_inode_inactivating(ip);
-	error = xfs_inactive(ip);
+	xfs_inactive(ip);
 	xfs_inodegc_set_reclaimable(ip);
-	return error;
-
 }
 
 void
 xfs_inodegc_worker(
 	struct work_struct	*work)
 {
-	struct xfs_inodegc	*gc = container_of(to_delayed_work(work),
-						struct xfs_inodegc, work);
+	struct xfs_inodegc	*gc = container_of(work, struct xfs_inodegc,
+							work);
 	struct llist_node	*node = llist_del_all(&gc->list);
 	struct xfs_inode	*ip, *n;
-	struct xfs_mount	*mp = gc->mp;
-	unsigned int		nofs_flag;
-
-	/*
-	 * Clear the cpu mask bit and ensure that we have seen the latest
-	 * update of the gc structure associated with this CPU. This matches
-	 * with the release semantics used when setting the cpumask bit in
-	 * xfs_inodegc_queue.
-	 */
-	cpumask_clear_cpu(gc->cpu, &mp->m_inodegc_cpumask);
-	smp_mb__after_atomic();
 
 	WRITE_ONCE(gc->items, 0);
 
 	if (!node)
 		return;
 
-	/*
-	 * We can allocate memory here while doing writeback on behalf of
-	 * memory reclaim.  To avoid memory allocation deadlocks set the
-	 * task-wide nofs context for the following operations.
-	 */
-	nofs_flag = memalloc_nofs_save();
-
 	ip = llist_entry(node, struct xfs_inode, i_gclist);
-	trace_xfs_inodegc_worker(mp, READ_ONCE(gc->shrinker_hits));
+	trace_xfs_inodegc_worker(ip->i_mount, READ_ONCE(gc->shrinker_hits));
 
 	WRITE_ONCE(gc->shrinker_hits, 0);
 	llist_for_each_entry_safe(ip, n, node, i_gclist) {
-		int	error;
-
 		xfs_iflags_set(ip, XFS_INACTIVATING);
-		error = xfs_inodegc_inactivate(ip);
-		if (error && !gc->error)
-			gc->error = error;
+		xfs_inodegc_inactivate(ip);
 	}
-
-	memalloc_nofs_restore(nofs_flag);
 }
 
 /*
- * Expedite all pending inodegc work to run immediately. This does not wait for
- * completion of the work.
+ * Force all currently queued inode inactivation work to run immediately, and
+ * wait for the work to finish. Two pass - queue all the work first pass, wait
+ * for it in a second pass.
  */
 void
-xfs_inodegc_push(
-	struct xfs_mount	*mp)
-{
-	if (!xfs_is_inodegc_enabled(mp))
-		return;
-	trace_xfs_inodegc_push(mp, __return_address);
-	xfs_inodegc_queue_all(mp);
-}
-
-/*
- * Force all currently queued inode inactivation work to run immediately and
- * wait for the work to finish.
- */
-int
 xfs_inodegc_flush(
 	struct xfs_mount	*mp)
 {
-	xfs_inodegc_push(mp);
+	struct xfs_inodegc	*gc;
+	int			cpu;
+
+	if (!xfs_is_inodegc_enabled(mp))
+		return;
+
 	trace_xfs_inodegc_flush(mp, __return_address);
-	return xfs_inodegc_wait_all(mp);
+
+	xfs_inodegc_queue_all(mp);
+
+	for_each_online_cpu(cpu) {
+		gc = per_cpu_ptr(mp->m_inodegc, cpu);
+		flush_work(&gc->work);
+	}
 }
 
 /*
  * Flush all the pending work and then disable the inode inactivation background
- * workers and wait for them to stop.  Caller must hold sb->s_umount to
- * coordinate changes in the inodegc_enabled state.
+ * workers and wait for them to stop.
  */
 void
 xfs_inodegc_stop(
 	struct xfs_mount	*mp)
 {
-	bool			rerun;
+	struct xfs_inodegc	*gc;
+	int			cpu;
 
 	if (!xfs_clear_inodegc_enabled(mp))
 		return;
 
-	/*
-	 * Drain all pending inodegc work, including inodes that could be
-	 * queued by racing xfs_inodegc_queue or xfs_inodegc_shrinker_scan
-	 * threads that sample the inodegc state just prior to us clearing it.
-	 * The inodegc flag state prevents new threads from queuing more
-	 * inodes, so we queue pending work items and flush the workqueue until
-	 * all inodegc lists are empty.  IOWs, we cannot use drain_workqueue
-	 * here because it does not allow other unserialized mechanisms to
-	 * reschedule inodegc work while this draining is in progress.
-	 */
 	xfs_inodegc_queue_all(mp);
-	do {
-		flush_workqueue(mp->m_inodegc_wq);
-		rerun = xfs_inodegc_queue_all(mp);
-	} while (rerun);
 
+	for_each_online_cpu(cpu) {
+		gc = per_cpu_ptr(mp->m_inodegc, cpu);
+		cancel_work_sync(&gc->work);
+	}
 	trace_xfs_inodegc_stop(mp, __return_address);
 }
 
 /*
  * Enable the inode inactivation background workers and schedule deferred inode
- * inactivation work if there is any.  Caller must hold sb->s_umount to
- * coordinate changes in the inodegc_enabled state.
+ * inactivation work if there is any.
  */
 void
 xfs_inodegc_start(
@@ -2018,16 +1919,13 @@ xfs_inodegc_want_queue_rt_file(
 	struct xfs_inode	*ip)
 {
 	struct xfs_mount	*mp = ip->i_mount;
+	uint64_t		freertx;
 
 	if (!XFS_IS_REALTIME_INODE(ip))
 		return false;
 
-	if (__percpu_counter_compare(&mp->m_frextents,
-				mp->m_low_rtexts[XFS_LOWSP_5_PCNT],
-				XFS_FDBLOCKS_BATCH) < 0)
-		return true;
-
-	return false;
+	freertx = READ_ONCE(mp->m_sb.sb_frextents);
+	return freertx < mp->m_low_rtexts[XFS_LOWSP_5_PCNT];
 }
 #else
 # define xfs_inodegc_want_queue_rt_file(ip)	(false)
@@ -2082,10 +1980,8 @@ xfs_inodegc_want_queue_work(
  *  - Memory shrinkers queued the inactivation worker and it hasn't finished.
  *  - The queue depth exceeds the maximum allowable percpu backlog.
  *
- * Note: If we are in a NOFS context here (e.g. current thread is running a
- * transaction) the we don't want to block here as inodegc progress may require
- * filesystem resources we hold to make progress and that could result in a
- * deadlock. Hence we skip out of here if we are in a scoped NOFS context.
+ * Note: If the current thread is running a transaction, we don't ever want to
+ * wait for other transactions because that could introduce a deadlock.
  */
 static inline bool
 xfs_inodegc_want_flush_work(
@@ -2093,7 +1989,7 @@ xfs_inodegc_want_flush_work(
 	unsigned int		items,
 	unsigned int		shrinker_hits)
 {
-	if (current->flags & PF_MEMALLOC_NOFS)
+	if (current->journal_info)
 		return false;
 
 	if (shrinker_hits > 0)
@@ -2118,50 +2014,70 @@ xfs_inodegc_queue(
 	struct xfs_inodegc	*gc;
 	int			items;
 	unsigned int		shrinker_hits;
-	unsigned int		cpu_nr;
-	unsigned long		queue_delay = 1;
 
 	trace_xfs_inode_set_need_inactive(ip);
 	spin_lock(&ip->i_flags_lock);
 	ip->i_flags |= XFS_NEED_INACTIVE;
 	spin_unlock(&ip->i_flags_lock);
 
-	cpu_nr = get_cpu();
-	gc = this_cpu_ptr(mp->m_inodegc);
+	gc = get_cpu_ptr(mp->m_inodegc);
 	llist_add(&ip->i_gclist, &gc->list);
 	items = READ_ONCE(gc->items);
 	WRITE_ONCE(gc->items, items + 1);
 	shrinker_hits = READ_ONCE(gc->shrinker_hits);
+	put_cpu_ptr(gc);
 
-	/*
-	 * Ensure the list add is always seen by anyone who finds the cpumask
-	 * bit set. This effectively gives the cpumask bit set operation
-	 * release ordering semantics.
-	 */
-	smp_mb__before_atomic();
-	if (!cpumask_test_cpu(cpu_nr, &mp->m_inodegc_cpumask))
-		cpumask_test_and_set_cpu(cpu_nr, &mp->m_inodegc_cpumask);
-
-	/*
-	 * We queue the work while holding the current CPU so that the work
-	 * is scheduled to run on this CPU.
-	 */
-	if (!xfs_is_inodegc_enabled(mp)) {
-		put_cpu();
+	if (!xfs_is_inodegc_enabled(mp))
 		return;
+
+	if (xfs_inodegc_want_queue_work(ip, items)) {
+		trace_xfs_inodegc_queue(mp, __return_address);
+		queue_work(mp->m_inodegc_wq, &gc->work);
 	}
-
-	if (xfs_inodegc_want_queue_work(ip, items))
-		queue_delay = 0;
-
-	trace_xfs_inodegc_queue(mp, __return_address);
-	mod_delayed_work_on(current_cpu(), mp->m_inodegc_wq, &gc->work,
-			queue_delay);
-	put_cpu();
 
 	if (xfs_inodegc_want_flush_work(ip, items, shrinker_hits)) {
 		trace_xfs_inodegc_throttle(mp, __return_address);
-		flush_delayed_work(&gc->work);
+		flush_work(&gc->work);
+	}
+}
+
+/*
+ * Fold the dead CPU inodegc queue into the current CPUs queue.
+ */
+void
+xfs_inodegc_cpu_dead(
+	struct xfs_mount	*mp,
+	unsigned int		dead_cpu)
+{
+	struct xfs_inodegc	*dead_gc, *gc;
+	struct llist_node	*first, *last;
+	unsigned int		count = 0;
+
+	dead_gc = per_cpu_ptr(mp->m_inodegc, dead_cpu);
+	cancel_work_sync(&dead_gc->work);
+
+	if (llist_empty(&dead_gc->list))
+		return;
+
+	first = dead_gc->list.first;
+	last = first;
+	while (last->next) {
+		last = last->next;
+		count++;
+	}
+	dead_gc->list.first = NULL;
+	dead_gc->items = 0;
+
+	/* Add pending work to current CPU */
+	gc = get_cpu_ptr(mp->m_inodegc);
+	llist_add_batch(first, last, &gc->list);
+	count += READ_ONCE(gc->items);
+	WRITE_ONCE(gc->items, count);
+	put_cpu_ptr(gc);
+
+	if (xfs_is_inodegc_enabled(mp)) {
+		trace_xfs_inodegc_queue(mp, __return_address);
+		queue_work(mp->m_inodegc_wq, &gc->work);
 	}
 }
 
@@ -2218,14 +2134,15 @@ xfs_inodegc_shrinker_count(
 	struct shrinker		*shrink,
 	struct shrink_control	*sc)
 {
-	struct xfs_mount	*mp = shrink->private_data;
+	struct xfs_mount	*mp = container_of(shrink, struct xfs_mount,
+						   m_inodegc_shrinker);
 	struct xfs_inodegc	*gc;
 	int			cpu;
 
 	if (!xfs_is_inodegc_enabled(mp))
 		return 0;
 
-	for_each_cpu(cpu, &mp->m_inodegc_cpumask) {
+	for_each_online_cpu(cpu) {
 		gc = per_cpu_ptr(mp->m_inodegc, cpu);
 		if (!llist_empty(&gc->list))
 			return XFS_INODEGC_SHRINKER_COUNT;
@@ -2239,7 +2156,8 @@ xfs_inodegc_shrinker_scan(
 	struct shrinker		*shrink,
 	struct shrink_control	*sc)
 {
-	struct xfs_mount	*mp = shrink->private_data;
+	struct xfs_mount	*mp = container_of(shrink, struct xfs_mount,
+						   m_inodegc_shrinker);
 	struct xfs_inodegc	*gc;
 	int			cpu;
 	bool			no_items = true;
@@ -2249,13 +2167,13 @@ xfs_inodegc_shrinker_scan(
 
 	trace_xfs_inodegc_shrinker_scan(mp, sc, __return_address);
 
-	for_each_cpu(cpu, &mp->m_inodegc_cpumask) {
+	for_each_online_cpu(cpu) {
 		gc = per_cpu_ptr(mp->m_inodegc, cpu);
 		if (!llist_empty(&gc->list)) {
 			unsigned int	h = READ_ONCE(gc->shrinker_hits);
 
 			WRITE_ONCE(gc->shrinker_hits, h + 1);
-			mod_delayed_work_on(cpu, mp->m_inodegc_wq, &gc->work, 0);
+			queue_work_on(cpu, mp->m_inodegc_wq, &gc->work);
 			no_items = false;
 		}
 	}
@@ -2275,19 +2193,13 @@ int
 xfs_inodegc_register_shrinker(
 	struct xfs_mount	*mp)
 {
-	mp->m_inodegc_shrinker = shrinker_alloc(SHRINKER_NONSLAB,
-						"xfs-inodegc:%s",
-						mp->m_super->s_id);
-	if (!mp->m_inodegc_shrinker)
-		return -ENOMEM;
+	struct shrinker		*shrink = &mp->m_inodegc_shrinker;
 
-	mp->m_inodegc_shrinker->count_objects = xfs_inodegc_shrinker_count;
-	mp->m_inodegc_shrinker->scan_objects = xfs_inodegc_shrinker_scan;
-	mp->m_inodegc_shrinker->seeks = 0;
-	mp->m_inodegc_shrinker->batch = XFS_INODEGC_SHRINKER_BATCH;
-	mp->m_inodegc_shrinker->private_data = mp;
+	shrink->count_objects = xfs_inodegc_shrinker_count;
+	shrink->scan_objects = xfs_inodegc_shrinker_scan;
+	shrink->seeks = 0;
+	shrink->flags = SHRINKER_NONSLAB;
+	shrink->batch = XFS_INODEGC_SHRINKER_BATCH;
 
-	shrinker_register(mp->m_inodegc_shrinker);
-
-	return 0;
+	return register_shrinker(shrink);
 }

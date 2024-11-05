@@ -6,6 +6,7 @@
 
 #include <linux/device.h>
 #include <linux/interrupt.h>
+#include <linux/iommu.h>
 #include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -66,22 +67,7 @@ enum vmd_features {
 	 * interrupt handling.
 	 */
 	VMD_FEAT_CAN_BYPASS_MSI_REMAP		= (1 << 4),
-
-	/*
-	 * Enable ASPM on the PCIE root ports and set the default LTR of the
-	 * storage devices on platforms where these values are not configured by
-	 * BIOS. This is needed for laptops, which require these settings for
-	 * proper power management of the SoC.
-	 */
-	VMD_FEAT_BIOS_PM_QUIRK		= (1 << 5),
 };
-
-#define VMD_BIOS_PM_QUIRK_LTR	0x1003	/* 3145728 ns */
-
-#define VMD_FEATS_CLIENT	(VMD_FEAT_HAS_MEMBAR_SHADOW_VSCAP |	\
-				 VMD_FEAT_HAS_BUS_RESTRICTIONS |	\
-				 VMD_FEAT_OFFSET_FIRST_VECTOR |		\
-				 VMD_FEAT_BIOS_PM_QUIRK)
 
 static DEFINE_IDA(vmd_instance_ida);
 
@@ -113,13 +99,11 @@ struct vmd_irq {
  * @srcu:	SRCU struct for local synchronization.
  * @count:	number of child IRQs assigned to this vector; used to track
  *		sharing.
- * @virq:	The underlying VMD Linux interrupt number
  */
 struct vmd_irq_list {
 	struct list_head	irq_list;
 	struct srcu_struct	srcu;
 	unsigned int		count;
-	unsigned int		virq;
 };
 
 struct vmd_dev {
@@ -204,11 +188,22 @@ static void vmd_irq_disable(struct irq_data *data)
 	raw_spin_unlock_irqrestore(&list_lock, flags);
 }
 
+/*
+ * XXX: Stubbed until we develop acceptable way to not create conflicts with
+ * other devices sharing the same vector.
+ */
+static int vmd_irq_set_affinity(struct irq_data *data,
+				const struct cpumask *dest, bool force)
+{
+	return -EINVAL;
+}
+
 static struct irq_chip vmd_msi_controller = {
 	.name			= "VMD-MSI",
 	.irq_enable		= vmd_irq_enable,
 	.irq_disable		= vmd_irq_disable,
 	.irq_compose_msi_msg	= vmd_compose_msi_msg,
+	.irq_set_affinity	= vmd_irq_set_affinity,
 };
 
 static irq_hw_number_t vmd_get_hwirq(struct msi_domain_info *info,
@@ -258,6 +253,7 @@ static int vmd_msi_init(struct irq_domain *domain, struct msi_domain_info *info,
 	struct msi_desc *desc = arg->desc;
 	struct vmd_dev *vmd = vmd_from_bus(msi_desc_to_pci_dev(desc)->bus);
 	struct vmd_irq *vmdirq = kzalloc(sizeof(*vmdirq), GFP_KERNEL);
+	unsigned int index, vector;
 
 	if (!vmdirq)
 		return -ENOMEM;
@@ -265,8 +261,10 @@ static int vmd_msi_init(struct irq_domain *domain, struct msi_domain_info *info,
 	INIT_LIST_HEAD(&vmdirq->node);
 	vmdirq->irq = vmd_next_irq(vmd, desc);
 	vmdirq->virq = virq;
+	index = index_from_irqs(vmd, vmdirq->irq);
+	vector = pci_irq_vector(vmd->dev, index);
 
-	irq_domain_set_info(domain, virq, vmdirq->irq->virq, info->chip, vmdirq,
+	irq_domain_set_info(domain, virq, vector, info->chip, vmdirq,
 			    handle_untracked_irq, vmd, NULL);
 	return 0;
 }
@@ -315,7 +313,7 @@ static struct msi_domain_ops vmd_msi_domain_ops = {
 
 static struct msi_domain_info vmd_msi_domain_info = {
 	.flags		= MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
-			  MSI_FLAG_NO_AFFINITY | MSI_FLAG_PCI_MSIX,
+			  MSI_FLAG_PCI_MSIX,
 	.ops		= &vmd_msi_domain_ops,
 	.chip		= &vmd_msi_controller,
 };
@@ -503,54 +501,6 @@ static inline void vmd_acpi_begin(void) { }
 static inline void vmd_acpi_end(void) { }
 #endif /* CONFIG_ACPI */
 
-static void vmd_domain_reset(struct vmd_dev *vmd)
-{
-	u16 bus, max_buses = resource_size(&vmd->resources[0]);
-	u8 dev, functions, fn, hdr_type;
-	char __iomem *base;
-
-	for (bus = 0; bus < max_buses; bus++) {
-		for (dev = 0; dev < 32; dev++) {
-			base = vmd->cfgbar + PCIE_ECAM_OFFSET(bus,
-						PCI_DEVFN(dev, 0), 0);
-
-			hdr_type = readb(base + PCI_HEADER_TYPE);
-
-			functions = (hdr_type & PCI_HEADER_TYPE_MFD) ? 8 : 1;
-			for (fn = 0; fn < functions; fn++) {
-				base = vmd->cfgbar + PCIE_ECAM_OFFSET(bus,
-						PCI_DEVFN(dev, fn), 0);
-
-				hdr_type = readb(base + PCI_HEADER_TYPE) &
-						PCI_HEADER_TYPE_MASK;
-
-				if (hdr_type != PCI_HEADER_TYPE_BRIDGE ||
-				    (readw(base + PCI_CLASS_DEVICE) !=
-				     PCI_CLASS_BRIDGE_PCI))
-					continue;
-
-				/*
-				 * Temporarily disable the I/O range before updating
-				 * PCI_IO_BASE.
-				 */
-				writel(0x0000ffff, base + PCI_IO_BASE_UPPER16);
-				/* Update lower 16 bits of I/O base/limit */
-				writew(0x00f0, base + PCI_IO_BASE);
-				/* Update upper 16 bits of I/O base/limit */
-				writel(0, base + PCI_IO_BASE_UPPER16);
-
-				/* MMIO Base/Limit */
-				writel(0x0000fff0, base + PCI_MEMORY_BASE);
-
-				/* Prefetchable MMIO Base/Limit */
-				writel(0, base + PCI_PREF_LIMIT_UPPER32);
-				writel(0x0000fff0, base + PCI_PREF_MEMORY_BASE);
-				writel(0xffffffff, base + PCI_PREF_BASE_UPPER32);
-			}
-		}
-	}
-}
-
 static void vmd_attach_resources(struct vmd_dev *vmd)
 {
 	vmd->dev->resource[VMD_MEMBAR1].child = &vmd->resources[1];
@@ -591,7 +541,7 @@ static int vmd_get_phys_offsets(struct vmd_dev *vmd, bool native_hint,
 		int ret;
 
 		ret = pci_read_config_dword(dev, PCI_REG_VMLOCK, &vmlock);
-		if (ret || PCI_POSSIBLE_ERROR(vmlock))
+		if (ret || vmlock == ~0)
 			return -ENODEV;
 
 		if (MB2_SHADOW_EN(vmlock)) {
@@ -701,68 +651,12 @@ static int vmd_alloc_irqs(struct vmd_dev *vmd)
 			return err;
 
 		INIT_LIST_HEAD(&vmd->irqs[i].irq_list);
-		vmd->irqs[i].virq = pci_irq_vector(dev, i);
-		err = devm_request_irq(&dev->dev, vmd->irqs[i].virq,
+		err = devm_request_irq(&dev->dev, pci_irq_vector(dev, i),
 				       vmd_irq, IRQF_NO_THREAD,
 				       vmd->name, &vmd->irqs[i]);
 		if (err)
 			return err;
 	}
-
-	return 0;
-}
-
-/*
- * Since VMD is an aperture to regular PCIe root ports, only allow it to
- * control features that the OS is allowed to control on the physical PCI bus.
- */
-static void vmd_copy_host_bridge_flags(struct pci_host_bridge *root_bridge,
-				       struct pci_host_bridge *vmd_bridge)
-{
-	vmd_bridge->native_pcie_hotplug = root_bridge->native_pcie_hotplug;
-	vmd_bridge->native_shpc_hotplug = root_bridge->native_shpc_hotplug;
-	vmd_bridge->native_aer = root_bridge->native_aer;
-	vmd_bridge->native_pme = root_bridge->native_pme;
-	vmd_bridge->native_ltr = root_bridge->native_ltr;
-	vmd_bridge->native_dpc = root_bridge->native_dpc;
-}
-
-/*
- * Enable ASPM and LTR settings on devices that aren't configured by BIOS.
- */
-static int vmd_pm_enable_quirk(struct pci_dev *pdev, void *userdata)
-{
-	unsigned long features = *(unsigned long *)userdata;
-	u16 ltr = VMD_BIOS_PM_QUIRK_LTR;
-	u32 ltr_reg;
-	int pos;
-
-	if (!(features & VMD_FEAT_BIOS_PM_QUIRK))
-		return 0;
-
-	pci_enable_link_state_locked(pdev, PCIE_LINK_STATE_ALL);
-
-	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_LTR);
-	if (!pos)
-		return 0;
-
-	/*
-	 * Skip if the max snoop LTR is non-zero, indicating BIOS has set it
-	 * so the LTR quirk is not needed.
-	 */
-	pci_read_config_dword(pdev, pos + PCI_LTR_MAX_SNOOP_LAT, &ltr_reg);
-	if (!!(ltr_reg & (PCI_LTR_VALUE_MASK | PCI_LTR_SCALE_MASK)))
-		return 0;
-
-	/*
-	 * Set the default values to the maximum required by the platform to
-	 * allow the deepest power management savings. Write as a DWORD where
-	 * the lower word is the max snoop latency and the upper word is the
-	 * max non-snoop latency.
-	 */
-	ltr_reg = (ltr << 16) | ltr;
-	pci_write_config_dword(pdev, pos + PCI_LTR_MAX_SNOOP_LAT, ltr_reg);
-	pci_info(pdev, "VMD: Default LTR value set by driver\n");
 
 	return 0;
 }
@@ -777,7 +671,6 @@ static int vmd_enable_domain(struct vmd_dev *vmd, unsigned long features)
 	resource_size_t offset[2] = {0};
 	resource_size_t membar2_offset = 0x2000;
 	struct pci_bus *child;
-	struct pci_dev *dev;
 	int ret;
 
 	/*
@@ -871,7 +764,8 @@ static int vmd_enable_domain(struct vmd_dev *vmd, unsigned long features)
 	 * acceptable because the guest is usually CPU-limited and MSI
 	 * remapping doesn't become a performance bottleneck.
 	 */
-	if (!(features & VMD_FEAT_CAN_BYPASS_MSI_REMAP) ||
+	if (iommu_capable(vmd->dev->dev.bus, IOMMU_CAP_INTR_REMAP) ||
+	    !(features & VMD_FEAT_CAN_BYPASS_MSI_REMAP) ||
 	    offset[0] || offset[1]) {
 		ret = vmd_alloc_irqs(vmd);
 		if (ret)
@@ -904,46 +798,14 @@ static int vmd_enable_domain(struct vmd_dev *vmd, unsigned long features)
 		return -ENODEV;
 	}
 
-	vmd_copy_host_bridge_flags(pci_find_host_bridge(vmd->dev->bus),
-				   to_pci_host_bridge(vmd->bus->bridge));
-
 	vmd_attach_resources(vmd);
 	if (vmd->irq_domain)
 		dev_set_msi_domain(&vmd->bus->dev, vmd->irq_domain);
-	else
-		dev_set_msi_domain(&vmd->bus->dev,
-				   dev_get_msi_domain(&vmd->dev->dev));
-
-	WARN(sysfs_create_link(&vmd->dev->dev.kobj, &vmd->bus->dev.kobj,
-			       "domain"), "Can't create symlink to domain\n");
 
 	vmd_acpi_begin();
 
 	pci_scan_child_bus(vmd->bus);
-	vmd_domain_reset(vmd);
-
-	/* When Intel VMD is enabled, the OS does not discover the Root Ports
-	 * owned by Intel VMD within the MMCFG space. pci_reset_bus() applies
-	 * a reset to the parent of the PCI device supplied as argument. This
-	 * is why we pass a child device, so the reset can be triggered at
-	 * the Intel bridge level and propagated to all the children in the
-	 * hierarchy.
-	 */
-	list_for_each_entry(child, &vmd->bus->children, node) {
-		if (!list_empty(&child->devices)) {
-			dev = list_first_entry(&child->devices,
-					       struct pci_dev, bus_list);
-			ret = pci_reset_bus(dev);
-			if (ret)
-				pci_warn(dev, "can't reset device: %d\n", ret);
-
-			break;
-		}
-	}
-
 	pci_assign_unassigned_bus_resources(vmd->bus);
-
-	pci_walk_bus(vmd->bus, vmd_pm_enable_quirk, &features);
 
 	/*
 	 * VMD root buses are virtual and don't return true on pci_is_pcie()
@@ -956,6 +818,9 @@ static int vmd_enable_domain(struct vmd_dev *vmd, unsigned long features)
 	pci_bus_add_devices(vmd->bus);
 
 	vmd_acpi_end();
+
+	WARN(sysfs_create_link(&vmd->dev->dev.kobj, &vmd->bus->dev.kobj,
+			       "domain"), "Can't create symlink to domain\n");
 	return 0;
 }
 
@@ -973,12 +838,11 @@ static int vmd_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		return -ENOMEM;
 
 	vmd->dev = dev;
-	vmd->instance = ida_alloc(&vmd_instance_ida, GFP_KERNEL);
+	vmd->instance = ida_simple_get(&vmd_instance_ida, 0, 0, GFP_KERNEL);
 	if (vmd->instance < 0)
 		return vmd->instance;
 
-	vmd->name = devm_kasprintf(&dev->dev, GFP_KERNEL, "vmd%d",
-				   vmd->instance);
+	vmd->name = kasprintf(GFP_KERNEL, "vmd%d", vmd->instance);
 	if (!vmd->name) {
 		err = -ENOMEM;
 		goto out_release_instance;
@@ -1015,7 +879,8 @@ static int vmd_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	return 0;
 
  out_release_instance:
-	ida_free(&vmd_instance_ida, vmd->instance);
+	ida_simple_remove(&vmd_instance_ida, vmd->instance);
+	kfree(vmd->name);
 	return err;
 }
 
@@ -1031,20 +896,14 @@ static void vmd_remove(struct pci_dev *dev)
 {
 	struct vmd_dev *vmd = pci_get_drvdata(dev);
 
-	pci_stop_root_bus(vmd->bus);
 	sysfs_remove_link(&vmd->dev->dev.kobj, "domain");
+	pci_stop_root_bus(vmd->bus);
 	pci_remove_root_bus(vmd->bus);
 	vmd_cleanup_srcu(vmd);
 	vmd_detach_resources(vmd);
 	vmd_remove_irq_domain(vmd);
-	ida_free(&vmd_instance_ida, vmd->instance);
-}
-
-static void vmd_shutdown(struct pci_dev *dev)
-{
-	struct vmd_dev *vmd = pci_get_drvdata(dev);
-
-	vmd_remove_irq_domain(vmd);
+	ida_simple_remove(&vmd_instance_ida, vmd->instance);
+	kfree(vmd->name);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1055,7 +914,7 @@ static int vmd_suspend(struct device *dev)
 	int i;
 
 	for (i = 0; i < vmd->msix_count; i++)
-		devm_free_irq(dev, vmd->irqs[i].virq, &vmd->irqs[i]);
+		devm_free_irq(dev, pci_irq_vector(pdev, i), &vmd->irqs[i]);
 
 	return 0;
 }
@@ -1066,10 +925,8 @@ static int vmd_resume(struct device *dev)
 	struct vmd_dev *vmd = pci_get_drvdata(pdev);
 	int err, i;
 
-	vmd_set_msi_remapping(vmd, !!vmd->irq_domain);
-
 	for (i = 0; i < vmd->msix_count; i++) {
-		err = devm_request_irq(dev, vmd->irqs[i].virq,
+		err = devm_request_irq(dev, pci_irq_vector(pdev, i),
 				       vmd_irq, IRQF_NO_THREAD,
 				       vmd->name, &vmd->irqs[i]);
 		if (err)
@@ -1082,24 +939,24 @@ static int vmd_resume(struct device *dev)
 static SIMPLE_DEV_PM_OPS(vmd_dev_pm_ops, vmd_suspend, vmd_resume);
 
 static const struct pci_device_id vmd_ids[] = {
-	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_VMD_201D),
+	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_VMD_201D),
 		.driver_data = VMD_FEAT_HAS_MEMBAR_SHADOW_VSCAP,},
-	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_VMD_28C0),
+	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_VMD_28C0),
 		.driver_data = VMD_FEAT_HAS_MEMBAR_SHADOW |
 				VMD_FEAT_HAS_BUS_RESTRICTIONS |
 				VMD_FEAT_CAN_BYPASS_MSI_REMAP,},
-	{PCI_VDEVICE(INTEL, 0x467f),
-		.driver_data = VMD_FEATS_CLIENT,},
-	{PCI_VDEVICE(INTEL, 0x4c3d),
-		.driver_data = VMD_FEATS_CLIENT,},
-	{PCI_VDEVICE(INTEL, 0xa77f),
-		.driver_data = VMD_FEATS_CLIENT,},
-	{PCI_VDEVICE(INTEL, 0x7d0b),
-		.driver_data = VMD_FEATS_CLIENT,},
-	{PCI_VDEVICE(INTEL, 0xad0b),
-		.driver_data = VMD_FEATS_CLIENT,},
-	{PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_VMD_9A0B),
-		.driver_data = VMD_FEATS_CLIENT,},
+	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x467f),
+		.driver_data = VMD_FEAT_HAS_MEMBAR_SHADOW_VSCAP |
+				VMD_FEAT_HAS_BUS_RESTRICTIONS |
+				VMD_FEAT_OFFSET_FIRST_VECTOR,},
+	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x4c3d),
+		.driver_data = VMD_FEAT_HAS_MEMBAR_SHADOW_VSCAP |
+				VMD_FEAT_HAS_BUS_RESTRICTIONS |
+				VMD_FEAT_OFFSET_FIRST_VECTOR,},
+	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_VMD_9A0B),
+		.driver_data = VMD_FEAT_HAS_MEMBAR_SHADOW_VSCAP |
+				VMD_FEAT_HAS_BUS_RESTRICTIONS |
+				VMD_FEAT_OFFSET_FIRST_VECTOR,},
 	{0,}
 };
 MODULE_DEVICE_TABLE(pci, vmd_ids);
@@ -1109,7 +966,6 @@ static struct pci_driver vmd_drv = {
 	.id_table	= vmd_ids,
 	.probe		= vmd_probe,
 	.remove		= vmd_remove,
-	.shutdown	= vmd_shutdown,
 	.driver		= {
 		.pm	= &vmd_dev_pm_ops,
 	},
@@ -1117,6 +973,5 @@ static struct pci_driver vmd_drv = {
 module_pci_driver(vmd_drv);
 
 MODULE_AUTHOR("Intel Corporation");
-MODULE_DESCRIPTION("Volume Management Device driver");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION("0.6");

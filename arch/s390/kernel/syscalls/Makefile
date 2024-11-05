@@ -4,8 +4,8 @@ gen	:= arch/$(ARCH)/include/generated
 kapi	:= $(gen)/asm
 uapi	:= $(gen)/uapi/asm
 
-syscall	:= $(src)/syscall.tbl
-systbl	:= $(src)/syscalltbl
+syscall	:= $(srctree)/$(src)/syscall.tbl
+systbl	:= $(srctree)/$(src)/syscalltbl
 
 gen-y := $(kapi)/syscall_table.h
 kapi-hdrs-y := $(kapi)/unistd_nr.h
@@ -21,7 +21,8 @@ uapi:	$(uapi-hdrs-y)
 
 
 # Create output directory if not already present
-$(shell mkdir -p $(uapi) $(kapi))
+_dummy := $(shell [ -d '$(uapi)' ] || mkdir -p '$(uapi)') \
+	  $(shell [ -d '$(kapi)' ] || mkdir -p '$(kapi)')
 
 filechk_syshdr = $(CONFIG_SHELL) '$(systbl)' -H -a $(syshdr_abi_$(basetarget)) -f "$2" < $<
 

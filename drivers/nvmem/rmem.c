@@ -37,19 +37,16 @@ static int rmem_read(void *context, unsigned int offset,
 	 * but as of Dec 2020 this isn't possible on arm64.
 	 */
 	addr = memremap(priv->mem->base, available, MEMREMAP_WB);
-	if (!addr) {
+	if (IS_ERR(addr)) {
 		dev_err(priv->dev, "Failed to remap memory region\n");
-		return -ENOMEM;
+		return PTR_ERR(addr);
 	}
 
 	count = memory_read_from_buffer(val, bytes, &off, addr, available);
 
 	memunmap(addr);
 
-	if (count < 0)
-		return count;
-
-	return count == bytes ? 0 : -EIO;
+	return count;
 }
 
 static int rmem_probe(struct platform_device *pdev)
@@ -74,7 +71,6 @@ static int rmem_probe(struct platform_device *pdev)
 	config.dev = dev;
 	config.priv = priv;
 	config.name = "rmem";
-	config.id = NVMEM_DEVID_AUTO;
 	config.size = mem->size;
 	config.reg_read = rmem_read;
 

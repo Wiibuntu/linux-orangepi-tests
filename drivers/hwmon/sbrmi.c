@@ -265,7 +265,7 @@ static umode_t sbrmi_is_visible(const void *data,
 	return 0;
 }
 
-static const struct hwmon_channel_info * const sbrmi_info[] = {
+static const struct hwmon_channel_info *sbrmi_info[] = {
 	HWMON_CHANNEL_INFO(power,
 			   HWMON_P_INPUT | HWMON_P_CAP | HWMON_P_CAP_MAX),
 	NULL
@@ -297,7 +297,8 @@ static int sbrmi_get_max_pwr_limit(struct sbrmi_data *data)
 	return ret;
 }
 
-static int sbrmi_probe(struct i2c_client *client)
+static int sbrmi_probe(struct i2c_client *client,
+		       const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct device *hwmon_dev;
@@ -328,7 +329,7 @@ static int sbrmi_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id sbrmi_id[] = {
-	{"sbrmi"},
+	{"sbrmi", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, sbrmi_id);
@@ -342,6 +343,7 @@ static const struct of_device_id __maybe_unused sbrmi_of_match[] = {
 MODULE_DEVICE_TABLE(of, sbrmi_of_match);
 
 static struct i2c_driver sbrmi_driver = {
+	.class = I2C_CLASS_HWMON,
 	.driver = {
 		.name = "sbrmi",
 		.of_match_table = of_match_ptr(sbrmi_of_match),

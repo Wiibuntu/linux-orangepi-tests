@@ -314,15 +314,10 @@ static int xgbe_get_link_ksettings(struct net_device *netdev,
 
 	cmd->base.phy_address = pdata->phy.address;
 
-	if (netif_carrier_ok(netdev)) {
-		cmd->base.speed = pdata->phy.speed;
-		cmd->base.duplex = pdata->phy.duplex;
-	} else {
-		cmd->base.speed = SPEED_UNKNOWN;
-		cmd->base.duplex = DUPLEX_UNKNOWN;
-	}
-
 	cmd->base.autoneg = pdata->phy.autoneg;
+	cmd->base.speed = pdata->phy.speed;
+	cmd->base.duplex = pdata->phy.duplex;
+
 	cmd->base.port = PORT_NONE;
 
 	XGBE_LM_COPY(cmd, supported, lks, supported);
@@ -407,8 +402,8 @@ static void xgbe_get_drvinfo(struct net_device *netdev,
 	struct xgbe_prv_data *pdata = netdev_priv(netdev);
 	struct xgbe_hw_features *hw_feat = &pdata->hw_feat;
 
-	strscpy(drvinfo->driver, XGBE_DRV_NAME, sizeof(drvinfo->driver));
-	strscpy(drvinfo->bus_info, dev_name(pdata->dev),
+	strlcpy(drvinfo->driver, XGBE_DRV_NAME, sizeof(drvinfo->driver));
+	strlcpy(drvinfo->bus_info, dev_name(pdata->dev),
 		sizeof(drvinfo->bus_info));
 	snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version), "%d.%d.%d",
 		 XGMAC_GET_BITS(hw_feat->version, MAC_VR, USERVER),
@@ -527,48 +522,47 @@ static u32 xgbe_get_rxfh_indir_size(struct net_device *netdev)
 	return ARRAY_SIZE(pdata->rss_table);
 }
 
-static int xgbe_get_rxfh(struct net_device *netdev,
-			 struct ethtool_rxfh_param *rxfh)
+static int xgbe_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			 u8 *hfunc)
 {
 	struct xgbe_prv_data *pdata = netdev_priv(netdev);
 	unsigned int i;
 
-	if (rxfh->indir) {
+	if (indir) {
 		for (i = 0; i < ARRAY_SIZE(pdata->rss_table); i++)
-			rxfh->indir[i] = XGMAC_GET_BITS(pdata->rss_table[i],
-							MAC_RSSDR, DMCH);
+			indir[i] = XGMAC_GET_BITS(pdata->rss_table[i],
+						  MAC_RSSDR, DMCH);
 	}
 
-	if (rxfh->key)
-		memcpy(rxfh->key, pdata->rss_key, sizeof(pdata->rss_key));
+	if (key)
+		memcpy(key, pdata->rss_key, sizeof(pdata->rss_key));
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
 
 	return 0;
 }
 
-static int xgbe_set_rxfh(struct net_device *netdev,
-			 struct ethtool_rxfh_param *rxfh,
-			 struct netlink_ext_ack *extack)
+static int xgbe_set_rxfh(struct net_device *netdev, const u32 *indir,
+			 const u8 *key, const u8 hfunc)
 {
 	struct xgbe_prv_data *pdata = netdev_priv(netdev);
 	struct xgbe_hw_if *hw_if = &pdata->hw_if;
 	unsigned int ret;
 
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	    rxfh->hfunc != ETH_RSS_HASH_TOP) {
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP) {
 		netdev_err(netdev, "unsupported hash function\n");
 		return -EOPNOTSUPP;
 	}
 
-	if (rxfh->indir) {
-		ret = hw_if->set_rss_lookup_table(pdata, rxfh->indir);
+	if (indir) {
+		ret = hw_if->set_rss_lookup_table(pdata, indir);
 		if (ret)
 			return ret;
 	}
 
-	if (rxfh->key) {
-		ret = hw_if->set_rss_hash_key(pdata, rxfh->key);
+	if (key) {
+		ret = hw_if->set_rss_hash_key(pdata, key);
 		if (ret)
 			return ret;
 	}
@@ -577,17 +571,21 @@ static int xgbe_set_rxfh(struct net_device *netdev,
 }
 
 static int xgbe_get_ts_info(struct net_device *netdev,
-			    struct kernel_ethtool_ts_info *ts_info)
+			    struct ethtool_ts_info *ts_info)
 {
 	struct xgbe_prv_data *pdata = netdev_priv(netdev);
 
 	ts_info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
+				   SOF_TIMESTAMPING_RX_SOFTWARE |
+				   SOF_TIMESTAMPING_SOFTWARE |
 				   SOF_TIMESTAMPING_TX_HARDWARE |
 				   SOF_TIMESTAMPING_RX_HARDWARE |
 				   SOF_TIMESTAMPING_RAW_HARDWARE;
 
 	if (pdata->ptp_clock)
 		ts_info->phc_index = ptp_clock_index(pdata->ptp_clock);
+	else
+		ts_info->phc_index = -1;
 
 	ts_info->tx_types = (1 << HWTSTAMP_TX_OFF) | (1 << HWTSTAMP_TX_ON);
 	ts_info->rx_filters = (1 << HWTSTAMP_FILTER_NONE) |
@@ -621,11 +619,8 @@ static int xgbe_get_module_eeprom(struct net_device *netdev,
 	return pdata->phy_if.module_eeprom(pdata, eeprom, data);
 }
 
-static void
-xgbe_get_ringparam(struct net_device *netdev,
-		   struct ethtool_ringparam *ringparam,
-		   struct kernel_ethtool_ringparam *kernel_ringparam,
-		   struct netlink_ext_ack *extack)
+static void xgbe_get_ringparam(struct net_device *netdev,
+			       struct ethtool_ringparam *ringparam)
 {
 	struct xgbe_prv_data *pdata = netdev_priv(netdev);
 
@@ -636,9 +631,7 @@ xgbe_get_ringparam(struct net_device *netdev,
 }
 
 static int xgbe_set_ringparam(struct net_device *netdev,
-			      struct ethtool_ringparam *ringparam,
-			      struct kernel_ethtool_ringparam *kernel_ringparam,
-			      struct netlink_ext_ack *extack)
+			      struct ethtool_ringparam *ringparam)
 {
 	struct xgbe_prv_data *pdata = netdev_priv(netdev);
 	unsigned int rx, tx;

@@ -17,6 +17,8 @@
 #include <linux/backing-dev-defs.h>
 #include <linux/slab.h>
 
+struct blkcg;
+
 static inline struct backing_dev_info *bdi_get(struct backing_dev_info *bdi)
 {
 	kref_get(&bdi->refcnt);
@@ -38,6 +40,7 @@ struct backing_dev_info *bdi_alloc(int node_id);
 
 void wb_start_background_writeback(struct bdi_writeback *wb);
 void wb_workfn(struct work_struct *work);
+void wb_wakeup_delayed(struct bdi_writeback *wb);
 
 void wb_wait_for_completion(struct wb_completion *done);
 
@@ -45,6 +48,7 @@ extern spinlock_t bdi_lock;
 extern struct list_head bdi_list;
 
 extern struct workqueue_struct *bdi_wq;
+extern struct workqueue_struct *bdi_async_bio_wq;
 
 static inline bool wb_has_dirty_io(struct bdi_writeback *wb)
 {
@@ -100,18 +104,8 @@ static inline unsigned long wb_stat_error(void)
 #endif
 }
 
-/* BDI ratio is expressed as part per 1000000 for finer granularity. */
-#define BDI_RATIO_SCALE 10000
-
-u64 bdi_get_min_bytes(struct backing_dev_info *bdi);
-u64 bdi_get_max_bytes(struct backing_dev_info *bdi);
 int bdi_set_min_ratio(struct backing_dev_info *bdi, unsigned int min_ratio);
 int bdi_set_max_ratio(struct backing_dev_info *bdi, unsigned int max_ratio);
-int bdi_set_min_ratio_no_scale(struct backing_dev_info *bdi, unsigned int min_ratio);
-int bdi_set_max_ratio_no_scale(struct backing_dev_info *bdi, unsigned int max_ratio);
-int bdi_set_min_bytes(struct backing_dev_info *bdi, u64 min_bytes);
-int bdi_set_max_bytes(struct backing_dev_info *bdi, u64 max_bytes);
-int bdi_set_strict_limit(struct backing_dev_info *bdi, unsigned int strict_limit);
 
 /*
  * Flags in backing_dev_info::capability
@@ -127,8 +121,6 @@ int bdi_set_strict_limit(struct backing_dev_info *bdi, unsigned int strict_limit
 
 extern struct backing_dev_info noop_backing_dev_info;
 
-int bdi_init(struct backing_dev_info *bdi);
-
 /**
  * writeback_in_progress - determine whether there is writeback in progress
  * @wb: bdi_writeback of interest
@@ -143,9 +135,22 @@ static inline bool writeback_in_progress(struct bdi_writeback *wb)
 
 struct backing_dev_info *inode_to_bdi(struct inode *inode);
 
+static inline int wb_congested(struct bdi_writeback *wb, int cong_bits)
+{
+	return wb->congested & cong_bits;
+}
+
+long congestion_wait(int sync, long timeout);
+
 static inline bool mapping_can_writeback(struct address_space *mapping)
 {
 	return inode_to_bdi(mapping->host)->capabilities & BDI_CAP_WRITEBACK;
+}
+
+static inline int bdi_sched_wait(void *word)
+{
+	schedule();
+	return 0;
 }
 
 #ifdef CONFIG_CGROUP_WRITEBACK
@@ -156,7 +161,8 @@ struct bdi_writeback *wb_get_create(struct backing_dev_info *bdi,
 				    struct cgroup_subsys_state *memcg_css,
 				    gfp_t gfp);
 void wb_memcg_offline(struct mem_cgroup *memcg);
-void wb_blkcg_offline(struct cgroup_subsys_state *css);
+void wb_blkcg_offline(struct blkcg *blkcg);
+int inode_congested(struct inode *inode, int cong_bits);
 
 /**
  * inode_cgwb_enabled - test whether cgroup writeback is enabled on an inode
@@ -235,6 +241,18 @@ wb_get_create_current(struct backing_dev_info *bdi, gfp_t gfp)
 		css_put(memcg_css);
 	}
 	return wb;
+}
+
+/**
+ * inode_to_wb_is_valid - test whether an inode has a wb associated
+ * @inode: inode of interest
+ *
+ * Returns %true if @inode has a wb associated.  May be called without any
+ * locking.
+ */
+static inline bool inode_to_wb_is_valid(struct inode *inode)
+{
+	return inode->i_wb;
 }
 
 /**
@@ -335,6 +353,11 @@ wb_get_create_current(struct backing_dev_info *bdi, gfp_t gfp)
 	return &bdi->wb;
 }
 
+static inline bool inode_to_wb_is_valid(struct inode *inode)
+{
+	return true;
+}
+
 static inline struct bdi_writeback *inode_to_wb(struct inode *inode)
 {
 	return &inode_to_bdi(inode)->wb;
@@ -363,11 +386,53 @@ static inline void wb_memcg_offline(struct mem_cgroup *memcg)
 {
 }
 
-static inline void wb_blkcg_offline(struct cgroup_subsys_state *css)
+static inline void wb_blkcg_offline(struct blkcg *blkcg)
 {
 }
 
+static inline int inode_congested(struct inode *inode, int cong_bits)
+{
+	return wb_congested(&inode_to_bdi(inode)->wb, cong_bits);
+}
+
 #endif	/* CONFIG_CGROUP_WRITEBACK */
+
+static inline int inode_read_congested(struct inode *inode)
+{
+	return inode_congested(inode, 1 << WB_sync_congested);
+}
+
+static inline int inode_write_congested(struct inode *inode)
+{
+	return inode_congested(inode, 1 << WB_async_congested);
+}
+
+static inline int inode_rw_congested(struct inode *inode)
+{
+	return inode_congested(inode, (1 << WB_sync_congested) |
+				      (1 << WB_async_congested));
+}
+
+static inline int bdi_congested(struct backing_dev_info *bdi, int cong_bits)
+{
+	return wb_congested(&bdi->wb, cong_bits);
+}
+
+static inline int bdi_read_congested(struct backing_dev_info *bdi)
+{
+	return bdi_congested(bdi, 1 << WB_sync_congested);
+}
+
+static inline int bdi_write_congested(struct backing_dev_info *bdi)
+{
+	return bdi_congested(bdi, 1 << WB_async_congested);
+}
+
+static inline int bdi_rw_congested(struct backing_dev_info *bdi)
+{
+	return bdi_congested(bdi, (1 << WB_sync_congested) |
+				  (1 << WB_async_congested));
+}
 
 const char *bdi_dev_name(struct backing_dev_info *bdi);
 

@@ -8,7 +8,8 @@
 #include <linux/i2c.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_gpio.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
@@ -263,6 +264,8 @@ static irqreturn_t ak4118_irq_handler(int irq, void *data)
 	struct ak4118_priv *ak4118 = data;
 	struct snd_soc_component *component = ak4118->component;
 	struct snd_kcontrol_new *kctl_new;
+	struct snd_kcontrol *kctl;
+	struct snd_ctl_elem_id *id;
 	unsigned int i;
 
 	if (!component)
@@ -270,8 +273,13 @@ static irqreturn_t ak4118_irq_handler(int irq, void *data)
 
 	for (i = 0; i < ARRAY_SIZE(ak4118_iec958_controls); i++) {
 		kctl_new = &ak4118_iec958_controls[i];
-
-		snd_soc_component_notify_control(component, kctl_new->name);
+		kctl = snd_soc_card_get_kcontrol(component->card,
+						 kctl_new->name);
+		if (!kctl)
+			continue;
+		id = &kctl->id;
+		snd_ctl_notify(component->card->snd_card,
+			       SNDRV_CTL_EVENT_MASK_VALUE, id);
 	}
 
 	return IRQ_HANDLED;
@@ -334,6 +342,7 @@ static const struct snd_soc_component_driver soc_component_drv_ak4118 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config ak4118_regmap = {
@@ -347,7 +356,8 @@ static const struct regmap_config ak4118_regmap = {
 	.max_register = AK4118_REG_MAX - 1,
 };
 
-static int ak4118_i2c_probe(struct i2c_client *i2c)
+static int ak4118_i2c_probe(struct i2c_client *i2c,
+			    const struct i2c_device_id *id)
 {
 	struct ak4118_priv *ak4118;
 	int ret;
@@ -364,14 +374,20 @@ static int ak4118_i2c_probe(struct i2c_client *i2c)
 	i2c_set_clientdata(i2c, ak4118);
 
 	ak4118->reset = devm_gpiod_get(&i2c->dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(ak4118->reset))
-		return dev_err_probe(&i2c->dev, PTR_ERR(ak4118->reset),
-				     "Failed to get reset\n");
+	if (IS_ERR(ak4118->reset)) {
+		ret = PTR_ERR(ak4118->reset);
+		if (ret != -EPROBE_DEFER)
+			dev_err(&i2c->dev, "Failed to get reset: %d\n", ret);
+		return ret;
+	}
 
 	ak4118->irq = devm_gpiod_get(&i2c->dev, "irq", GPIOD_IN);
-	if (IS_ERR(ak4118->irq))
-		return dev_err_probe(&i2c->dev, PTR_ERR(ak4118->irq),
-				     "Failed to get IRQ\n");
+	if (IS_ERR(ak4118->irq)) {
+		ret = PTR_ERR(ak4118->irq);
+		if (ret != -EPROBE_DEFER)
+			dev_err(&i2c->dev, "Failed to get IRQ: %d\n", ret);
+		return ret;
+	}
 
 	ret = devm_request_threaded_irq(&i2c->dev, gpiod_to_irq(ak4118->irq),
 					NULL, ak4118_irq_handler,
@@ -395,7 +411,7 @@ MODULE_DEVICE_TABLE(of, ak4118_of_match);
 #endif
 
 static const struct i2c_device_id ak4118_id_table[] = {
-	{ "ak4118" },
+	{ "ak4118", 0 },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, ak4118_id_table);
@@ -406,7 +422,7 @@ static struct i2c_driver ak4118_i2c_driver = {
 		.of_match_table = of_match_ptr(ak4118_of_match),
 	},
 	.id_table = ak4118_id_table,
-	.probe = ak4118_i2c_probe,
+	.probe  = ak4118_i2c_probe,
 };
 
 module_i2c_driver(ak4118_i2c_driver);

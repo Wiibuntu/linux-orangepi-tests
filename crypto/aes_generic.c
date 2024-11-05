@@ -48,13 +48,13 @@
  */
 
 #include <crypto/aes.h>
-#include <crypto/algapi.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/errno.h>
+#include <linux/crypto.h>
 #include <asm/byteorder.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 static inline u8 byte(const u32 x, const unsigned n)
 {

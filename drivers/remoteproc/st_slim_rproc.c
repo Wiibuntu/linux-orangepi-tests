@@ -12,6 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/remoteproc.h>
 #include <linux/remoteproc/st_slim_rproc.h>
@@ -215,7 +216,7 @@ static const struct rproc_ops slim_rproc_ops = {
  * obtains and enables any clocks required by the SLIM core and also
  * ioremaps the various IO.
  *
- * Return: st_slim_rproc pointer or PTR_ERR() on error.
+ * Returns st_slim_rproc pointer or PTR_ERR() on error.
  */
 
 struct st_slim_rproc *st_slim_rproc_alloc(struct platform_device *pdev,
@@ -259,14 +260,16 @@ struct st_slim_rproc *st_slim_rproc_alloc(struct platform_device *pdev,
 		slim_rproc->mem[i].size = resource_size(res);
 	}
 
-	slim_rproc->slimcore = devm_platform_ioremap_resource_byname(pdev, "slimcore");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "slimcore");
+	slim_rproc->slimcore = devm_ioremap_resource(dev, res);
 	if (IS_ERR(slim_rproc->slimcore)) {
 		dev_err(&pdev->dev, "failed to ioremap slimcore IO\n");
 		err = PTR_ERR(slim_rproc->slimcore);
 		goto err;
 	}
 
-	slim_rproc->peri = devm_platform_ioremap_resource_byname(pdev, "peripherals");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "peripherals");
+	slim_rproc->peri = devm_ioremap_resource(dev, res);
 	if (IS_ERR(slim_rproc->peri)) {
 		dev_err(&pdev->dev, "failed to ioremap peripherals IO\n");
 		err = PTR_ERR(slim_rproc->peri);

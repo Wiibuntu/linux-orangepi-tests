@@ -10,6 +10,8 @@
 #include "kvm_util.h"
 #include "processor.h"
 
+#define VCPU_ID			1
+
 static void guest_ins_port80(uint8_t *buffer, unsigned int count)
 {
 	unsigned long end;
@@ -20,8 +22,8 @@ static void guest_ins_port80(uint8_t *buffer, unsigned int count)
 		end = (unsigned long)buffer + 8192;
 
 	asm volatile("cld; rep; insb" : "+D"(buffer), "+c"(count) : "d"(0x80) : "memory");
-	GUEST_ASSERT_EQ(count, 0);
-	GUEST_ASSERT_EQ((unsigned long)buffer, end);
+	GUEST_ASSERT_1(count == 0, count);
+	GUEST_ASSERT_2((unsigned long)buffer == end, buffer, end);
 }
 
 static void guest_code(void)
@@ -43,35 +45,42 @@ static void guest_code(void)
 	memset(buffer, 0, sizeof(buffer));
 	guest_ins_port80(buffer, 8192);
 	for (i = 0; i < 8192; i++)
-		__GUEST_ASSERT(buffer[i] == 0xaa,
-			       "Expected '0xaa', got '0x%x' at buffer[%u]",
-			       buffer[i], i);
+		GUEST_ASSERT_2(buffer[i] == 0xaa, i, buffer[i]);
 
 	GUEST_DONE();
 }
 
 int main(int argc, char *argv[])
 {
-	struct kvm_vcpu *vcpu;
 	struct kvm_regs regs;
 	struct kvm_run *run;
 	struct kvm_vm *vm;
 	struct ucall uc;
+	int rc;
 
-	vm = vm_create_with_one_vcpu(&vcpu, guest_code);
-	run = vcpu->run;
+	/* Tell stdout not to buffer its content */
+	setbuf(stdout, NULL);
+
+	/* Create VM */
+	vm = vm_create_default(VCPU_ID, 0, guest_code);
+	run = vcpu_state(vm, VCPU_ID);
 
 	memset(&regs, 0, sizeof(regs));
 
 	while (1) {
-		vcpu_run(vcpu);
-		TEST_ASSERT_KVM_EXIT_REASON(vcpu, KVM_EXIT_IO);
+		rc = _vcpu_run(vm, VCPU_ID);
 
-		if (get_ucall(vcpu, &uc))
+		TEST_ASSERT(rc == 0, "vcpu_run failed: %d\n", rc);
+		TEST_ASSERT(run->exit_reason == KVM_EXIT_IO,
+			    "Unexpected exit reason: %u (%s),\n",
+			    run->exit_reason,
+			    exit_reason_str(run->exit_reason));
+
+		if (get_ucall(vm, VCPU_ID, &uc))
 			break;
 
 		TEST_ASSERT(run->io.port == 0x80,
-			    "Expected I/O at port 0x80, got port 0x%x", run->io.port);
+			    "Expected I/O at port 0x80, got port 0x%x\n", run->io.port);
 
 		/*
 		 * Modify the rep string count in RCX: 2 => 1 and 3 => 8192.
@@ -80,20 +89,22 @@ int main(int argc, char *argv[])
 		 * scope from a testing perspective as it's not ABI in any way,
 		 * i.e. it really is abusing internal KVM knowledge.
 		 */
-		vcpu_regs_get(vcpu, &regs);
+		vcpu_regs_get(vm, VCPU_ID, &regs);
 		if (regs.rcx == 2)
 			regs.rcx = 1;
 		if (regs.rcx == 3)
 			regs.rcx = 8192;
 		memset((void *)run + run->io.data_offset, 0xaa, 4096);
-		vcpu_regs_set(vcpu, &regs);
+		vcpu_regs_set(vm, VCPU_ID, &regs);
 	}
 
 	switch (uc.cmd) {
 	case UCALL_DONE:
 		break;
 	case UCALL_ABORT:
-		REPORT_GUEST_ASSERT(uc);
+		TEST_FAIL("%s at %s:%ld : argN+1 = 0x%lx, argN+2 = 0x%lx",
+			  (const char *)uc.args[0], __FILE__, uc.args[1],
+			  uc.args[2], uc.args[3]);
 	default:
 		TEST_FAIL("Unknown ucall %lu", uc.cmd);
 	}

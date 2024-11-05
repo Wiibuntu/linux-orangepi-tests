@@ -37,6 +37,7 @@
 #include <linux/inetdevice.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
+#include <linux/module.h>
 #include <net/arp.h>
 #include <net/neighbour.h>
 #include <net/route.h>
@@ -269,8 +270,6 @@ rdma_find_ndev_for_src_ip_rcu(struct net *net, const struct sockaddr *src_in)
 		break;
 #endif
 	}
-	if (!ret && dev && is_vlan_dev(dev))
-		dev = vlan_dev_real_dev(dev);
 	return ret ? ERR_PTR(ret) : dev;
 }
 
@@ -350,10 +349,16 @@ static int dst_fetch_ha(const struct dst_entry *dst,
 
 static bool has_gateway(const struct dst_entry *dst, sa_family_t family)
 {
-	if (family == AF_INET)
-		return dst_rtable(dst)->rt_uses_gateway;
+	struct rtable *rt;
+	struct rt6_info *rt6;
 
-	return dst_rt6_info(dst)->rt6i_flags & RTF_GATEWAY;
+	if (family == AF_INET) {
+		rt = container_of(dst, struct rtable, dst);
+		return rt->rt_uses_gateway;
+	}
+
+	rt6 = container_of(dst, struct rt6_info, dst);
+	return rt6->rt6i_flags & RTF_GATEWAY;
 }
 
 static int fetch_ha(const struct dst_entry *dst, struct rdma_dev_addr *dev_addr,

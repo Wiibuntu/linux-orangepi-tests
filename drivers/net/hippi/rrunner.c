@@ -213,7 +213,6 @@ static int rr_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		pci_iounmap(pdev, rrpriv->regs);
 	if (pdev)
 		pci_release_regions(pdev);
-	pci_disable_device(pdev);
  out2:
 	free_netdev(dev);
  out3:
@@ -1356,9 +1355,7 @@ static int rr_close(struct net_device *dev)
 
 	rrpriv->fw_running = 0;
 
-	spin_unlock_irqrestore(&rrpriv->lock, flags);
 	del_timer_sync(&rrpriv->timer);
-	spin_lock_irqsave(&rrpriv->lock, flags);
 
 	writel(0, &regs->TxPi);
 	writel(0, &regs->IpRxPi);

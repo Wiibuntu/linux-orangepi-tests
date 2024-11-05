@@ -17,7 +17,6 @@ description: |
 properties:
   compatible:
     enum:
-      - aptina,mt9p006
       - aptina,mt9p031
       - aptina,mt9p031m
 
@@ -82,7 +81,7 @@ additionalProperties: false
 
 examples:
   - |
-    i2c {
+    i2c0 {
         #address-cells = <1>;
         #size-cells = <0>;
 

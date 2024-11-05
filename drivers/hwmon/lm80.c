@@ -586,7 +586,7 @@ static int lm80_detect(struct i2c_client *client, struct i2c_board_info *info)
 		name = "lm80";
 	}
 
-	strscpy(info->type, name, I2C_NAME_SIZE);
+	strlcpy(info->type, name, I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -633,7 +633,7 @@ static struct i2c_driver lm80_driver = {
 	.driver = {
 		.name	= "lm80",
 	},
-	.probe		= lm80_probe,
+	.probe_new	= lm80_probe,
 	.id_table	= lm80_id,
 	.detect		= lm80_detect,
 	.address_list	= normal_i2c,

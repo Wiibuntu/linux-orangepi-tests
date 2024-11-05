@@ -10,6 +10,7 @@
 struct pci_dn;
 
 enum pnv_phb_type {
+	PNV_PHB_IODA1,
 	PNV_PHB_IODA2,
 	PNV_PHB_NPU_OCAPI,
 };
@@ -162,6 +163,10 @@ struct pnv_phb {
 		unsigned int		*m32_segmap;
 		unsigned int		*io_segmap;
 
+		/* DMA32 segment maps - IODA1 only */
+		unsigned int		dma32_count;
+		unsigned int		*dma32_segmap;
+
 		/* IRQ chip */
 		int			irq_chip_init;
 		struct irq_chip		irq_chip;
@@ -274,6 +279,7 @@ int pnv_pci_cfg_write(struct pci_dn *pdn,
 		      int where, int size, u32 val);
 extern struct iommu_table *pnv_pci_table_alloc(int nid);
 
+extern void pnv_pci_init_ioda_hub(struct device_node *np);
 extern void pnv_pci_init_ioda2_phb(struct device_node *np);
 extern void pnv_pci_init_npu2_opencapi_phb(struct device_node *np);
 extern void pnv_pci_reset_secondary_bus(struct pci_dev *dev);
@@ -305,7 +311,8 @@ extern int pnv_tce_build(struct iommu_table *tbl, long index, long npages,
 		unsigned long attrs);
 extern void pnv_tce_free(struct iommu_table *tbl, long index, long npages);
 extern int pnv_tce_xchg(struct iommu_table *tbl, long index,
-		unsigned long *hpa, enum dma_data_direction *direction);
+		unsigned long *hpa, enum dma_data_direction *direction,
+		bool alloc);
 extern __be64 *pnv_tce_useraddrptr(struct iommu_table *tbl, long index,
 		bool alloc);
 extern unsigned long pnv_tce_get(struct iommu_table *tbl, long index);

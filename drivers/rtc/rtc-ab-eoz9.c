@@ -455,7 +455,7 @@ static const struct hwmon_channel_info abeoz9_temp = {
 	.config = abeoz9_temp_config,
 };
 
-static const struct hwmon_channel_info * const abeoz9_info[] = {
+static const struct hwmon_channel_info *abeoz9_info[] = {
 	&abeoz9_chip,
 	&abeoz9_temp,
 	NULL
@@ -495,7 +495,8 @@ static void abeoz9_hwmon_register(struct device *dev,
 
 #endif
 
-static int abeoz9_probe(struct i2c_client *client)
+static int abeoz9_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct abeoz9_rtc_data *data = NULL;
 	struct device *dev = &client->dev;
@@ -536,14 +537,9 @@ static int abeoz9_probe(struct i2c_client *client)
 	clear_bit(RTC_FEATURE_ALARM, data->rtc->features);
 
 	if (client->irq > 0) {
-		unsigned long irqflags = IRQF_TRIGGER_LOW;
-
-		if (dev_fwnode(&client->dev))
-			irqflags = 0;
-
 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
 						abeoz9_rtc_irq,
-						irqflags | IRQF_ONESHOT,
+						IRQF_TRIGGER_LOW | IRQF_ONESHOT,
 						dev_name(dev), dev);
 		if (ret) {
 			dev_err(dev, "failed to request alarm irq\n");
@@ -575,7 +571,7 @@ MODULE_DEVICE_TABLE(of, abeoz9_dt_match);
 #endif
 
 static const struct i2c_device_id abeoz9_id[] = {
-	{ "abeoz9" },
+	{ "abeoz9", 0 },
 	{ }
 };
 
@@ -584,7 +580,7 @@ static struct i2c_driver abeoz9_driver = {
 		.name = "rtc-ab-eoz9",
 		.of_match_table = of_match_ptr(abeoz9_dt_match),
 	},
-	.probe = abeoz9_probe,
+	.probe	  = abeoz9_probe,
 	.id_table = abeoz9_id,
 };
 

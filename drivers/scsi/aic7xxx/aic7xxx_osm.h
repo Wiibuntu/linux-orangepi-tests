@@ -433,6 +433,8 @@ ahc_unlock(struct ahc_softc *ahc, unsigned long *flags)
 
 /* config registers for header type 0 devices */
 #define PCIR_MAPS	0x10
+#define PCIR_SUBVEND_0	0x2c
+#define PCIR_SUBDEV_0	0x2e
 
 typedef enum
 {

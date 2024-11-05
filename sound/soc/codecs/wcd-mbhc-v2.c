@@ -5,7 +5,6 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/device.h>
-#include <linux/pm_runtime.h>
 #include <linux/printk.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
@@ -16,7 +15,6 @@
 #define HS_DETECT_PLUG_TIME_MS		(3 * 1000)
 #define MBHC_BUTTON_PRESS_THRESHOLD_MIN	250
 #define GND_MIC_SWAP_THRESHOLD		4
-#define GND_MIC_USBC_SWAP_THRESHOLD	2
 #define WCD_FAKE_REMOVAL_MIN_PERIOD_MS	100
 #define HPHL_CROSS_CONN_THRESHOLD	100
 #define HS_VREF_MIN_VAL			1400
@@ -50,18 +48,15 @@ struct wcd_mbhc {
 	struct wcd_mbhc_config *cfg;
 	const struct wcd_mbhc_cb *mbhc_cb;
 	const struct wcd_mbhc_intr *intr_ids;
-	const struct wcd_mbhc_field *fields;
+	struct wcd_mbhc_field *fields;
 	/* Delayed work to report long button press */
 	struct delayed_work mbhc_btn_dwork;
-	/* Work to handle plug report */
-	struct work_struct mbhc_plug_detect_work;
 	/* Work to correct accessory type */
 	struct work_struct correct_plug_swch;
 	struct mutex lock;
 	int buttons_pressed;
 	u32 hph_status; /* track headhpone status */
 	u8 current_plug;
-	unsigned int swap_thr;
 	bool is_btn_press;
 	bool in_swch_irq_handler;
 	bool hs_detect_work_stop;
@@ -510,13 +505,14 @@ static void wcd_mbhc_adc_detect_plug_type(struct wcd_mbhc *mbhc)
 	}
 }
 
-static void mbhc_plug_detect_fn(struct work_struct *work)
+static irqreturn_t wcd_mbhc_mech_plug_detect_irq(int irq, void *data)
 {
-	struct wcd_mbhc *mbhc = container_of(work, struct wcd_mbhc, mbhc_plug_detect_work);
-	struct snd_soc_component *component = mbhc->component;
+	struct snd_soc_component *component;
 	enum snd_jack_types jack_type;
+	struct wcd_mbhc *mbhc = data;
 	bool detection_type;
 
+	component = mbhc->component;
 	mutex_lock(&mbhc->lock);
 
 	mbhc->in_swch_irq_handler = true;
@@ -579,50 +575,8 @@ static void mbhc_plug_detect_fn(struct work_struct *work)
 exit:
 	mbhc->in_swch_irq_handler = false;
 	mutex_unlock(&mbhc->lock);
-}
-
-static irqreturn_t wcd_mbhc_mech_plug_detect_irq(int irq, void *data)
-{
-	struct wcd_mbhc *mbhc = data;
-
-	if (!mbhc->cfg->typec_analog_mux)
-		schedule_work(&mbhc->mbhc_plug_detect_work);
-
 	return IRQ_HANDLED;
 }
-
-int wcd_mbhc_typec_report_unplug(struct wcd_mbhc *mbhc)
-{
-
-	if (!mbhc || !mbhc->cfg->typec_analog_mux)
-		return -EINVAL;
-
-	if (mbhc->mbhc_cb->clk_setup)
-		mbhc->mbhc_cb->clk_setup(mbhc->component, false);
-
-	wcd_mbhc_write_field(mbhc, WCD_MBHC_L_DET_EN, 0);
-	wcd_mbhc_write_field(mbhc, WCD_MBHC_MECH_DETECTION_TYPE, 0);
-
-	schedule_work(&mbhc->mbhc_plug_detect_work);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(wcd_mbhc_typec_report_unplug);
-
-int wcd_mbhc_typec_report_plug(struct wcd_mbhc *mbhc)
-{
-	if (!mbhc || !mbhc->cfg->typec_analog_mux)
-		return -EINVAL;
-
-	if (mbhc->mbhc_cb->clk_setup)
-		mbhc->mbhc_cb->clk_setup(mbhc->component, true);
-	wcd_mbhc_write_field(mbhc, WCD_MBHC_L_DET_EN, 1);
-
-	schedule_work(&mbhc->mbhc_plug_detect_work);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(wcd_mbhc_typec_report_plug);
 
 static int wcd_mbhc_get_button_mask(struct wcd_mbhc *mbhc)
 {
@@ -757,36 +711,17 @@ static irqreturn_t wcd_mbhc_hphr_ocp_irq(int irq, void *data)
 static int wcd_mbhc_initialise(struct wcd_mbhc *mbhc)
 {
 	struct snd_soc_component *component = mbhc->component;
-	int ret;
-
-	ret = pm_runtime_get_sync(component->dev);
-	if (ret < 0 && ret != -EACCES) {
-		dev_err_ratelimited(component->dev,
-				    "pm_runtime_get_sync failed in %s, ret %d\n",
-				    __func__, ret);
-		pm_runtime_put_noidle(component->dev);
-		return ret;
-	}
 
 	mutex_lock(&mbhc->lock);
 
-	if (mbhc->cfg->typec_analog_mux)
-		mbhc->swap_thr = GND_MIC_USBC_SWAP_THRESHOLD;
-	else
-		mbhc->swap_thr = GND_MIC_SWAP_THRESHOLD;
-
-	/* setup HS detection */
+	/* enable HS detection */
 	if (mbhc->mbhc_cb->hph_pull_up_control_v2)
 		mbhc->mbhc_cb->hph_pull_up_control_v2(component,
-				mbhc->cfg->typec_analog_mux ?
-					HS_PULLUP_I_OFF : HS_PULLUP_I_DEFAULT);
+						      HS_PULLUP_I_DEFAULT);
 	else if (mbhc->mbhc_cb->hph_pull_up_control)
-		mbhc->mbhc_cb->hph_pull_up_control(component,
-				mbhc->cfg->typec_analog_mux ?
-					I_OFF : I_DEFAULT);
+		mbhc->mbhc_cb->hph_pull_up_control(component, I_DEFAULT);
 	else
-		wcd_mbhc_write_field(mbhc, WCD_MBHC_HS_L_DET_PULL_UP_CTRL,
-				mbhc->cfg->typec_analog_mux ? 0 : 3);
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_HS_L_DET_PULL_UP_CTRL, 3);
 
 	wcd_mbhc_write_field(mbhc, WCD_MBHC_HPHL_PLUG_TYPE, mbhc->cfg->hphl_swh);
 	wcd_mbhc_write_field(mbhc, WCD_MBHC_GND_PLUG_TYPE, mbhc->cfg->gnd_swh);
@@ -795,18 +730,10 @@ static int wcd_mbhc_initialise(struct wcd_mbhc *mbhc)
 		mbhc->mbhc_cb->mbhc_gnd_det_ctrl(component, true);
 	wcd_mbhc_write_field(mbhc, WCD_MBHC_HS_L_DET_PULL_UP_COMP_CTRL, 1);
 
-	/* Plug detect is triggered manually if analog goes through USBCC */
-	if (mbhc->cfg->typec_analog_mux)
-		wcd_mbhc_write_field(mbhc, WCD_MBHC_L_DET_EN, 0);
-	else
-		wcd_mbhc_write_field(mbhc, WCD_MBHC_L_DET_EN, 1);
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_L_DET_EN, 1);
 
-	if (mbhc->cfg->typec_analog_mux)
-		/* Insertion debounce set to 48ms */
-		wcd_mbhc_write_field(mbhc, WCD_MBHC_INSREM_DBNC, 4);
-	else
-		/* Insertion debounce set to 96ms */
-		wcd_mbhc_write_field(mbhc, WCD_MBHC_INSREM_DBNC, 6);
+	/* Insertion debounce set to 96ms */
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_INSREM_DBNC, 6);
 
 	/* Button Debounce set to 16ms */
 	wcd_mbhc_write_field(mbhc, WCD_MBHC_BTN_DBNC, 2);
@@ -815,8 +742,7 @@ static int wcd_mbhc_initialise(struct wcd_mbhc *mbhc)
 	mbhc->mbhc_cb->mbhc_bias(component, true);
 	/* enable MBHC clock */
 	if (mbhc->mbhc_cb->clk_setup)
-		mbhc->mbhc_cb->clk_setup(component,
-				mbhc->cfg->typec_analog_mux ? false : true);
+		mbhc->mbhc_cb->clk_setup(component, true);
 
 	/* program HS_VREF value */
 	wcd_program_hs_vref(mbhc);
@@ -824,9 +750,6 @@ static int wcd_mbhc_initialise(struct wcd_mbhc *mbhc)
 	wcd_program_btn_threshold(mbhc, false);
 
 	mutex_unlock(&mbhc->lock);
-
-	pm_runtime_mark_last_busy(component->dev);
-	pm_runtime_put_autosuspend(component->dev);
 
 	return 0;
 }
@@ -1099,52 +1022,6 @@ static int wcd_mbhc_get_plug_from_adc(struct wcd_mbhc *mbhc, int adc_result)
 	return plug_type;
 }
 
-static int wcd_mbhc_get_spl_hs_thres(struct wcd_mbhc *mbhc)
-{
-	int hs_threshold, micbias_mv;
-
-	micbias_mv = wcd_mbhc_get_micbias(mbhc);
-	if (mbhc->cfg->hs_thr && mbhc->cfg->micb_mv != WCD_MBHC_ADC_MICBIAS_MV) {
-		if (mbhc->cfg->micb_mv == micbias_mv)
-			hs_threshold = mbhc->cfg->hs_thr;
-		else
-			hs_threshold = (mbhc->cfg->hs_thr * micbias_mv) / mbhc->cfg->micb_mv;
-	} else {
-		hs_threshold = ((WCD_MBHC_ADC_HS_THRESHOLD_MV * micbias_mv) /
-							WCD_MBHC_ADC_MICBIAS_MV);
-	}
-	return hs_threshold;
-}
-
-static bool wcd_mbhc_check_for_spl_headset(struct wcd_mbhc *mbhc)
-{
-	bool is_spl_hs = false;
-	int output_mv, hs_threshold, hph_threshold;
-
-	if (!mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic)
-		return false;
-
-	/* Bump up MIC_BIAS2 to 2.7V */
-	mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic(mbhc->component, MIC_BIAS_2, true);
-	usleep_range(10000, 10100);
-
-	output_mv = wcd_measure_adc_once(mbhc, MUX_CTL_IN2P);
-	hs_threshold = wcd_mbhc_get_spl_hs_thres(mbhc);
-	hph_threshold = wcd_mbhc_adc_get_hph_thres(mbhc);
-
-	if (!(output_mv > hs_threshold || output_mv < hph_threshold))
-		is_spl_hs = true;
-
-	/* Back MIC_BIAS2 to 1.8v if the type is not special headset */
-	if (!is_spl_hs) {
-		mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic(mbhc->component, MIC_BIAS_2, false);
-		/* Add 10ms delay for micbias to settle */
-		usleep_range(10000, 10100);
-	}
-
-	return is_spl_hs;
-}
-
 static void wcd_correct_swch_plug(struct work_struct *work)
 {
 	struct wcd_mbhc *mbhc;
@@ -1152,23 +1029,12 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 	enum wcd_mbhc_plug_type plug_type = MBHC_PLUG_TYPE_INVALID;
 	unsigned long timeout;
 	int pt_gnd_mic_swap_cnt = 0;
-	int output_mv, cross_conn, hs_threshold, try = 0, micbias_mv;
-	bool is_spl_hs = false;
+	int output_mv, cross_conn, hs_threshold, try = 0;
 	bool is_pa_on;
-	int ret;
 
 	mbhc = container_of(work, struct wcd_mbhc, correct_plug_swch);
 	component = mbhc->component;
 
-	ret = pm_runtime_get_sync(component->dev);
-	if (ret < 0 && ret != -EACCES) {
-		dev_err_ratelimited(component->dev,
-				    "pm_runtime_get_sync failed in %s, ret %d\n",
-				    __func__, ret);
-		pm_runtime_put_noidle(component->dev);
-		return;
-	}
-	micbias_mv = wcd_mbhc_get_micbias(mbhc);
 	hs_threshold = wcd_mbhc_adc_get_hs_thres(mbhc);
 
 	/* Mask ADC COMPLETE interrupt */
@@ -1178,7 +1044,7 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 	do {
 		cross_conn = wcd_check_cross_conn(mbhc);
 		try++;
-	} while (try < mbhc->swap_thr);
+	} while (try < GND_MIC_SWAP_THRESHOLD);
 
 	if (cross_conn > 0) {
 		plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
@@ -1231,22 +1097,12 @@ correct_plug_type:
 		plug_type = wcd_mbhc_get_plug_from_adc(mbhc, output_mv);
 		is_pa_on = wcd_mbhc_read_field(mbhc, WCD_MBHC_HPH_PA_EN);
 
-		if (output_mv > hs_threshold && !is_spl_hs) {
-			is_spl_hs = wcd_mbhc_check_for_spl_headset(mbhc);
-			output_mv = wcd_measure_adc_once(mbhc, MUX_CTL_IN2P);
-
-			if (is_spl_hs) {
-				hs_threshold *= wcd_mbhc_get_micbias(mbhc);
-				hs_threshold /= micbias_mv;
-			}
-		}
-
 		if ((output_mv <= hs_threshold) && !is_pa_on) {
 			/* Check for cross connection*/
 			cross_conn = wcd_check_cross_conn(mbhc);
 			if (cross_conn > 0) { /* cross-connection */
 				pt_gnd_mic_swap_cnt++;
-				if (pt_gnd_mic_swap_cnt < mbhc->swap_thr)
+				if (pt_gnd_mic_swap_cnt < GND_MIC_SWAP_THRESHOLD)
 					continue;
 				else
 					plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
@@ -1254,10 +1110,10 @@ correct_plug_type:
 				pt_gnd_mic_swap_cnt = 0;
 				plug_type = wcd_mbhc_get_plug_from_adc(mbhc, output_mv);
 				continue;
-			} else /* Error if (cross_conn < 0) */
+			} else if (cross_conn < 0) /* Error */
 				continue;
 
-			if (pt_gnd_mic_swap_cnt == mbhc->swap_thr) {
+			if (pt_gnd_mic_swap_cnt == GND_MIC_SWAP_THRESHOLD) {
 				/* US_EU gpio present, flip switch */
 				if (mbhc->cfg->swap_gnd_mic) {
 					if (mbhc->cfg->swap_gnd_mic(component, true))
@@ -1266,19 +1122,14 @@ correct_plug_type:
 			}
 		}
 
-		/* cable is extension cable */
-		if (output_mv > hs_threshold || mbhc->force_linein)
+		if (output_mv > hs_threshold) /* cable is extension cable */
 			plug_type = MBHC_PLUG_TYPE_HIGH_HPH;
 	}
 
 	wcd_mbhc_bcs_enable(mbhc, plug_type, true);
 
-	if (plug_type == MBHC_PLUG_TYPE_HIGH_HPH) {
-		if (is_spl_hs)
-			plug_type = MBHC_PLUG_TYPE_HEADSET;
-		else
-			wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_ISRC_EN, 1);
-	}
+	if (plug_type == MBHC_PLUG_TYPE_HIGH_HPH)
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_ISRC_EN, 1);
 
 	wcd_mbhc_write_field(mbhc, WCD_MBHC_ADC_MODE, 0);
 	wcd_mbhc_write_field(mbhc, WCD_MBHC_ADC_EN, 0);
@@ -1318,9 +1169,6 @@ exit:
 
 	if (mbhc->mbhc_cb->hph_pull_down_ctrl)
 		mbhc->mbhc_cb->hph_pull_down_ctrl(component, true);
-
-	pm_runtime_mark_last_busy(component->dev);
-	pm_runtime_put_autosuspend(component->dev);
 }
 
 static irqreturn_t wcd_mbhc_adc_hs_rem_irq(int irq, void *data)
@@ -1328,6 +1176,7 @@ static irqreturn_t wcd_mbhc_adc_hs_rem_irq(int irq, void *data)
 	struct wcd_mbhc *mbhc = data;
 	unsigned long timeout;
 	int adc_threshold, output_mv, retry = 0;
+	bool hphpa_on = false;
 
 	mutex_lock(&mbhc->lock);
 	timeout = jiffies + msecs_to_jiffies(WCD_FAKE_REMOVAL_MIN_PERIOD_MS);
@@ -1361,6 +1210,10 @@ static irqreturn_t wcd_mbhc_adc_hs_rem_irq(int irq, void *data)
 	wcd_mbhc_elec_hs_report_unplug(mbhc);
 	wcd_mbhc_write_field(mbhc, WCD_MBHC_BTN_ISRC_CTL, 0);
 
+	if (hphpa_on) {
+		hphpa_on = false;
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_HPH_PA_EN, 3);
+	}
 exit:
 	mutex_unlock(&mbhc->lock);
 	return IRQ_HANDLED;
@@ -1369,7 +1222,7 @@ exit:
 static irqreturn_t wcd_mbhc_adc_hs_ins_irq(int irq, void *data)
 {
 	struct wcd_mbhc *mbhc = data;
-	u8 clamp_state;
+	u8 clamp_state = 0;
 	u8 clamp_retry = WCD_MBHC_FAKE_INS_RETRY;
 
 	/*
@@ -1505,7 +1358,7 @@ EXPORT_SYMBOL(wcd_dt_parse_mbhc_data);
 struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 			       const struct wcd_mbhc_cb *mbhc_cb,
 			       const struct wcd_mbhc_intr *intr_ids,
-			       const struct wcd_mbhc_field *fields,
+			       struct wcd_mbhc_field *fields,
 			       bool impedance_det_en)
 {
 	struct device *dev = component->dev;
@@ -1517,7 +1370,7 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 		return ERR_PTR(-EINVAL);
 	}
 
-	mbhc = kzalloc(sizeof(*mbhc), GFP_KERNEL);
+	mbhc = devm_kzalloc(dev, sizeof(*mbhc), GFP_KERNEL);
 	if (!mbhc)
 		return ERR_PTR(-ENOMEM);
 
@@ -1536,78 +1389,62 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 	mutex_init(&mbhc->lock);
 
 	INIT_WORK(&mbhc->correct_plug_swch, wcd_correct_swch_plug);
-	INIT_WORK(&mbhc->mbhc_plug_detect_work, mbhc_plug_detect_fn);
 
-	ret = request_threaded_irq(mbhc->intr_ids->mbhc_sw_intr, NULL,
+	ret = devm_request_threaded_irq(dev, mbhc->intr_ids->mbhc_sw_intr, NULL,
 					wcd_mbhc_mech_plug_detect_irq,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"mbhc sw intr", mbhc);
 	if (ret)
-		goto err_free_mbhc;
+		goto err;
 
-	ret = request_threaded_irq(mbhc->intr_ids->mbhc_btn_press_intr, NULL,
+	ret = devm_request_threaded_irq(dev, mbhc->intr_ids->mbhc_btn_press_intr, NULL,
 					wcd_mbhc_btn_press_handler,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"Button Press detect", mbhc);
 	if (ret)
-		goto err_free_sw_intr;
+		goto err;
 
-	ret = request_threaded_irq(mbhc->intr_ids->mbhc_btn_release_intr, NULL,
+	ret = devm_request_threaded_irq(dev, mbhc->intr_ids->mbhc_btn_release_intr, NULL,
 					wcd_mbhc_btn_release_handler,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"Button Release detect", mbhc);
 	if (ret)
-		goto err_free_btn_press_intr;
+		goto err;
 
-	ret = request_threaded_irq(mbhc->intr_ids->mbhc_hs_ins_intr, NULL,
+	ret = devm_request_threaded_irq(dev, mbhc->intr_ids->mbhc_hs_ins_intr, NULL,
 					wcd_mbhc_adc_hs_ins_irq,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"Elect Insert", mbhc);
 	if (ret)
-		goto err_free_btn_release_intr;
+		goto err;
 
 	disable_irq_nosync(mbhc->intr_ids->mbhc_hs_ins_intr);
 
-	ret = request_threaded_irq(mbhc->intr_ids->mbhc_hs_rem_intr, NULL,
+	ret = devm_request_threaded_irq(dev, mbhc->intr_ids->mbhc_hs_rem_intr, NULL,
 					wcd_mbhc_adc_hs_rem_irq,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"Elect Remove", mbhc);
 	if (ret)
-		goto err_free_hs_ins_intr;
+		goto err;
 
 	disable_irq_nosync(mbhc->intr_ids->mbhc_hs_rem_intr);
 
-	ret = request_threaded_irq(mbhc->intr_ids->hph_left_ocp, NULL,
+	ret = devm_request_threaded_irq(dev, mbhc->intr_ids->hph_left_ocp, NULL,
 					wcd_mbhc_hphl_ocp_irq,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"HPH_L OCP detect", mbhc);
 	if (ret)
-		goto err_free_hs_rem_intr;
+		goto err;
 
-	ret = request_threaded_irq(mbhc->intr_ids->hph_right_ocp, NULL,
+	ret = devm_request_threaded_irq(dev, mbhc->intr_ids->hph_right_ocp, NULL,
 					wcd_mbhc_hphr_ocp_irq,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"HPH_R OCP detect", mbhc);
 	if (ret)
-		goto err_free_hph_left_ocp;
+		goto err;
 
 	return mbhc;
-
-err_free_hph_left_ocp:
-	free_irq(mbhc->intr_ids->hph_left_ocp, mbhc);
-err_free_hs_rem_intr:
-	free_irq(mbhc->intr_ids->mbhc_hs_rem_intr, mbhc);
-err_free_hs_ins_intr:
-	free_irq(mbhc->intr_ids->mbhc_hs_ins_intr, mbhc);
-err_free_btn_release_intr:
-	free_irq(mbhc->intr_ids->mbhc_btn_release_intr, mbhc);
-err_free_btn_press_intr:
-	free_irq(mbhc->intr_ids->mbhc_btn_press_intr, mbhc);
-err_free_sw_intr:
-	free_irq(mbhc->intr_ids->mbhc_sw_intr, mbhc);
-err_free_mbhc:
-	kfree(mbhc);
-
+err:
 	dev_err(dev, "Failed to request mbhc interrupts %d\n", ret);
 
 	return ERR_PTR(ret);
@@ -1616,20 +1453,9 @@ EXPORT_SYMBOL(wcd_mbhc_init);
 
 void wcd_mbhc_deinit(struct wcd_mbhc *mbhc)
 {
-	free_irq(mbhc->intr_ids->hph_right_ocp, mbhc);
-	free_irq(mbhc->intr_ids->hph_left_ocp, mbhc);
-	free_irq(mbhc->intr_ids->mbhc_hs_rem_intr, mbhc);
-	free_irq(mbhc->intr_ids->mbhc_hs_ins_intr, mbhc);
-	free_irq(mbhc->intr_ids->mbhc_btn_release_intr, mbhc);
-	free_irq(mbhc->intr_ids->mbhc_btn_press_intr, mbhc);
-	free_irq(mbhc->intr_ids->mbhc_sw_intr, mbhc);
-
 	mutex_lock(&mbhc->lock);
 	wcd_cancel_hs_detect_plug(mbhc,	&mbhc->correct_plug_swch);
-	cancel_work_sync(&mbhc->mbhc_plug_detect_work);
 	mutex_unlock(&mbhc->lock);
-
-	kfree(mbhc);
 }
 EXPORT_SYMBOL(wcd_mbhc_deinit);
 

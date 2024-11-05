@@ -12,8 +12,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mmc/sdio_func.h>
-#include <linux/mmc/card.h>
-#include <linux/mmc/host.h>
 #include <linux/sched.h>
 #include <linux/kthread.h>
 
@@ -307,12 +305,12 @@ int mt76s_alloc_rx_queue(struct mt76_dev *dev, enum mt76_rxq_id qid)
 
 	spin_lock_init(&q->lock);
 	q->entry = devm_kcalloc(dev->dev,
-				MT76S_NUM_RX_ENTRIES, sizeof(*q->entry),
+				MT_NUM_RX_ENTRIES, sizeof(*q->entry),
 				GFP_KERNEL);
 	if (!q->entry)
 		return -ENOMEM;
 
-	q->ndesc = MT76S_NUM_RX_ENTRIES;
+	q->ndesc = MT_NUM_RX_ENTRIES;
 	q->head = q->tail = 0;
 	q->queued = 0;
 
@@ -330,12 +328,12 @@ static struct mt76_queue *mt76s_alloc_tx_queue(struct mt76_dev *dev)
 
 	spin_lock_init(&q->lock);
 	q->entry = devm_kcalloc(dev->dev,
-				MT76S_NUM_TX_ENTRIES, sizeof(*q->entry),
+				MT_NUM_TX_ENTRIES, sizeof(*q->entry),
 				GFP_KERNEL);
 	if (!q->entry)
 		return ERR_PTR(-ENOMEM);
 
-	q->ndesc = MT76S_NUM_TX_ENTRIES;
+	q->ndesc = MT_NUM_TX_ENTRIES;
 
 	return q;
 }
@@ -350,6 +348,7 @@ int mt76s_alloc_tx(struct mt76_dev *dev)
 		if (IS_ERR(q))
 			return PTR_ERR(q);
 
+		q->qid = i;
 		dev->phy.q_tx[i] = q;
 	}
 
@@ -357,6 +356,7 @@ int mt76s_alloc_tx(struct mt76_dev *dev)
 	if (IS_ERR(q))
 		return PTR_ERR(q);
 
+	q->qid = MT_MCUQ_WM;
 	dev->q_mcu[MT_MCUQ_WM] = q;
 
 	return 0;
@@ -395,7 +395,7 @@ mt76s_process_rx_queue(struct mt76_dev *dev, struct mt76_queue *q)
 		if (!e || !e->skb)
 			break;
 
-		dev->drv->rx_skb(dev, MT_RXQ_MAIN, e->skb, NULL);
+		dev->drv->rx_skb(dev, MT_RXQ_MAIN, e->skb);
 		e->skb = NULL;
 		nframes++;
 	}
@@ -478,29 +478,28 @@ static void mt76s_status_worker(struct mt76_worker *w)
 		if (ndata_frames > 0)
 			resched = true;
 
-		if (dev->drv->tx_status_data && ndata_frames > 0 &&
+		if (dev->drv->tx_status_data &&
 		    !test_and_set_bit(MT76_READING_STATS, &dev->phy.state) &&
 		    !test_bit(MT76_STATE_SUSPEND, &dev->phy.state))
-			mt76_worker_schedule(&sdio->stat_worker);
+			queue_work(dev->wq, &dev->sdio.stat_work);
 	} while (nframes > 0);
 
 	if (resched)
-		mt76_worker_schedule(&dev->tx_worker);
+		mt76_worker_schedule(&dev->sdio.txrx_worker);
 }
 
-static void mt76s_tx_status_data(struct mt76_worker *worker)
+static void mt76s_tx_status_data(struct work_struct *work)
 {
 	struct mt76_sdio *sdio;
 	struct mt76_dev *dev;
 	u8 update = 1;
 	u16 count = 0;
 
-	sdio = container_of(worker, struct mt76_sdio, stat_worker);
+	sdio = container_of(work, struct mt76_sdio, stat_work);
 	dev = container_of(sdio, struct mt76_dev, sdio);
 
 	while (true) {
-		if (test_bit(MT76_RESET, &dev->phy.state) ||
-		    test_bit(MT76_REMOVED, &dev->phy.state))
+		if (test_bit(MT76_REMOVED, &dev->phy.state))
 			break;
 
 		if (!dev->drv->tx_status_data(dev, &update))
@@ -509,20 +508,19 @@ static void mt76s_tx_status_data(struct mt76_worker *worker)
 	}
 
 	if (count && test_bit(MT76_STATE_RUNNING, &dev->phy.state))
-		mt76_worker_schedule(&sdio->status_worker);
+		queue_work(dev->wq, &sdio->stat_work);
 	else
 		clear_bit(MT76_READING_STATS, &dev->phy.state);
 }
 
 static int
-mt76s_tx_queue_skb(struct mt76_phy *phy, struct mt76_queue *q,
-		   enum mt76_txq_id qid, struct sk_buff *skb,
-		   struct mt76_wcid *wcid, struct ieee80211_sta *sta)
+mt76s_tx_queue_skb(struct mt76_dev *dev, struct mt76_queue *q,
+		   struct sk_buff *skb, struct mt76_wcid *wcid,
+		   struct ieee80211_sta *sta)
 {
 	struct mt76_tx_info tx_info = {
 		.skb = skb,
 	};
-	struct mt76_dev *dev = phy->dev;
 	int err, len = skb->len;
 	u16 idx = q->head;
 
@@ -530,7 +528,7 @@ mt76s_tx_queue_skb(struct mt76_phy *phy, struct mt76_queue *q,
 		return -ENOSPC;
 
 	skb->prev = skb->next = NULL;
-	err = dev->drv->tx_prepare_skb(dev, NULL, qid, wcid, sta, &tx_info);
+	err = dev->drv->tx_prepare_skb(dev, NULL, q->qid, wcid, sta, &tx_info);
 	if (err < 0)
 		return err;
 
@@ -550,7 +548,10 @@ static int
 mt76s_tx_queue_skb_raw(struct mt76_dev *dev, struct mt76_queue *q,
 		       struct sk_buff *skb, u32 tx_info)
 {
-	int ret, len = skb->len, pad;
+	int ret = -ENOSPC, len = skb->len, pad;
+
+	if (q->queued == q->ndesc)
+		goto error;
 
 	pad = round_up(skb->len, 4) - skb->len;
 	ret = mt76_skb_adjust_pad(skb, pad);
@@ -559,18 +560,8 @@ mt76s_tx_queue_skb_raw(struct mt76_dev *dev, struct mt76_queue *q,
 
 	spin_lock_bh(&q->lock);
 
-	if (q->queued == q->ndesc) {
-		ret = -ENOSPC;
-		spin_unlock_bh(&q->lock);
-		goto error;
-	}
-
 	q->entry[q->head].buf_sz = len;
 	q->entry[q->head].skb = skb;
-
-	/* ensure the entry fully updated before bus access */
-	smp_wmb();
-
 	q->head = (q->head + 1) % q->ndesc;
 	q->queued++;
 
@@ -605,8 +596,8 @@ void mt76s_deinit(struct mt76_dev *dev)
 	mt76_worker_teardown(&sdio->txrx_worker);
 	mt76_worker_teardown(&sdio->status_worker);
 	mt76_worker_teardown(&sdio->net_worker);
-	mt76_worker_teardown(&sdio->stat_worker);
 
+	cancel_work_sync(&sdio->stat_work);
 	clear_bit(MT76_READING_STATS, &dev->phy.state);
 
 	mt76_tx_status_check(dev, true);
@@ -636,7 +627,6 @@ int mt76s_init(struct mt76_dev *dev, struct sdio_func *func,
 	       const struct mt76_bus_ops *bus_ops)
 {
 	struct mt76_sdio *sdio = &dev->sdio;
-	u32 host_max_cap;
 	int err;
 
 	err = mt76_worker_setup(dev->hw, &sdio->status_worker,
@@ -649,33 +639,19 @@ int mt76s_init(struct mt76_dev *dev, struct sdio_func *func,
 	if (err)
 		return err;
 
-	err = mt76_worker_setup(dev->hw, &sdio->stat_worker, mt76s_tx_status_data,
-				"sdio-sta");
-	if (err)
-		return err;
-
 	sched_set_fifo_low(sdio->status_worker.task);
 	sched_set_fifo_low(sdio->net_worker.task);
-	sched_set_fifo_low(sdio->stat_worker.task);
+
+	INIT_WORK(&sdio->stat_work, mt76s_tx_status_data);
 
 	dev->queue_ops = &sdio_queue_ops;
 	dev->bus = bus_ops;
 	dev->sdio.func = func;
 
-	host_max_cap = min_t(u32, func->card->host->max_req_size,
-			     func->cur_blksize *
-			     func->card->host->max_blk_count);
-	dev->sdio.xmit_buf_sz = min_t(u32, host_max_cap, MT76S_XMIT_BUF_SZ);
-	dev->sdio.xmit_buf = devm_kmalloc(dev->dev, dev->sdio.xmit_buf_sz,
-					  GFP_KERNEL);
-	if (!dev->sdio.xmit_buf)
-		err = -ENOMEM;
-
-	return err;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(mt76s_init);
 
 MODULE_AUTHOR("Sean Wang <sean.wang@mediatek.com>");
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo@kernel.org>");
-MODULE_DESCRIPTION("MediaTek MT76x SDIO helpers");
 MODULE_LICENSE("Dual BSD/GPL");

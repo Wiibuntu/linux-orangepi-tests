@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: STMicroelectronics ST95HF NFC controller
 
 maintainers:
-  - Krzysztof Kozlowski <krzk@kernel.org>
+  - Krzysztof Kozlowski <krzysztof.kozlowski@canonical.com>
 
 properties:
   compatible:
@@ -25,6 +25,8 @@ properties:
   st95hfvin-supply:
     description: ST95HF transceiver's Vin regulator supply
 
+  spi-max-frequency: true
+
 required:
   - compatible
   - enable-gpio
@@ -32,10 +34,7 @@ required:
   - reg
   - spi-max-frequency
 
-allOf:
-  - $ref: /schemas/spi/spi-peripheral-props.yaml#
-
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

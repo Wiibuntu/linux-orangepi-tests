@@ -14,31 +14,20 @@ module_param(num_hw_submissions, uint, 0600);
 static struct dma_fence *msm_job_run(struct drm_sched_job *job)
 {
 	struct msm_gem_submit *submit = to_msm_submit(job);
-	struct msm_fence_context *fctx = submit->ring->fctx;
 	struct msm_gpu *gpu = submit->gpu;
-	struct msm_drm_private *priv = gpu->dev->dev_private;
-	int i;
 
-	msm_fence_init(submit->hw_fence, fctx);
+	submit->hw_fence = msm_fence_alloc(submit->ring->fctx);
 
-	mutex_lock(&priv->lru.lock);
-
-	for (i = 0; i < submit->nr_bos; i++) {
-		struct drm_gem_object *obj = submit->bos[i].obj;
-
-		msm_gem_unpin_active(obj);
-	}
-
-	submit->bos_pinned = false;
-
-	mutex_unlock(&priv->lru.lock);
+	pm_runtime_get_sync(&gpu->pdev->dev);
 
 	/* TODO move submit path over to using a per-ring lock.. */
-	mutex_lock(&gpu->lock);
+	mutex_lock(&gpu->dev->struct_mutex);
 
 	msm_gpu_submit(gpu, submit);
 
-	mutex_unlock(&gpu->lock);
+	mutex_unlock(&gpu->dev->struct_mutex);
+
+	pm_runtime_put(&gpu->pdev->dev);
 
 	return dma_fence_get(submit->hw_fence);
 }
@@ -51,7 +40,7 @@ static void msm_job_free(struct drm_sched_job *job)
 	msm_gem_submit_put(submit);
 }
 
-static const struct drm_sched_backend_ops msm_sched_ops = {
+const struct drm_sched_backend_ops msm_sched_ops = {
 	.run_job = msm_job_run,
 	.free_job = msm_job_free
 };
@@ -98,10 +87,9 @@ struct msm_ringbuffer *msm_ringbuffer_new(struct msm_gpu *gpu, int id,
 	 /* currently managing hangcheck ourselves: */
 	sched_timeout = MAX_SCHEDULE_TIMEOUT;
 
-	ret = drm_sched_init(&ring->sched, &msm_sched_ops, NULL,
-			     DRM_SCHED_PRIORITY_COUNT,
-			     num_hw_submissions, 0, sched_timeout,
-			     NULL, NULL, to_msm_bo(ring->bo)->name, gpu->dev->dev);
+	ret = drm_sched_init(&ring->sched, &msm_sched_ops,
+			num_hw_submissions, 0, sched_timeout,
+			NULL, NULL, to_msm_bo(ring->bo)->name);
 	if (ret) {
 		goto fail;
 	}

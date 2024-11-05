@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 2018-2019, Intel Corporation. */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/crc32.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
@@ -875,4 +875,5 @@ out_release_data:
 EXPORT_SYMBOL(pldmfw_flash_image);
 
 MODULE_AUTHOR("Jacob Keller <jacob.e.keller@intel.com>");
+MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("PLDM firmware flash update library");

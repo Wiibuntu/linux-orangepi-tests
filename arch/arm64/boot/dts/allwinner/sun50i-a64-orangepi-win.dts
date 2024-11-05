@@ -15,6 +15,7 @@
 
 	aliases {
 		ethernet0 = &emac;
+		ethernet1 = &brcmf;
 		serial0 = &uart0;
 		serial1 = &uart1;
 		serial2 = &uart2;
@@ -40,7 +41,7 @@
 	leds {
 		compatible = "gpio-leds";
 
-		led-0 {
+		status {
 			label = "orangepi:green:status";
 			gpios = <&pio 7 11 GPIO_ACTIVE_HIGH>; /* PH11 */
 		};
@@ -68,10 +69,10 @@
 		status = "okay";
 	};
 
-	wifi_pwrseq: pwrseq {
+	wifi_pwrseq: wifi_pwrseq {
 		compatible = "mmc-pwrseq-simple";
 		reset-gpios = <&r_pio 0 8 GPIO_ACTIVE_LOW>; /* PL8 */
-		clocks = <&rtc CLK_OSC32K_FANOUT>;
+		clocks = <&rtc 1>;
 		clock-names = "ext_clock";
 	};
 };
@@ -135,6 +136,10 @@
 	hdmi_out_con: endpoint {
 		remote-endpoint = <&hdmi_con_in>;
 	};
+};
+
+&i2s2 {
+	status = "okay";
 };
 
 &mdio {
@@ -340,6 +345,10 @@
 			"MIC1", "Onboard Microphone";
 };
 
+&sound_hdmi {
+	status = "okay";
+};
+
 &spi0 {
 	status = "okay";
 
@@ -369,7 +378,7 @@
 	bluetooth {
 		compatible = "brcm,bcm43438-bt";
 		max-speed = <1500000>;
-		clocks = <&rtc CLK_OSC32K_FANOUT>;
+		clocks = <&rtc 1>;
 		clock-names = "lpo";
 		vbat-supply = <&reg_dldo2>;
 		vddio-supply = <&reg_dldo4>;

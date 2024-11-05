@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright (C) 2017 Intel Deutschland GmbH
- * Copyright (C) 2019-2021, 2024 Intel Corporation
+ * Copyright (C) 2019-2021 Intel Corporation
  */
 #include "iwl-drv.h"
 #include "runtime.h"
 #include "dbg.h"
 #include "debugfs.h"
 
-#include "fw/api/system.h"
+#include "fw/api/soc.h"
 #include "fw/api/commands.h"
 #include "fw/api/rx.h"
 #include "fw/api/datapath.h"
@@ -58,7 +58,7 @@ int iwl_set_soc_latency(struct iwl_fw_runtime *fwrt)
 {
 	struct iwl_soc_configuration_cmd cmd = {};
 	struct iwl_host_cmd hcmd = {
-		.id = WIDE_ID(SYSTEM_GROUP, SOC_CONFIGURATION_CMD),
+		.id = iwl_cmd_id(SOC_CONFIGURATION_CMD, SYSTEM_GROUP, 0),
 		.data[0] = &cmd,
 		.len[0] = sizeof(cmd),
 	};
@@ -87,7 +87,8 @@ int iwl_set_soc_latency(struct iwl_fw_runtime *fwrt)
 		cmd.flags |= le32_encode_bits(fwrt->trans->trans_cfg->ltr_delay,
 					      SOC_FLAGS_LTR_APPLY_DELAY_MASK);
 
-	if (iwl_fw_lookup_cmd_ver(fwrt->fw, SCAN_REQ_UMAC,
+	if (iwl_fw_lookup_cmd_ver(fwrt->fw, IWL_ALWAYS_LONG_GROUP,
+				  SCAN_REQ_UMAC,
 				  IWL_FW_CMD_VER_UNKNOWN) >= 2 &&
 	    fwrt->trans->trans_cfg->low_latency_xtal)
 		cmd.flags |= cpu_to_le32(SOC_CONFIG_CMD_FLAGS_LOW_LATENCY);
@@ -135,9 +136,7 @@ int iwl_configure_rxq(struct iwl_fw_runtime *fwrt)
 		struct iwl_trans_rxq_dma_data data;
 
 		cmd->data[i].q_num = i + 1;
-		ret = iwl_trans_get_rxq_dma_data(fwrt->trans, i + 1, &data);
-		if (ret)
-			goto out;
+		iwl_trans_get_rxq_dma_data(fwrt->trans, i + 1, &data);
 
 		cmd->data[i].fr_bd_cb = cpu_to_le64(data.fr_bd_cb);
 		cmd->data[i].urbd_stts_wrptr =
@@ -151,7 +150,6 @@ int iwl_configure_rxq(struct iwl_fw_runtime *fwrt)
 
 	ret = iwl_trans_send_cmd(fwrt->trans, &hcmd);
 
-out:
 	kfree(cmd);
 
 	if (ret)

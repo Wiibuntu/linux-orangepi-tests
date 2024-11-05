@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/nvmem-provider.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/random.h>
@@ -36,25 +37,31 @@ struct sunxi_sid {
 	u32			value_offset;
 };
 
+static unsigned int sunxi_soc_chipid[4];
+static unsigned int sunxi_serial[4];
+
+int sunxi_get_soc_chipid(unsigned char *chipid)
+{
+	memcpy(chipid, sunxi_soc_chipid, 16);
+
+	return 0;
+}
+EXPORT_SYMBOL(sunxi_get_soc_chipid);
+
+int sunxi_get_serial(unsigned       char *serial)
+{
+	memcpy(serial, sunxi_serial, 16);
+
+	return 0;
+}
+EXPORT_SYMBOL(sunxi_get_serial);
+
 static int sunxi_sid_read(void *context, unsigned int offset,
 			  void *val, size_t bytes)
 {
 	struct sunxi_sid *sid = context;
-	u32 word;
 
-	/* .stride = 4 so offset is guaranteed to be aligned */
-	__ioread32_copy(val, sid->base + sid->value_offset + offset, bytes / 4);
-
-	val += round_down(bytes, 4);
-	offset += round_down(bytes, 4);
-	bytes = bytes % 4;
-
-	if (!bytes)
-		return 0;
-
-	/* Handle any trailing bytes */
-	word = readl_relaxed(sid->base + sid->value_offset + offset);
-	memcpy(val, &word, bytes);
+	memcpy_fromio(val, sid->base + sid->value_offset + offset, bytes);
 
 	return 0;
 }
@@ -124,6 +131,7 @@ static int sun8i_sid_read_by_reg(void *context, unsigned int offset,
 static int sunxi_sid_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct resource *res;
 	struct nvmem_config *nvmem_cfg;
 	struct nvmem_device *nvmem;
 	struct sunxi_sid *sid;
@@ -140,7 +148,8 @@ static int sunxi_sid_probe(struct platform_device *pdev)
 		return -EINVAL;
 	sid->value_offset = cfg->value_offset;
 
-	sid->base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	sid->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(sid->base))
 		return PTR_ERR(sid->base);
 
@@ -153,7 +162,6 @@ static int sunxi_sid_probe(struct platform_device *pdev)
 	nvmem_cfg->dev = dev;
 	nvmem_cfg->name = "sunxi-sid";
 	nvmem_cfg->type = NVMEM_TYPE_OTP;
-	nvmem_cfg->add_legacy_fixed_of_cells = true;
 	nvmem_cfg->read_only = true;
 	nvmem_cfg->size = cfg->size;
 	nvmem_cfg->word_size = 1;
@@ -178,6 +186,15 @@ static int sunxi_sid_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, nvmem);
 
+	nvmem_cfg->reg_read(sid, 0, &sunxi_soc_chipid[0], sizeof(int));
+	nvmem_cfg->reg_read(sid, 4, &sunxi_soc_chipid[1], sizeof(int));
+	nvmem_cfg->reg_read(sid, 8, &sunxi_soc_chipid[2], sizeof(int));
+	nvmem_cfg->reg_read(sid, 12, &sunxi_soc_chipid[3], sizeof(int));
+
+	sunxi_serial[0] = sunxi_soc_chipid[3];
+	sunxi_serial[1] = sunxi_soc_chipid[2];
+	sunxi_serial[2] = (sunxi_soc_chipid[1] >> 16) & 0x0ffff;
+
 	return 0;
 }
 
@@ -198,6 +215,7 @@ static const struct sunxi_sid_cfg sun8i_h3_cfg = {
 static const struct sunxi_sid_cfg sun50i_a64_cfg = {
 	.value_offset = 0x200,
 	.size = 0x100,
+	.need_register_readout = true,
 };
 
 static const struct sunxi_sid_cfg sun50i_h6_cfg = {
@@ -205,15 +223,21 @@ static const struct sunxi_sid_cfg sun50i_h6_cfg = {
 	.size = 0x200,
 };
 
+static const struct sunxi_sid_cfg sun50i_h616_cfg = {
+	.value_offset = 0x200,
+	.size = 0x100,
+	.need_register_readout = true,
+};
+
 static const struct of_device_id sunxi_sid_of_match[] = {
 	{ .compatible = "allwinner,sun4i-a10-sid", .data = &sun4i_a10_cfg },
 	{ .compatible = "allwinner,sun7i-a20-sid", .data = &sun7i_a20_cfg },
 	{ .compatible = "allwinner,sun8i-a83t-sid", .data = &sun50i_a64_cfg },
 	{ .compatible = "allwinner,sun8i-h3-sid", .data = &sun8i_h3_cfg },
-	{ .compatible = "allwinner,sun20i-d1-sid", .data = &sun50i_a64_cfg },
 	{ .compatible = "allwinner,sun50i-a64-sid", .data = &sun50i_a64_cfg },
 	{ .compatible = "allwinner,sun50i-h5-sid", .data = &sun50i_a64_cfg },
 	{ .compatible = "allwinner,sun50i-h6-sid", .data = &sun50i_h6_cfg },
+	{ .compatible = "allwinner,sun50i-h616-sid", .data = &sun50i_h616_cfg },
 	{/* sentinel */},
 };
 MODULE_DEVICE_TABLE(of, sunxi_sid_of_match);

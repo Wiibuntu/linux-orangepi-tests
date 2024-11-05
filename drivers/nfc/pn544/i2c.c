@@ -16,8 +16,9 @@
 #include <linux/nfc.h>
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
+#include <linux/regulator/consumer.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <net/nfc/hci.h>
 #include <net/nfc/llc.h>
@@ -44,7 +45,7 @@
 					 PN544_HCI_I2C_LLC_MAX_PAYLOAD)
 
 static const struct i2c_device_id pn544_hci_i2c_id_table[] = {
-	{ "pn544" },
+	{"pn544", 0},
 	{}
 };
 
@@ -58,6 +59,14 @@ static const struct acpi_device_id pn544_hci_i2c_acpi_match[] __maybe_unused = {
 MODULE_DEVICE_TABLE(acpi, pn544_hci_i2c_acpi_match);
 
 #define PN544_HCI_I2C_DRIVER_NAME "pn544_hci_i2c"
+
+/* regulator supplies */
+static const char * const pn544_supply_names[] = {
+	"PVDD",  /* Digital Core (1.8V) supply */
+	"VBAT",  /* Analog (2.9V-5.5V) supply */
+};
+
+#define PN544_NUM_SUPPLIES ARRAY_SIZE(pn544_supply_names)
 
 /*
  * Exposed through the 4 most significant bytes
@@ -126,6 +135,8 @@ struct pn544_i2c_fw_secure_blob {
 #define PN544_FW_CMD_RESULT_COMMAND_REJECTED 0xE0
 #define PN544_FW_CMD_RESULT_CHUNK_ERROR 0xE6
 
+#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
+
 #define PN544_FW_WRITE_BUFFER_MAX_LEN 0x9f7
 #define PN544_FW_I2C_MAX_PAYLOAD PN544_HCI_I2C_LLC_MAX_SIZE
 #define PN544_FW_I2C_WRITE_FRAME_HEADER_LEN 8
@@ -148,6 +159,7 @@ struct pn544_i2c_phy {
 	struct i2c_client *i2c_dev;
 	struct nfc_hci_dev *hdev;
 
+	struct regulator_bulk_data supplies[PN544_NUM_SUPPLIES];
 	struct gpio_desc *gpiod_en;
 	struct gpio_desc *gpiod_fw;
 
@@ -186,7 +198,7 @@ do {								\
 static void pn544_hci_i2c_platform_init(struct pn544_i2c_phy *phy)
 {
 	int polarity, retry, ret;
-	static const char rset_cmd[] = { 0x05, 0xF9, 0x04, 0x00, 0xC3, 0xE5 };
+	char rset_cmd[] = { 0x05, 0xF9, 0x04, 0x00, 0xC3, 0xE5 };
 	int count = sizeof(rset_cmd);
 
 	nfc_info(&phy->i2c_dev->dev, "Detecting nfc_en polarity\n");
@@ -238,6 +250,13 @@ static void pn544_hci_i2c_enable_mode(struct pn544_i2c_phy *phy, int run_mode)
 static int pn544_hci_i2c_enable(void *phy_id)
 {
 	struct pn544_i2c_phy *phy = phy_id;
+	int ret;
+
+	pr_info("%s\n", __func__);
+
+	ret = regulator_bulk_enable(PN544_NUM_SUPPLIES, phy->supplies);
+	if (ret)
+		return ret;
 
 	pn544_hci_i2c_enable_mode(phy, PN544_HCI_MODE);
 
@@ -259,6 +278,8 @@ static void pn544_hci_i2c_disable(void *phy_id)
 
 	gpiod_set_value_cansleep(phy->gpiod_en, !phy->en_polarity);
 	usleep_range(10000, 15000);
+
+	regulator_bulk_disable(PN544_NUM_SUPPLIES, phy->supplies);
 
 	phy->powered = 0;
 }
@@ -366,7 +387,7 @@ static int pn544_hci_i2c_read(struct pn544_i2c_phy *phy, struct sk_buff **skb)
 
 	if ((len < (PN544_HCI_I2C_LLC_MIN_SIZE - 1)) ||
 	    (len > (PN544_HCI_I2C_LLC_MAX_SIZE - 1))) {
-		nfc_err(&client->dev, "invalid len byte\n");
+		nfc_err(&client->dev, "invalid len byte %hhx\n", len);
 		r = -EBADMSG;
 		goto flush;
 	}
@@ -864,11 +885,12 @@ static const struct acpi_gpio_mapping acpi_pn544_gpios[] = {
 	{ },
 };
 
-static int pn544_hci_i2c_probe(struct i2c_client *client)
+static int pn544_hci_i2c_probe(struct i2c_client *client,
+			       const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct pn544_i2c_phy *phy;
-	int r = 0;
+	int r = 0, i;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		nfc_err(&client->dev, "Need I2C_FUNC_I2C\n");
@@ -889,6 +911,14 @@ static int pn544_hci_i2c_probe(struct i2c_client *client)
 	r = devm_acpi_dev_add_driver_gpios(dev, acpi_pn544_gpios);
 	if (r)
 		dev_dbg(dev, "Unable to add GPIO mapping table\n");
+
+	for (i = 0; i < PN544_NUM_SUPPLIES; i++)
+		phy->supplies[i].supply = pn544_supply_names[i];
+
+	r = devm_regulator_bulk_get(&client->dev, PN544_NUM_SUPPLIES,
+				    phy->supplies);
+	if (r)
+		return r;
 
 	/* Get EN GPIO */
 	phy->gpiod_en = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
@@ -925,7 +955,7 @@ static int pn544_hci_i2c_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void pn544_hci_i2c_remove(struct i2c_client *client)
+static int pn544_hci_i2c_remove(struct i2c_client *client)
 {
 	struct pn544_i2c_phy *phy = i2c_get_clientdata(client);
 
@@ -937,6 +967,8 @@ static void pn544_hci_i2c_remove(struct i2c_client *client)
 
 	if (phy->powered)
 		pn544_hci_i2c_disable(phy);
+
+	return 0;
 }
 
 static const struct of_device_id of_pn544_i2c_match[] __maybe_unused = {

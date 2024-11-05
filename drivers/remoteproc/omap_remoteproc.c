@@ -19,8 +19,7 @@
 #include <linux/clk/ti.h>
 #include <linux/err.h>
 #include <linux/io.h>
-#include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -244,7 +243,7 @@ static inline int omap_rproc_get_timer_irq(struct omap_rproc_timer *timer)
  * omap_rproc_ack_timer_irq() - acknowledge a timer irq
  * @timer: handle to a OMAP rproc timer
  *
- * This function is used to clear the irq associated with a watchdog timer.
+ * This function is used to clear the irq associated with a watchdog timer. The
  * The function is called by the OMAP remoteproc upon a watchdog event on the
  * remote processor to clear the interrupt status of the watchdog timer.
  */
@@ -304,7 +303,7 @@ static irqreturn_t omap_rproc_watchdog_isr(int irq, void *data)
  * @configure: boolean flag used to acquire and configure the timer handle
  *
  * This function is used primarily to enable the timers associated with
- * a remoteproc. The configure flag is provided to allow the driver
+ * a remoteproc. The configure flag is provided to allow the driver to
  * to either acquire and start a timer (during device initialization) or
  * to just start a timer (during a resume operation).
  *
@@ -444,7 +443,7 @@ free_timers:
  * @configure: boolean flag used to release the timer handle
  *
  * This function is used primarily to disable the timers associated with
- * a remoteproc. The configure flag is provided to allow the driver
+ * a remoteproc. The configure flag is provided to allow the driver to
  * to either stop and release a timer (during device shutdown) or to just
  * stop a timer (during a suspend operation).
  *
@@ -1277,13 +1276,6 @@ static int omap_rproc_of_get_timers(struct platform_device *pdev,
 	return 0;
 }
 
-static void omap_rproc_mem_release(void *data)
-{
-	struct device *dev = data;
-
-	of_reserved_mem_device_release(dev);
-}
-
 static int omap_rproc_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -1312,8 +1304,8 @@ static int omap_rproc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	rproc = devm_rproc_alloc(&pdev->dev, dev_name(&pdev->dev), &omap_rproc_ops,
-				 firmware, sizeof(*oproc));
+	rproc = rproc_alloc(&pdev->dev, dev_name(&pdev->dev), &omap_rproc_ops,
+			    firmware, sizeof(*oproc));
 	if (!rproc)
 		return -ENOMEM;
 
@@ -1325,15 +1317,15 @@ static int omap_rproc_probe(struct platform_device *pdev)
 
 	ret = omap_rproc_of_get_internal_memories(pdev, rproc);
 	if (ret)
-		return ret;
+		goto free_rproc;
 
 	ret = omap_rproc_get_boot_data(pdev, rproc);
 	if (ret)
-		return ret;
+		goto free_rproc;
 
 	ret = omap_rproc_of_get_timers(pdev, rproc);
 	if (ret)
-		return ret;
+		goto free_rproc;
 
 	init_completion(&oproc->pm_comp);
 	oproc->autosuspend_delay = DEFAULT_AUTOSUSPEND_DELAY;
@@ -1344,8 +1336,10 @@ static int omap_rproc_probe(struct platform_device *pdev)
 	pm_runtime_set_autosuspend_delay(&pdev->dev, oproc->autosuspend_delay);
 
 	oproc->fck = devm_clk_get(&pdev->dev, 0);
-	if (IS_ERR(oproc->fck))
-		return PTR_ERR(oproc->fck);
+	if (IS_ERR(oproc->fck)) {
+		ret = PTR_ERR(oproc->fck);
+		goto free_rproc;
+	}
 
 	ret = of_reserved_mem_device_init(&pdev->dev);
 	if (ret) {
@@ -1353,15 +1347,29 @@ static int omap_rproc_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "Typically this should be provided,\n");
 		dev_warn(&pdev->dev, "only omit if you know what you are doing.\n");
 	}
-	ret = devm_add_action_or_reset(&pdev->dev, omap_rproc_mem_release, &pdev->dev);
-	if (ret)
-		return ret;
 
 	platform_set_drvdata(pdev, rproc);
 
-	ret = devm_rproc_add(&pdev->dev, rproc);
+	ret = rproc_add(rproc);
 	if (ret)
-		return ret;
+		goto release_mem;
+
+	return 0;
+
+release_mem:
+	of_reserved_mem_device_release(&pdev->dev);
+free_rproc:
+	rproc_free(rproc);
+	return ret;
+}
+
+static int omap_rproc_remove(struct platform_device *pdev)
+{
+	struct rproc *rproc = platform_get_drvdata(pdev);
+
+	rproc_del(rproc);
+	rproc_free(rproc);
+	of_reserved_mem_device_release(&pdev->dev);
 
 	return 0;
 }
@@ -1374,6 +1382,7 @@ static const struct dev_pm_ops omap_rproc_pm_ops = {
 
 static struct platform_driver omap_rproc_driver = {
 	.probe = omap_rproc_probe,
+	.remove = omap_rproc_remove,
 	.driver = {
 		.name = "omap-rproc",
 		.pm = &omap_rproc_pm_ops,

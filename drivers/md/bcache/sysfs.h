@@ -3,13 +3,13 @@
 #define _BCACHE_SYSFS_H_
 
 #define KTYPE(type)							\
-const struct kobj_type type ## _ktype = {					\
+struct kobj_type type ## _ktype = {					\
 	.release	= type ## _release,				\
 	.sysfs_ops	= &((const struct sysfs_ops) {			\
 		.show	= type ## _show,				\
 		.store	= type ## _store				\
 	}),								\
-	.default_groups	= type ## _groups				\
+	.default_attrs	= type ## _files				\
 }
 
 #define SHOW(fn)							\

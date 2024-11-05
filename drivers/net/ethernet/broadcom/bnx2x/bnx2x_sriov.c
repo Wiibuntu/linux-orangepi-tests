@@ -795,20 +795,16 @@ static void bnx2x_vf_enable_traffic(struct bnx2x *bp, struct bnx2x_virtf *vf)
 
 static u8 bnx2x_vf_is_pcie_pending(struct bnx2x *bp, u8 abs_vfid)
 {
-	struct bnx2x_virtf *vf = bnx2x_vf_by_abs_fid(bp, abs_vfid);
 	struct pci_dev *dev;
-	bool pending;
+	struct bnx2x_virtf *vf = bnx2x_vf_by_abs_fid(bp, abs_vfid);
 
 	if (!vf)
 		return false;
 
 	dev = pci_get_domain_bus_and_slot(vf->domain, vf->bus, vf->devfn);
-	if (!dev)
-		return false;
-	pending = bnx2x_is_pcie_pending(dev);
-	pci_dev_put(dev);
-
-	return pending;
+	if (dev)
+		return bnx2x_is_pcie_pending(dev);
+	return false;
 }
 
 int bnx2x_vf_flr_clnup_epilog(struct bnx2x *bp, u8 abs_vfid)
@@ -2652,10 +2648,10 @@ int bnx2x_get_vf_config(struct net_device *dev, int vfidx,
 		/* vlan */
 		if (bulletin->valid_bitmap & (1 << VLAN_VALID))
 			/* vlan configured by ndo so its in bulletin board */
-			ivi->vlan = bulletin->vlan;
+			memcpy(&ivi->vlan, &bulletin->vlan, VLAN_HLEN);
 		else
 			/* function has not been loaded yet. Show vlans as 0s */
-			ivi->vlan = 0;
+			memset(&ivi->vlan, 0, VLAN_HLEN);
 
 		mutex_unlock(&bp->vfdb->bulletin_mutex);
 	}

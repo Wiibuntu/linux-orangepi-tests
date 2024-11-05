@@ -4,13 +4,12 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
-#include <linux/bitfield.h>
 
 /* USB QSCRATCH Hardware registers */
 #define QSCRATCH_GENERAL_CFG		(0x08)
@@ -75,20 +74,20 @@
 		 PHY_PARAM_CTRL1_LOS_BIAS_MASK)
 
 #define PHY_PARAM_CTRL1_TX_FULL_SWING(x)	\
-		FIELD_PREP(PHY_PARAM_CTRL1_TX_FULL_SWING_MASK, (x))
+		(((x) << 20) & PHY_PARAM_CTRL1_TX_FULL_SWING_MASK)
 #define PHY_PARAM_CTRL1_TX_DEEMPH_6DB(x)	\
-		FIELD_PREP(PHY_PARAM_CTRL1_TX_DEEMPH_6DB_MASK, (x))
+		(((x) << 14) & PHY_PARAM_CTRL1_TX_DEEMPH_6DB_MASK)
 #define PHY_PARAM_CTRL1_TX_DEEMPH_3_5DB(x)	\
-		FIELD_PREP(PHY_PARAM_CTRL1_TX_DEEMPH_3_5DB_MASK, x)
+		(((x) <<  8) & PHY_PARAM_CTRL1_TX_DEEMPH_3_5DB_MASK)
 #define PHY_PARAM_CTRL1_LOS_BIAS(x)	\
-		FIELD_PREP(PHY_PARAM_CTRL1_LOS_BIAS_MASK, (x))
+		(((x) <<  3) & PHY_PARAM_CTRL1_LOS_BIAS_MASK)
 
 /* RX OVRD IN HI bits */
 #define RX_OVRD_IN_HI_RX_RESET_OVRD		BIT(13)
 #define RX_OVRD_IN_HI_RX_RX_RESET		BIT(12)
 #define RX_OVRD_IN_HI_RX_EQ_OVRD		BIT(11)
 #define RX_OVRD_IN_HI_RX_EQ_MASK		GENMASK(10, 7)
-#define RX_OVRD_IN_HI_RX_EQ(x)			FIELD_PREP(RX_OVRD_IN_HI_RX_EQ_MASK, (x))
+#define RX_OVRD_IN_HI_RX_EQ(x)			((x) << 8)
 #define RX_OVRD_IN_HI_RX_EQ_EN_OVRD		BIT(7)
 #define RX_OVRD_IN_HI_RX_EQ_EN			BIT(6)
 #define RX_OVRD_IN_HI_RX_LOS_FILTER_OVRD	BIT(5)
@@ -111,9 +110,6 @@
 #define SS_CR_CAP_DATA_REG			BIT(0)
 #define SS_CR_READ_REG				BIT(0)
 #define SS_CR_WRITE_REG				BIT(0)
-
-#define LATCH_SLEEP				40
-#define LATCH_TIMEOUT				100
 
 struct usb_phy {
 	void __iomem		*base;
@@ -160,9 +156,19 @@ static inline void usb_phy_write_readback(struct usb_phy *phy_dwc3,
 
 static int wait_for_latch(void __iomem *addr)
 {
-	u32 val;
+	u32 retry = 10;
 
-	return readl_poll_timeout(addr, val, !val, LATCH_SLEEP, LATCH_TIMEOUT);
+	while (true) {
+		if (!readl(addr))
+			break;
+
+		if (--retry == 0)
+			return -ETIMEDOUT;
+
+		usleep_range(10, 20);
+	}
+
+	return 0;
 }
 
 /**

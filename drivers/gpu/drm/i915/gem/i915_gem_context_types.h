@@ -188,9 +188,6 @@ struct i915_gem_proto_engine {
  * CONTEXT_CREATE_SET_PARAM during GEM_CONTEXT_CREATE.
  */
 struct i915_gem_proto_context {
-	/** @fpriv: Client which creates the context */
-	struct drm_i915_file_private *fpriv;
-
 	/** @vm: See &i915_gem_context.vm */
 	struct i915_address_space *vm;
 
@@ -296,12 +293,6 @@ struct i915_gem_context {
 	/** @link: place with &drm_i915_private.context_list */
 	struct list_head link;
 
-	/** @client: struct i915_drm_client */
-	struct i915_drm_client *client;
-
-	/** @client_link: for linking onto &i915_drm_client.ctx_list */
-	struct list_head client_link;
-
 	/**
 	 * @ref: reference count
 	 *
@@ -338,7 +329,6 @@ struct i915_gem_context {
 #define UCONTEXT_BANNABLE		2
 #define UCONTEXT_RECOVERABLE		3
 #define UCONTEXT_PERSISTENCE		4
-#define UCONTEXT_LOW_LATENCY		5
 
 	/**
 	 * @flags: small set of booleans
@@ -413,9 +403,9 @@ struct i915_gem_context {
 
 	/** @stale: tracks stale engines to be destroyed */
 	struct {
-		/** @stale.lock: guards engines */
+		/** @lock: guards engines */
 		spinlock_t lock;
-		/** @stale.engines: list of stale engines */
+		/** @engines: list of stale engines */
 		struct list_head engines;
 	} stale;
 };

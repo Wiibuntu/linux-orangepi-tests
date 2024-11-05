@@ -10,7 +10,6 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/device.h>
-#include <linux/pinctrl/pinconf-generic.h>
 #include <linux/platform_device.h>
 #include <linux/ioport.h>
 #include <linux/io.h>
@@ -32,8 +31,10 @@
 #include <linux/mmc/slot-gpio.h>
 
 #ifdef CONFIG_X86
-#include <linux/platform_data/x86/soc.h>
+#include <asm/cpu_device_id.h>
+#include <asm/intel-family.h>
 #include <asm/iosf_mbi.h>
+#include <linux/pci.h>
 #endif
 
 #include "sdhci.h"
@@ -81,8 +82,6 @@ struct sdhci_acpi_host {
 enum {
 	DMI_QUIRK_RESET_SD_SIGNAL_VOLT_ON_SUSP			= BIT(0),
 	DMI_QUIRK_SD_NO_WRITE_PROTECT				= BIT(1),
-	DMI_QUIRK_SD_CD_ACTIVE_HIGH				= BIT(2),
-	DMI_QUIRK_SD_CD_ENABLE_PULL_UP				= BIT(3),
 };
 
 static inline void *sdhci_acpi_priv(struct sdhci_acpi_host *c)
@@ -241,6 +240,26 @@ static const struct sdhci_acpi_chip sdhci_acpi_chip_int = {
 
 #ifdef CONFIG_X86
 
+static bool sdhci_acpi_byt(void)
+{
+	static const struct x86_cpu_id byt[] = {
+		X86_MATCH_INTEL_FAM6_MODEL(ATOM_SILVERMONT, NULL),
+		{}
+	};
+
+	return x86_match_cpu(byt);
+}
+
+static bool sdhci_acpi_cht(void)
+{
+	static const struct x86_cpu_id cht[] = {
+		X86_MATCH_INTEL_FAM6_MODEL(ATOM_AIRMONT, NULL),
+		{}
+	};
+
+	return x86_match_cpu(cht);
+}
+
 #define BYT_IOSF_SCCEP			0x63
 #define BYT_IOSF_OCP_NETCTRL0		0x1078
 #define BYT_IOSF_OCP_TIMEOUT_BASE	GENMASK(10, 8)
@@ -249,7 +268,7 @@ static void sdhci_acpi_byt_setting(struct device *dev)
 {
 	u32 val = 0;
 
-	if (!soc_intel_is_byt())
+	if (!sdhci_acpi_byt())
 		return;
 
 	if (iosf_mbi_read(BYT_IOSF_SCCEP, MBI_CR_READ, BYT_IOSF_OCP_NETCTRL0,
@@ -274,7 +293,7 @@ static void sdhci_acpi_byt_setting(struct device *dev)
 
 static bool sdhci_acpi_byt_defer(struct device *dev)
 {
-	if (!soc_intel_is_byt())
+	if (!sdhci_acpi_byt())
 		return false;
 
 	if (!iosf_mbi_available())
@@ -285,6 +304,43 @@ static bool sdhci_acpi_byt_defer(struct device *dev)
 	return false;
 }
 
+static bool sdhci_acpi_cht_pci_wifi(unsigned int vendor, unsigned int device,
+				    unsigned int slot, unsigned int parent_slot)
+{
+	struct pci_dev *dev, *parent, *from = NULL;
+
+	while (1) {
+		dev = pci_get_device(vendor, device, from);
+		pci_dev_put(from);
+		if (!dev)
+			break;
+		parent = pci_upstream_bridge(dev);
+		if (ACPI_COMPANION(&dev->dev) && PCI_SLOT(dev->devfn) == slot &&
+		    parent && PCI_SLOT(parent->devfn) == parent_slot &&
+		    !pci_upstream_bridge(parent)) {
+			pci_dev_put(dev);
+			return true;
+		}
+		from = dev;
+	}
+
+	return false;
+}
+
+/*
+ * GPDwin uses PCI wifi which conflicts with SDIO's use of
+ * acpi_device_fix_up_power() on child device nodes. Identifying GPDwin is
+ * problematic, but since SDIO is only used for wifi, the presence of the PCI
+ * wifi card in the expected slot with an ACPI companion node, is used to
+ * indicate that acpi_device_fix_up_power() should be avoided.
+ */
+static inline bool sdhci_acpi_no_fixup_child_power(struct acpi_device *adev)
+{
+	return sdhci_acpi_cht() &&
+	       acpi_dev_hid_uid_match(adev, "80860F14", "2") &&
+	       sdhci_acpi_cht_pci_wifi(0x14e4, 0x43ec, 0, 28);
+}
+
 #else
 
 static inline void sdhci_acpi_byt_setting(struct device *dev)
@@ -292,6 +348,11 @@ static inline void sdhci_acpi_byt_setting(struct device *dev)
 }
 
 static inline bool sdhci_acpi_byt_defer(struct device *dev)
+{
+	return false;
+}
+
+static inline bool sdhci_acpi_no_fixup_child_power(struct acpi_device *adev)
 {
 	return false;
 }
@@ -651,10 +712,10 @@ static int sdhci_acpi_emmc_amd_probe_slot(struct platform_device *pdev,
 	 *       in reading a garbage value and using the wrong presets.
 	 *
 	 *       Since HS400 and HS200 presets must be identical, we could
-	 *       instead use the SDR104 preset register.
+	 *       instead use the the SDR104 preset register.
 	 *
 	 *    If the above issues are resolved we could remove this quirk for
-	 *    firmware that has valid presets (i.e., SDR12 <= 12 MHz).
+	 *    firmware that that has valid presets (i.e., SDR12 <= 12 MHz).
 	 */
 	host->quirks2 |= SDHCI_QUIRK2_PRESET_VALUE_BROKEN;
 
@@ -722,28 +783,7 @@ static const struct acpi_device_id sdhci_acpi_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, sdhci_acpi_ids);
 
-/* Please keep this list sorted alphabetically */
 static const struct dmi_system_id sdhci_acpi_quirks[] = {
-	{
-		/*
-		 * The Acer Aspire Switch 10 (SW5-012) microSD slot always
-		 * reports the card being write-protected even though microSD
-		 * cards do not have a write-protect switch at all.
-		 */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire SW5-012"),
-		},
-		.driver_data = (void *)DMI_QUIRK_SD_NO_WRITE_PROTECT,
-	},
-	{
-		/* Asus T100TA, needs pull-up for cd but DSDT GpioInt has NoPull set */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "T100TA"),
-		},
-		.driver_data = (void *)DMI_QUIRK_SD_CD_ENABLE_PULL_UP,
-	},
 	{
 		/*
 		 * The Lenovo Miix 320-10ICR has a bug in the _PS0 method of
@@ -760,23 +800,15 @@ static const struct dmi_system_id sdhci_acpi_quirks[] = {
 	},
 	{
 		/*
-		 * Lenovo Yoga Tablet 2 Pro 1380F/L (13" Android version) this
-		 * has broken WP reporting and an inverted CD signal.
-		 * Note this has more or less the same BIOS as the Lenovo Yoga
-		 * Tablet 2 830F/L or 1050F/L (8" and 10" Android), but unlike
-		 * the 830 / 1050 models which share the same mainboard this
-		 * model has a different mainboard and the inverted CD and
-		 * broken WP are unique to this board.
+		 * The Acer Aspire Switch 10 (SW5-012) microSD slot always
+		 * reports the card being write-protected even though microSD
+		 * cards do not have a write-protect switch at all.
 		 */
 		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Intel Corp."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "VALLEYVIEW C0 PLATFORM"),
-			DMI_MATCH(DMI_BOARD_NAME, "BYT-T FFD8"),
-			/* Full match so as to NOT match the 830/1050 BIOS */
-			DMI_MATCH(DMI_BIOS_VERSION, "BLADE_21.X64.0005.R00.1504101516"),
+			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire SW5-012"),
 		},
-		.driver_data = (void *)(DMI_QUIRK_SD_NO_WRITE_PROTECT |
-					DMI_QUIRK_SD_CD_ACTIVE_HIGH),
+		.driver_data = (void *)DMI_QUIRK_SD_NO_WRITE_PROTECT,
 	},
 	{
 		/*
@@ -786,17 +818,6 @@ static const struct dmi_system_id sdhci_acpi_quirks[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "TOSHIBA"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TOSHIBA ENCORE 2 WT8-B"),
-		},
-		.driver_data = (void *)DMI_QUIRK_SD_NO_WRITE_PROTECT,
-	},
-	{
-		/*
-		 * The Toshiba WT10-A's microSD slot always reports the card being
-		 * write-protected.
-		 */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TOSHIBA"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "TOSHIBA WT10-A"),
 		},
 		.driver_data = (void *)DMI_QUIRK_SD_NO_WRITE_PROTECT,
 	},
@@ -818,8 +839,8 @@ static int sdhci_acpi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	const struct sdhci_acpi_slot *slot;
+	struct acpi_device *device, *child;
 	const struct dmi_system_id *id;
-	struct acpi_device *device;
 	struct sdhci_acpi_host *c;
 	struct sdhci_host *host;
 	struct resource *iomem;
@@ -839,7 +860,12 @@ static int sdhci_acpi_probe(struct platform_device *pdev)
 	slot = sdhci_acpi_get_slot(device);
 
 	/* Power on the SDHCI controller and its children */
-	acpi_device_fix_up_power_extended(device);
+	acpi_device_fix_up_power(device);
+	if (!sdhci_acpi_no_fixup_child_power(device)) {
+		list_for_each_entry(child, &device->children, node)
+			if (child->status.present && child->status.enabled)
+				acpi_device_fix_up_power(child);
+	}
 
 	if (sdhci_acpi_byt_defer(dev))
 		return -EPROBE_DEFER;
@@ -872,7 +898,7 @@ static int sdhci_acpi_probe(struct platform_device *pdev)
 	host->ops	= &sdhci_acpi_ops_dflt;
 	host->irq	= platform_get_irq(pdev, 0);
 	if (host->irq < 0) {
-		err = host->irq;
+		err = -EINVAL;
 		goto err_free;
 	}
 
@@ -909,18 +935,12 @@ static int sdhci_acpi_probe(struct platform_device *pdev)
 	if (sdhci_acpi_flag(c, SDHCI_ACPI_SD_CD)) {
 		bool v = sdhci_acpi_flag(c, SDHCI_ACPI_SD_CD_OVERRIDE_LEVEL);
 
-		if (quirks & DMI_QUIRK_SD_CD_ACTIVE_HIGH)
-			host->mmc->caps2 |= MMC_CAP2_CD_ACTIVE_HIGH;
-
 		err = mmc_gpiod_request_cd(host->mmc, NULL, 0, v, 0);
 		if (err) {
 			if (err == -EPROBE_DEFER)
 				goto err_free;
 			dev_warn(dev, "failed to setup card detect gpio\n");
 			c->use_runtime_pm = false;
-		} else if (quirks & DMI_QUIRK_SD_CD_ENABLE_PULL_UP) {
-			mmc_gpiod_set_cd_config(host->mmc,
-						PIN_CONF_PACKED(PIN_CONFIG_BIAS_PULL_UP, 20000));
 		}
 
 		if (quirks & DMI_QUIRK_RESET_SD_SIGNAL_VOLT_ON_SUSP)
@@ -966,7 +986,7 @@ err_free:
 	return err;
 }
 
-static void sdhci_acpi_remove(struct platform_device *pdev)
+static int sdhci_acpi_remove(struct platform_device *pdev)
 {
 	struct sdhci_acpi_host *c = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
@@ -988,6 +1008,8 @@ static void sdhci_acpi_remove(struct platform_device *pdev)
 		c->slot->free_slot(pdev);
 
 	sdhci_free_host(c->host);
+
+	return 0;
 }
 
 static void __maybe_unused sdhci_acpi_reset_signal_voltage_if_needed(
@@ -1080,7 +1102,7 @@ static struct platform_driver sdhci_acpi_driver = {
 		.pm			= &sdhci_acpi_pm_ops,
 	},
 	.probe	= sdhci_acpi_probe,
-	.remove_new = sdhci_acpi_remove,
+	.remove	= sdhci_acpi_remove,
 };
 
 module_platform_driver(sdhci_acpi_driver);

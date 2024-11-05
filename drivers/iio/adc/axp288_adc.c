@@ -9,7 +9,6 @@
 
 #include <linux/dmi.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/regmap.h>
@@ -51,8 +50,6 @@ enum axp288_adc_id {
 struct axp288_adc_info {
 	int irq;
 	struct regmap *regmap;
-	/* lock to protect against multiple access to the device */
-	struct mutex lock;
 	bool ts_enabled;
 };
 
@@ -164,7 +161,7 @@ static int axp288_adc_read_raw(struct iio_dev *indio_dev,
 	int ret;
 	struct axp288_adc_info *info = iio_priv(indio_dev);
 
-	mutex_lock(&info->lock);
+	mutex_lock(&indio_dev->mlock);
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
 		if (axp288_adc_set_ts(info, AXP288_ADC_TS_CURRENT_ON_ONDEMAND,
@@ -181,7 +178,7 @@ static int axp288_adc_read_raw(struct iio_dev *indio_dev,
 	default:
 		ret = -EINVAL;
 	}
-	mutex_unlock(&info->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	return ret;
 }
@@ -196,14 +193,6 @@ static const struct dmi_system_id axp288_adc_ts_bias_override[] = {
 		.matches = {
 		  DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
 		  DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo ideapad 100S-11IBY"),
-		},
-		.driver_data = (void *)(uintptr_t)AXP288_ADC_TS_BIAS_80UA,
-	},
-	{
-		/* Nuvision Solo 10 Draw */
-		.matches = {
-		  DMI_MATCH(DMI_SYS_VENDOR, "TMAX"),
-		  DMI_MATCH(DMI_PRODUCT_NAME, "TM101W610L"),
 		},
 		.driver_data = (void *)(uintptr_t)AXP288_ADC_TS_BIAS_80UA,
 	},
@@ -247,8 +236,8 @@ static int axp288_adc_initialize(struct axp288_adc_info *info)
 		return ret;
 
 	/* Turn on the ADC for all channels except TS, leave TS as is */
-	return regmap_set_bits(info->regmap, AXP20X_ADC_EN1,
-			       AXP288_ADC_EN_MASK);
+	return regmap_update_bits(info->regmap, AXP20X_ADC_EN1,
+				  AXP288_ADC_EN_MASK, AXP288_ADC_EN_MASK);
 }
 
 static const struct iio_info axp288_adc_iio_info = {
@@ -292,14 +281,12 @@ static int axp288_adc_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	mutex_init(&info->lock);
-
 	return devm_iio_device_register(&pdev->dev, indio_dev);
 }
 
 static const struct platform_device_id axp288_adc_id_table[] = {
 	{ .name = "axp288_adc" },
-	{ }
+	{},
 };
 
 static struct platform_driver axp288_adc_driver = {

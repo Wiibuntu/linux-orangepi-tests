@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * J-Core SoC PIT/clocksource driver
  *
  * Copyright (C) 2015-2016 Smart Energy Instruments, Inc.
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 
 #include <linux/kernel.h>
@@ -120,7 +123,7 @@ static int jcore_pit_local_init(unsigned cpu)
 
 static irqreturn_t jcore_timer_interrupt(int irq, void *dev_id)
 {
-	struct jcore_pit *pit = dev_id;
+	struct jcore_pit *pit = this_cpu_ptr(dev_id);
 
 	if (clockevent_state_oneshot(&pit->ced))
 		jcore_pit_disable(pit);
@@ -168,8 +171,9 @@ static int __init jcore_pit_init(struct device_node *node)
 		return -ENOMEM;
 	}
 
-	err = request_percpu_irq(pit_irq, jcore_timer_interrupt,
-				 "jcore_pit", jcore_pit_percpu);
+	err = request_irq(pit_irq, jcore_timer_interrupt,
+			  IRQF_TIMER | IRQF_PERCPU,
+			  "jcore_pit", jcore_pit_percpu);
 	if (err) {
 		pr_err("pit irq request failed: %d\n", err);
 		free_percpu(jcore_pit_percpu);

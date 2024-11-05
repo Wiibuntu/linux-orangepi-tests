@@ -11,20 +11,16 @@
  */
 
 #include <dt-bindings/pinctrl/apple.h>
-
-#include <linux/bitfield.h>
-#include <linux/bits.h>
 #include <linux/gpio/driver.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
-#include <linux/regmap.h>
-
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
 
 #include "pinctrl-utils.h"
 #include "core.h"
@@ -39,7 +35,8 @@ struct apple_gpio_pinctrl {
 
 	struct pinctrl_desc pinctrl_desc;
 	struct gpio_chip gpio_chip;
-	u8 irqgrps[];
+	struct irq_chip irq_chip;
+	u8 irqgrps[0];
 };
 
 #define REG_GPIO(x)          (4 * (x))
@@ -73,36 +70,31 @@ struct regmap_config regmap_config = {
 	.cache_type = REGCACHE_FLAT,
 	.max_register = 512 * sizeof(u32),
 	.num_reg_defaults_raw = 512,
-	.use_relaxed_mmio = true,
-	.use_raw_spinlock = true,
+	.use_relaxed_mmio = true
 };
 
-/* No locking needed to mask/unmask IRQs as the interrupt mode is per pin-register. */
+// No locking needed to mask/unmask IRQs as the interrupt mode is per pin-register.
 static void apple_gpio_set_reg(struct apple_gpio_pinctrl *pctl,
-                               unsigned int pin, u32 mask, u32 value)
+			       unsigned int pin, u32 mask, u32 value)
 {
 	regmap_update_bits(pctl->map, REG_GPIO(pin), mask, value);
 }
 
-static u32 apple_gpio_get_reg(struct apple_gpio_pinctrl *pctl,
-                              unsigned int pin)
+static uint32_t apple_gpio_get_reg(struct apple_gpio_pinctrl *pctl,
+				   unsigned int pin)
 {
-	int ret;
-	u32 val;
+	unsigned int val = 0;
 
-	ret = regmap_read(pctl->map, REG_GPIO(pin), &val);
-	if (ret)
-		return 0;
-
+	regmap_read(pctl->map, REG_GPIO(pin), &val);
 	return val;
 }
 
 /* Pin controller functions */
 
 static int apple_gpio_dt_node_to_map(struct pinctrl_dev *pctldev,
-                                     struct device_node *node,
-                                     struct pinctrl_map **map,
-                                     unsigned *num_maps)
+				     struct device_node *node,
+				     struct pinctrl_map **map,
+				     unsigned *num_maps)
 {
 	unsigned reserved_maps;
 	struct apple_gpio_pinctrl *pctl;
@@ -127,7 +119,8 @@ static int apple_gpio_dt_node_to_map(struct pinctrl_dev *pctldev,
 
 	num_pins = ret;
 
-	ret = pinctrl_utils_reserve_map(pctldev, map, &reserved_maps, num_maps, num_pins);
+	ret = pinctrl_utils_reserve_map(pctldev, map, &reserved_maps, num_maps,
+					num_pins);
 	if (ret)
 		return ret;
 
@@ -145,10 +138,11 @@ static int apple_gpio_dt_node_to_map(struct pinctrl_dev *pctldev,
 		}
 
 		group_name = pinctrl_generic_get_group_name(pctldev, pin);
-		function_name = pinmux_generic_get_function_name(pctl->pctldev, func);
+		function_name =
+			pinmux_generic_get_function_name(pctl->pctldev, func);
 		ret = pinctrl_utils_add_map_mux(pctl->pctldev, map,
-		                                &reserved_maps, num_maps,
-		                                group_name, function_name);
+						&reserved_maps, num_maps,
+						group_name, function_name);
 		if (ret)
 			goto free_map;
 	}
@@ -171,7 +165,7 @@ static const struct pinctrl_ops apple_gpio_pinctrl_ops = {
 /* Pin multiplexer functions */
 
 static int apple_gpio_pinmux_set(struct pinctrl_dev *pctldev, unsigned func,
-                                 unsigned group)
+				    unsigned group)
 {
 	struct apple_gpio_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
 
@@ -192,14 +186,14 @@ static const struct pinmux_ops apple_gpio_pinmux_ops = {
 
 /* GPIO chip functions */
 
-static int apple_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
+static int apple_gpio_get_direction(struct gpio_chip *chip,
+					 unsigned int offset)
 {
 	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(chip);
 	unsigned int reg = apple_gpio_get_reg(pctl, offset);
 
-	if (FIELD_GET(REG_GPIOx_MODE, reg) == REG_GPIOx_OUT)
-		return GPIO_LINE_DIRECTION_OUT;
-	return GPIO_LINE_DIRECTION_IN;
+	return (FIELD_GET(REG_GPIOx_MODE, reg) == REG_GPIOx_OUT) ?
+		       GPIO_LINE_DIRECTION_OUT : GPIO_LINE_DIRECTION_IN;
 }
 
 static int apple_gpio_get(struct gpio_chip *chip, unsigned offset)
@@ -217,14 +211,17 @@ static int apple_gpio_get(struct gpio_chip *chip, unsigned offset)
 	return !!(reg & REG_GPIOx_DATA);
 }
 
-static void apple_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static void apple_gpio_set(struct gpio_chip *chip, unsigned int offset,
+				int value)
 {
 	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(chip);
 
-	apple_gpio_set_reg(pctl, offset, REG_GPIOx_DATA, value ? REG_GPIOx_DATA : 0);
+	apple_gpio_set_reg(pctl, offset, REG_GPIOx_DATA,
+			   value ? REG_GPIOx_DATA : 0);
 }
 
-static int apple_gpio_direction_input(struct gpio_chip *chip, unsigned int offset)
+static int apple_gpio_direction_input(struct gpio_chip *chip,
+					   unsigned int offset)
 {
 	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(chip);
 
@@ -237,7 +234,7 @@ static int apple_gpio_direction_input(struct gpio_chip *chip, unsigned int offse
 }
 
 static int apple_gpio_direction_output(struct gpio_chip *chip,
-                                       unsigned int offset, int value)
+					    unsigned int offset, int value)
 {
 	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(chip);
 
@@ -252,10 +249,13 @@ static int apple_gpio_direction_output(struct gpio_chip *chip,
 
 static void apple_gpio_irq_ack(struct irq_data *data)
 {
-	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(irq_data_get_irq_chip_data(data));
-	unsigned int irqgrp = FIELD_GET(REG_GPIOx_GRP, apple_gpio_get_reg(pctl, data->hwirq));
+	struct apple_gpio_pinctrl *pctl =
+		gpiochip_get_data(irq_data_get_irq_chip_data(data));
+	unsigned int irqgrp =
+		FIELD_GET(REG_GPIOx_GRP, apple_gpio_get_reg(pctl, data->hwirq));
 
-	writel(BIT(data->hwirq % 32), pctl->base + REG_IRQ(irqgrp, data->hwirq));
+	writel(BIT(data->hwirq & 31),
+	       pctl->base + REG_IRQ(irqgrp, data->hwirq));
 }
 
 static unsigned int apple_gpio_irq_type(unsigned int type)
@@ -278,23 +278,20 @@ static unsigned int apple_gpio_irq_type(unsigned int type)
 
 static void apple_gpio_irq_mask(struct irq_data *data)
 {
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
-	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(gc);
-
+	struct apple_gpio_pinctrl *pctl =
+		gpiochip_get_data(irq_data_get_irq_chip_data(data));
 	apple_gpio_set_reg(pctl, data->hwirq, REG_GPIOx_MODE,
-	                   FIELD_PREP(REG_GPIOx_MODE, REG_GPIOx_IN_IRQ_OFF));
-	gpiochip_disable_irq(gc, data->hwirq);
+			   FIELD_PREP(REG_GPIOx_MODE, REG_GPIOx_IN_IRQ_OFF));
 }
 
 static void apple_gpio_irq_unmask(struct irq_data *data)
 {
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
-	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(gc);
+	struct apple_gpio_pinctrl *pctl =
+		gpiochip_get_data(irq_data_get_irq_chip_data(data));
 	unsigned int irqtype = apple_gpio_irq_type(irqd_get_trigger_type(data));
 
-	gpiochip_enable_irq(gc, data->hwirq);
 	apple_gpio_set_reg(pctl, data->hwirq, REG_GPIOx_MODE,
-	                   FIELD_PREP(REG_GPIOx_MODE, irqtype));
+			   FIELD_PREP(REG_GPIOx_MODE, irqtype));
 }
 
 static unsigned int apple_gpio_irq_startup(struct irq_data *data)
@@ -303,7 +300,7 @@ static unsigned int apple_gpio_irq_startup(struct irq_data *data)
 	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(chip);
 
 	apple_gpio_set_reg(pctl, data->hwirq, REG_GPIOx_GRP,
-	                   FIELD_PREP(REG_GPIOx_GRP, 0));
+			   FIELD_PREP(REG_GPIOx_GRP, 0));
 
 	apple_gpio_direction_input(chip, data->hwirq);
 	apple_gpio_irq_unmask(data);
@@ -311,16 +308,18 @@ static unsigned int apple_gpio_irq_startup(struct irq_data *data)
 	return 0;
 }
 
-static int apple_gpio_irq_set_type(struct irq_data *data, unsigned int type)
+static int apple_gpio_irq_set_type(struct irq_data *data,
+					unsigned int type)
 {
-	struct apple_gpio_pinctrl *pctl = gpiochip_get_data(irq_data_get_irq_chip_data(data));
+	struct apple_gpio_pinctrl *pctl =
+		gpiochip_get_data(irq_data_get_irq_chip_data(data));
 	unsigned int irqtype = apple_gpio_irq_type(type);
 
 	if (irqtype == REG_GPIOx_IN_IRQ_OFF)
 		return -EINVAL;
 
 	apple_gpio_set_reg(pctl, data->hwirq, REG_GPIOx_MODE,
-	                   FIELD_PREP(REG_GPIOx_MODE, irqtype));
+			   FIELD_PREP(REG_GPIOx_MODE, irqtype));
 
 	if (type & IRQ_TYPE_LEVEL_MASK)
 		irq_set_handler_locked(data, handle_level_irq);
@@ -350,15 +349,13 @@ static void apple_gpio_irq_handler(struct irq_desc *desc)
 	chained_irq_exit(chip, desc);
 }
 
-static const struct irq_chip apple_gpio_irqchip = {
-	.name			= "Apple-GPIO",
-	.irq_startup		= apple_gpio_irq_startup,
-	.irq_ack		= apple_gpio_irq_ack,
-	.irq_mask		= apple_gpio_irq_mask,
-	.irq_unmask		= apple_gpio_irq_unmask,
-	.irq_set_type		= apple_gpio_irq_set_type,
-	.flags			= IRQCHIP_IMMUTABLE,
-	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+static struct irq_chip apple_gpio_irqchip = {
+	.name		= "Apple-GPIO",
+	.irq_startup	= apple_gpio_irq_startup,
+	.irq_ack	= apple_gpio_irq_ack,
+	.irq_mask	= apple_gpio_irq_mask,
+	.irq_unmask	= apple_gpio_irq_unmask,
+	.irq_set_type	= apple_gpio_irq_set_type,
 };
 
 /* Probe & register */
@@ -368,6 +365,12 @@ static int apple_gpio_register(struct apple_gpio_pinctrl *pctl)
 	struct gpio_irq_chip *girq = &pctl->gpio_chip.irq;
 	void **irq_data = NULL;
 	int ret;
+
+	if (!of_property_read_bool(pctl->dev->of_node, "gpio-controller"))
+		return dev_err_probe(pctl->dev,	-ENODEV,
+				     "No gpio-controller property\n");
+
+	pctl->irq_chip = apple_gpio_irqchip;
 
 	pctl->gpio_chip.label = dev_name(pctl->dev);
 	pctl->gpio_chip.request = gpiochip_generic_request;
@@ -380,11 +383,12 @@ static int apple_gpio_register(struct apple_gpio_pinctrl *pctl)
 	pctl->gpio_chip.base = -1;
 	pctl->gpio_chip.ngpio = pctl->pinctrl_desc.npins;
 	pctl->gpio_chip.parent = pctl->dev;
+	pctl->gpio_chip.of_node = pctl->dev->of_node;
 
 	if (girq->num_parents) {
 		int i;
 
-		gpio_irq_chip_set_chip(girq, &apple_gpio_irqchip);
+		girq->chip = &pctl->irq_chip;
 		girq->parent_handler = apple_gpio_irq_handler;
 
 		girq->parents = kmalloc_array(girq->num_parents,
@@ -394,13 +398,14 @@ static int apple_gpio_register(struct apple_gpio_pinctrl *pctl)
 					 GFP_KERNEL);
 		if (!girq->parents || !irq_data) {
 			ret = -ENOMEM;
-			goto out_free_irq_data;
+			goto out;
 		}
 
 		for (i = 0; i < girq->num_parents; i++) {
-			ret = platform_get_irq(to_platform_device(pctl->dev), i);
+			ret = platform_get_irq(to_platform_device(pctl->dev),
+					       i);
 			if (ret < 0)
-				goto out_free_irq_data;
+				goto out;
 
 			girq->parents[i] = ret;
 			pctl->irqgrps[i] = i;
@@ -414,8 +419,7 @@ static int apple_gpio_register(struct apple_gpio_pinctrl *pctl)
 	}
 
 	ret = devm_gpiochip_add_data(pctl->dev, &pctl->gpio_chip, pctl);
-
-out_free_irq_data:
+out:
 	kfree(girq->parents);
 	kfree(irq_data);
 
@@ -474,9 +478,6 @@ static int apple_gpio_pinctrl_probe(struct platform_device *pdev)
 	for (i = 0; i < npins; i++) {
 		pins[i].number = i;
 		pins[i].name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "PIN%u", i);
-		if (!pins[i].name)
-			return -ENOMEM;
-
 		pins[i].drv_data = pctl;
 		pin_names[i] = pins[i].name;
 		pin_nums[i] = i;
@@ -516,7 +517,6 @@ static const struct of_device_id apple_gpio_pinctrl_of_match[] = {
 	{ .compatible = "apple,pinctrl", },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, apple_gpio_pinctrl_of_match);
 
 static struct platform_driver apple_gpio_pinctrl_driver = {
 	.driver = {

@@ -256,9 +256,19 @@ static inline struct v4l2_subdev *to_sd(struct v4l2_ctrl *ctrl)
 	return &container_of(ctrl->handler, struct adv7842_state, hdl)->sd;
 }
 
+static inline unsigned hblanking(const struct v4l2_bt_timings *t)
+{
+	return V4L2_DV_BT_BLANKING_WIDTH(t);
+}
+
 static inline unsigned htotal(const struct v4l2_bt_timings *t)
 {
 	return V4L2_DV_BT_FRAME_WIDTH(t);
+}
+
+static inline unsigned vblanking(const struct v4l2_bt_timings *t)
+{
+	return V4L2_DV_BT_BLANKING_HEIGHT(t);
 }
 
 static inline unsigned vtotal(const struct v4l2_bt_timings *t)
@@ -1518,7 +1528,7 @@ static void adv7842_fill_optional_dv_timings_fields(struct v4l2_subdev *sd,
 	timings->bt.flags |= V4L2_DV_FL_CAN_DETECT_REDUCED_FPS;
 }
 
-static int adv7842_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
+static int adv7842_query_dv_timings(struct v4l2_subdev *sd,
 				    struct v4l2_dv_timings *timings)
 {
 	struct adv7842_state *state = to_state(sd);
@@ -1526,9 +1536,6 @@ static int adv7842_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 	struct stdi_readback stdi = { 0 };
 
 	v4l2_dbg(1, debug, sd, "%s:\n", __func__);
-
-	if (pad != 0)
-		return -EINVAL;
 
 	memset(timings, 0, sizeof(struct v4l2_dv_timings));
 
@@ -1646,7 +1653,7 @@ found:
 	return 0;
 }
 
-static int adv7842_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
+static int adv7842_s_dv_timings(struct v4l2_subdev *sd,
 				struct v4l2_dv_timings *timings)
 {
 	struct adv7842_state *state = to_state(sd);
@@ -1654,9 +1661,6 @@ static int adv7842_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 	int err;
 
 	v4l2_dbg(1, debug, sd, "%s:\n", __func__);
-
-	if (pad != 0)
-		return -EINVAL;
 
 	if (state->mode == ADV7842_MODE_SDP)
 		return -ENODATA;
@@ -1695,13 +1699,10 @@ static int adv7842_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 	return 0;
 }
 
-static int adv7842_g_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
+static int adv7842_g_dv_timings(struct v4l2_subdev *sd,
 				struct v4l2_dv_timings *timings)
 {
 	struct adv7842_state *state = to_state(sd);
-
-	if (pad != 0)
-		return -EINVAL;
 
 	if (state->mode == ADV7842_MODE_SDP)
 		return -ENODATA;
@@ -2096,7 +2097,7 @@ static int adv7842_get_format(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *fmt;
 
-		fmt = v4l2_subdev_state_get_format(sd_state, format->pad);
+		fmt = v4l2_subdev_get_try_format(sd, sd_state, format->pad);
 		format->format.code = fmt->code;
 	} else {
 		format->format.code = state->format->code;
@@ -2128,7 +2129,7 @@ static int adv7842_set_format(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *fmt;
 
-		fmt = v4l2_subdev_state_get_format(sd_state, format->pad);
+		fmt = v4l2_subdev_get_try_format(sd, sd_state, format->pad);
 		fmt->code = format->format.code;
 	} else {
 		state->format = info;
@@ -2224,8 +2225,8 @@ static void adv7842_cec_isr(struct v4l2_subdev *sd, bool *handled)
 		struct cec_msg msg;
 
 		msg.len = cec_read(sd, 0x25) & 0x1f;
-		if (msg.len > CEC_MAX_MSG_SIZE)
-			msg.len = CEC_MAX_MSG_SIZE;
+		if (msg.len > 16)
+			msg.len = 16;
 
 		if (msg.len) {
 			u8 i;
@@ -2592,7 +2593,7 @@ static void log_infoframe(struct v4l2_subdev *sd, const struct adv7842_cfg_read_
 	for (i = 0; i < len; i++)
 		buffer[i + 3] = infoframe_read(sd, cri->payload_addr + i);
 
-	if (hdmi_infoframe_unpack(&frame, buffer, len + 3) < 0) {
+	if (hdmi_infoframe_unpack(&frame, buffer, sizeof(buffer)) < 0) {
 		v4l2_err(sd, "%s: unpack of %s infoframe failed\n", __func__, cri->desc);
 		return;
 	}
@@ -2789,7 +2790,7 @@ static int adv7842_cp_log_status(struct v4l2_subdev *sd)
 				"interlaced" : "progressive",
 			hs_pol, vs_pol);
 	}
-	if (adv7842_query_dv_timings(sd, 0, &timings))
+	if (adv7842_query_dv_timings(sd, &timings))
 		v4l2_info(sd, "No video detected\n");
 	else
 		v4l2_print_dv_timings(sd->name, "Detected format: ",
@@ -3235,7 +3236,7 @@ static int adv7842_command_ram_test(struct v4l2_subdev *sd)
 
 	memset(&state->timings, 0, sizeof(struct v4l2_dv_timings));
 
-	adv7842_s_dv_timings(sd, 0, &timings);
+	adv7842_s_dv_timings(sd, &timings);
 
 	return ret;
 }
@@ -3307,6 +3308,9 @@ static const struct v4l2_subdev_video_ops adv7842_video_ops = {
 	.s_routing = adv7842_s_routing,
 	.querystd = adv7842_querystd,
 	.g_input_status = adv7842_g_input_status,
+	.s_dv_timings = adv7842_s_dv_timings,
+	.g_dv_timings = adv7842_g_dv_timings,
+	.query_dv_timings = adv7842_query_dv_timings,
 };
 
 static const struct v4l2_subdev_pad_ops adv7842_pad_ops = {
@@ -3315,9 +3319,6 @@ static const struct v4l2_subdev_pad_ops adv7842_pad_ops = {
 	.set_fmt = adv7842_set_format,
 	.get_edid = adv7842_get_edid,
 	.set_edid = adv7842_set_edid,
-	.s_dv_timings = adv7842_s_dv_timings,
-	.g_dv_timings = adv7842_g_dv_timings,
-	.query_dv_timings = adv7842_query_dv_timings,
 	.enum_dv_timings = adv7842_enum_dv_timings,
 	.dv_timings_cap = adv7842_dv_timings_cap,
 };
@@ -3450,7 +3451,8 @@ static int adv7842_register_clients(struct v4l2_subdev *sd)
 	return 0;
 }
 
-static int adv7842_probe(struct i2c_client *client)
+static int adv7842_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	struct adv7842_state *state;
 	static const struct v4l2_dv_timings cea640x480 =
@@ -3601,7 +3603,7 @@ err_hdl:
 
 /* ----------------------------------------------------------------------- */
 
-static void adv7842_remove(struct i2c_client *client)
+static int adv7842_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct adv7842_state *state = to_state(sd);
@@ -3612,12 +3614,13 @@ static void adv7842_remove(struct i2c_client *client)
 	media_entity_cleanup(&sd->entity);
 	adv7842_unregister_clients(sd);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
+	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id adv7842_id[] = {
-	{ "adv7842" },
+	{ "adv7842", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adv7842_id);

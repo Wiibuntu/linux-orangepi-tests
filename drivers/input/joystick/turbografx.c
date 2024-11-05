@@ -10,6 +10,9 @@
  * TurboGraFX parallel port interface driver for Linux.
  */
 
+/*
+ */
+
 #include <linux/kernel.h>
 #include <linux/parport.h>
 #include <linux/input.h>
@@ -172,7 +175,7 @@ static void tgfx_attach(struct parport *pp)
 		return;
 	}
 
-	tgfx = kzalloc(sizeof(*tgfx), GFP_KERNEL);
+	tgfx = kzalloc(sizeof(struct tgfx), GFP_KERNEL);
 	if (!tgfx) {
 		printk(KERN_ERR "turbografx.c: Not enough memory\n");
 		goto err_unreg_pardev;
@@ -274,6 +277,7 @@ static struct parport_driver tgfx_parport_driver = {
 	.name = "turbografx",
 	.match_port = tgfx_attach,
 	.detach = tgfx_detach,
+	.devmodel = true,
 };
 
 static int __init tgfx_init(void)

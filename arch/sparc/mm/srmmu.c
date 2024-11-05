@@ -355,8 +355,7 @@ pgtable_t pte_alloc_one(struct mm_struct *mm)
 		return NULL;
 	page = pfn_to_page(__nocache_pa((unsigned long)ptep) >> PAGE_SHIFT);
 	spin_lock(&mm->page_table_lock);
-	if (page_ref_inc_return(page) == 2 &&
-			!pagetable_pte_ctor(page_ptdesc(page))) {
+	if (page_ref_inc_return(page) == 2 && !pgtable_pte_page_ctor(page)) {
 		page_ref_dec(page);
 		ptep = NULL;
 	}
@@ -372,7 +371,7 @@ void pte_free(struct mm_struct *mm, pgtable_t ptep)
 	page = pfn_to_page(__nocache_pa((unsigned long)ptep) >> PAGE_SHIFT);
 	spin_lock(&mm->page_table_lock);
 	if (page_ref_dec_return(page) == 1)
-		pagetable_pte_dtor(page_ptdesc(page));
+		pgtable_pte_page_dtor(page);
 	spin_unlock(&mm->page_table_lock);
 
 	srmmu_free_nocache(ptep, SRMMU_PTE_TABLE_SIZE);
@@ -1513,7 +1512,7 @@ static void __init init_viking(void)
 
 		/*
 		 * We need this to make sure old viking takes no hits
-		 * on its cache for dma snoops to workaround the
+		 * on it's cache for dma snoops to workaround the
 		 * "load from non-cacheable memory" interrupt bug.
 		 * This is only necessary because of the new way in
 		 * which we use the IOMMU.
@@ -1637,32 +1636,30 @@ static void __init get_srmmu_type(void)
 /* Local cross-calls. */
 static void smp_flush_page_for_dma(unsigned long page)
 {
-	xc1(local_ops->page_for_dma, page);
+	xc1((smpfunc_t) local_ops->page_for_dma, page);
 	local_ops->page_for_dma(page);
 }
 
 static void smp_flush_cache_all(void)
 {
-	xc0(local_ops->cache_all);
+	xc0((smpfunc_t) local_ops->cache_all);
 	local_ops->cache_all();
 }
 
 static void smp_flush_tlb_all(void)
 {
-	xc0(local_ops->tlb_all);
+	xc0((smpfunc_t) local_ops->tlb_all);
 	local_ops->tlb_all();
-}
-
-static bool any_other_mm_cpus(struct mm_struct *mm)
-{
-	return cpumask_any_but(mm_cpumask(mm), smp_processor_id()) < nr_cpu_ids;
 }
 
 static void smp_flush_cache_mm(struct mm_struct *mm)
 {
 	if (mm->context != NO_CONTEXT) {
-		if (any_other_mm_cpus(mm))
-			xc1(local_ops->cache_mm, (unsigned long)mm);
+		cpumask_t cpu_mask;
+		cpumask_copy(&cpu_mask, mm_cpumask(mm));
+		cpumask_clear_cpu(smp_processor_id(), &cpu_mask);
+		if (!cpumask_empty(&cpu_mask))
+			xc1((smpfunc_t) local_ops->cache_mm, (unsigned long) mm);
 		local_ops->cache_mm(mm);
 	}
 }
@@ -1670,8 +1667,11 @@ static void smp_flush_cache_mm(struct mm_struct *mm)
 static void smp_flush_tlb_mm(struct mm_struct *mm)
 {
 	if (mm->context != NO_CONTEXT) {
-		if (any_other_mm_cpus(mm)) {
-			xc1(local_ops->tlb_mm, (unsigned long)mm);
+		cpumask_t cpu_mask;
+		cpumask_copy(&cpu_mask, mm_cpumask(mm));
+		cpumask_clear_cpu(smp_processor_id(), &cpu_mask);
+		if (!cpumask_empty(&cpu_mask)) {
+			xc1((smpfunc_t) local_ops->tlb_mm, (unsigned long) mm);
 			if (atomic_read(&mm->mm_users) == 1 && current->active_mm == mm)
 				cpumask_copy(mm_cpumask(mm),
 					     cpumask_of(smp_processor_id()));
@@ -1687,9 +1687,12 @@ static void smp_flush_cache_range(struct vm_area_struct *vma,
 	struct mm_struct *mm = vma->vm_mm;
 
 	if (mm->context != NO_CONTEXT) {
-		if (any_other_mm_cpus(mm))
-			xc3(local_ops->cache_range, (unsigned long)vma, start,
-			    end);
+		cpumask_t cpu_mask;
+		cpumask_copy(&cpu_mask, mm_cpumask(mm));
+		cpumask_clear_cpu(smp_processor_id(), &cpu_mask);
+		if (!cpumask_empty(&cpu_mask))
+			xc3((smpfunc_t) local_ops->cache_range,
+			    (unsigned long) vma, start, end);
 		local_ops->cache_range(vma, start, end);
 	}
 }
@@ -1701,9 +1704,12 @@ static void smp_flush_tlb_range(struct vm_area_struct *vma,
 	struct mm_struct *mm = vma->vm_mm;
 
 	if (mm->context != NO_CONTEXT) {
-		if (any_other_mm_cpus(mm))
-			xc3(local_ops->tlb_range, (unsigned long)vma, start,
-			    end);
+		cpumask_t cpu_mask;
+		cpumask_copy(&cpu_mask, mm_cpumask(mm));
+		cpumask_clear_cpu(smp_processor_id(), &cpu_mask);
+		if (!cpumask_empty(&cpu_mask))
+			xc3((smpfunc_t) local_ops->tlb_range,
+			    (unsigned long) vma, start, end);
 		local_ops->tlb_range(vma, start, end);
 	}
 }
@@ -1713,8 +1719,12 @@ static void smp_flush_cache_page(struct vm_area_struct *vma, unsigned long page)
 	struct mm_struct *mm = vma->vm_mm;
 
 	if (mm->context != NO_CONTEXT) {
-		if (any_other_mm_cpus(mm))
-			xc2(local_ops->cache_page, (unsigned long)vma, page);
+		cpumask_t cpu_mask;
+		cpumask_copy(&cpu_mask, mm_cpumask(mm));
+		cpumask_clear_cpu(smp_processor_id(), &cpu_mask);
+		if (!cpumask_empty(&cpu_mask))
+			xc2((smpfunc_t) local_ops->cache_page,
+			    (unsigned long) vma, page);
 		local_ops->cache_page(vma, page);
 	}
 }
@@ -1724,8 +1734,12 @@ static void smp_flush_tlb_page(struct vm_area_struct *vma, unsigned long page)
 	struct mm_struct *mm = vma->vm_mm;
 
 	if (mm->context != NO_CONTEXT) {
-		if (any_other_mm_cpus(mm))
-			xc2(local_ops->tlb_page, (unsigned long)vma, page);
+		cpumask_t cpu_mask;
+		cpumask_copy(&cpu_mask, mm_cpumask(mm));
+		cpumask_clear_cpu(smp_processor_id(), &cpu_mask);
+		if (!cpumask_empty(&cpu_mask))
+			xc2((smpfunc_t) local_ops->tlb_page,
+			    (unsigned long) vma, page);
 		local_ops->tlb_page(vma, page);
 	}
 }
@@ -1739,15 +1753,19 @@ static void smp_flush_page_to_ram(unsigned long page)
 	 * XXX This experiment failed, research further... -DaveM
 	 */
 #if 1
-	xc1(local_ops->page_to_ram, page);
+	xc1((smpfunc_t) local_ops->page_to_ram, page);
 #endif
 	local_ops->page_to_ram(page);
 }
 
 static void smp_flush_sig_insns(struct mm_struct *mm, unsigned long insn_addr)
 {
-	if (any_other_mm_cpus(mm))
-		xc2(local_ops->sig_insns, (unsigned long)mm, insn_addr);
+	cpumask_t cpu_mask;
+	cpumask_copy(&cpu_mask, mm_cpumask(mm));
+	cpumask_clear_cpu(smp_processor_id(), &cpu_mask);
+	if (!cpumask_empty(&cpu_mask))
+		xc2((smpfunc_t) local_ops->sig_insns,
+		    (unsigned long) mm, insn_addr);
 	local_ops->sig_insns(mm, insn_addr);
 }
 

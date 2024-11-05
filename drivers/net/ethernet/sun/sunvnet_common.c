@@ -25,7 +25,6 @@
 #endif
 
 #include <net/ip.h>
-#include <net/gso.h>
 #include <net/icmp.h>
 #include <net/route.h>
 
@@ -39,7 +38,7 @@
  */
 #define	VNET_MAX_RETRIES	10
 
-MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
+MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
 MODULE_DESCRIPTION("Sun LDOM virtual network support library");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("1.1");
@@ -1086,13 +1085,13 @@ static inline int vnet_skb_map(struct ldc_channel *lp, struct sk_buff *skb,
 		u8 *vaddr;
 
 		if (nc < ncookies) {
-			vaddr = kmap_local_page(skb_frag_page(f));
+			vaddr = kmap_atomic(skb_frag_page(f));
 			blen = skb_frag_size(f);
 			blen += 8 - (blen & 7);
 			err = ldc_map_single(lp, vaddr + skb_frag_off(f),
 					     blen, cookies + nc, ncookies - nc,
 					     map_perm);
-			kunmap_local(vaddr);
+			kunmap_atomic(vaddr);
 		} else {
 			err = -EMSGSIZE;
 		}
@@ -1144,9 +1143,9 @@ static inline struct sk_buff *vnet_skb_shape(struct sk_buff *skb, int ncookies)
 		nskb->protocol = skb->protocol;
 		offset = skb_mac_header(skb) - skb->data;
 		skb_set_mac_header(nskb, offset);
-		offset = skb_network_offset(skb);
+		offset = skb_network_header(skb) - skb->data;
 		skb_set_network_header(nskb, offset);
-		offset = skb_transport_offset(skb);
+		offset = skb_transport_header(skb) - skb->data;
 		skb_set_transport_header(nskb, offset);
 
 		offset = 0;

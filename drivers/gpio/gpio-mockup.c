@@ -9,9 +9,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/cleanup.h>
 #include <linux/debugfs.h>
-#include <linux/device.h>
 #include <linux/gpio/driver.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -21,10 +19,11 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
-#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/string_helpers.h>
 #include <linux/uaccess.h>
+
+#include "gpiolib.h"
 
 #define GPIO_MOCKUP_MAX_GC	10
 /*
@@ -39,15 +38,11 @@
  * struct gpio_pin_status - structure describing a GPIO status
  * @dir:       Configures direction of gpio as "in" or "out"
  * @value:     Configures status of the gpio as 0(low) or 1(high)
- * @pull:      Configures the current pull of the GPIO as 0 (pull-down) or
- *             1 (pull-up)
- * @requested: Request status of this GPIO
  */
 struct gpio_mockup_line_status {
 	int dir;
 	int value;
 	int pull;
-	bool requested;
 };
 
 struct gpio_mockup_chip {
@@ -60,6 +55,7 @@ struct gpio_mockup_chip {
 
 struct gpio_mockup_dbgfs_private {
 	struct gpio_mockup_chip *chip;
+	struct gpio_desc *desc;
 	unsigned int offset;
 };
 
@@ -94,8 +90,9 @@ static int gpio_mockup_get(struct gpio_chip *gc, unsigned int offset)
 	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
 	int val;
 
-	scoped_guard(mutex, &chip->lock)
-		val = __gpio_mockup_get(chip, offset);
+	mutex_lock(&chip->lock);
+	val = __gpio_mockup_get(chip, offset);
+	mutex_unlock(&chip->lock);
 
 	return val;
 }
@@ -106,12 +103,12 @@ static int gpio_mockup_get_multiple(struct gpio_chip *gc,
 	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
 	unsigned int bit, val;
 
-	scoped_guard(mutex, &chip->lock) {
-		for_each_set_bit(bit, mask, gc->ngpio) {
-			val = __gpio_mockup_get(chip, bit);
-			__assign_bit(bit, bits, val);
-		}
+	mutex_lock(&chip->lock);
+	for_each_set_bit(bit, mask, gc->ngpio) {
+		val = __gpio_mockup_get(chip, bit);
+		__assign_bit(bit, bits, val);
 	}
+	mutex_unlock(&chip->lock);
 
 	return 0;
 }
@@ -127,9 +124,9 @@ static void gpio_mockup_set(struct gpio_chip *gc,
 {
 	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
 
-	guard(mutex)(&chip->lock);
-
+	mutex_lock(&chip->lock);
 	__gpio_mockup_set(chip, offset, value);
+	mutex_unlock(&chip->lock);
 }
 
 static void gpio_mockup_set_multiple(struct gpio_chip *gc,
@@ -138,21 +135,23 @@ static void gpio_mockup_set_multiple(struct gpio_chip *gc,
 	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
 	unsigned int bit;
 
-	guard(mutex)(&chip->lock);
-
+	mutex_lock(&chip->lock);
 	for_each_set_bit(bit, mask, gc->ngpio)
 		__gpio_mockup_set(chip, bit, test_bit(bit, bits));
+	mutex_unlock(&chip->lock);
 }
 
 static int gpio_mockup_apply_pull(struct gpio_mockup_chip *chip,
 				  unsigned int offset, int value)
 {
-	struct gpio_mockup_line_status *line = &chip->lines[offset];
+	struct gpio_chip *gc = &chip->gc;
+	struct gpio_desc *desc = gpiochip_get_desc(gc, offset);
 	int curr, irq, irq_type, ret = 0;
 
-	guard(mutex)(&chip->lock);
+	mutex_lock(&chip->lock);
 
-	if (line->requested && line->dir == GPIO_LINE_DIRECTION_IN) {
+	if (test_bit(FLAG_REQUESTED, &desc->flags) &&
+	    !test_bit(FLAG_IS_OUT, &desc->flags)) {
 		curr = __gpio_mockup_get(chip, offset);
 		if (curr == value)
 			goto out;
@@ -180,11 +179,13 @@ static int gpio_mockup_apply_pull(struct gpio_mockup_chip *chip,
 
 set_value:
 	/* Change the value unless we're actively driving the line. */
-	if (!line->requested || line->dir == GPIO_LINE_DIRECTION_IN)
+	if (!test_bit(FLAG_REQUESTED, &desc->flags) ||
+	    !test_bit(FLAG_IS_OUT, &desc->flags))
 		__gpio_mockup_set(chip, offset, value);
 
 out:
 	chip->lines[offset].pull = value;
+	mutex_unlock(&chip->lock);
 	return ret;
 }
 
@@ -209,10 +210,10 @@ static int gpio_mockup_dirout(struct gpio_chip *gc,
 {
 	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
 
-	scoped_guard(mutex, &chip->lock) {
-		chip->lines[offset].dir = GPIO_LINE_DIRECTION_OUT;
-		__gpio_mockup_set(chip, offset, value);
-	}
+	mutex_lock(&chip->lock);
+	chip->lines[offset].dir = GPIO_LINE_DIRECTION_OUT;
+	__gpio_mockup_set(chip, offset, value);
+	mutex_unlock(&chip->lock);
 
 	return 0;
 }
@@ -221,8 +222,9 @@ static int gpio_mockup_dirin(struct gpio_chip *gc, unsigned int offset)
 {
 	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
 
-	scoped_guard(mutex, &chip->lock)
-		chip->lines[offset].dir = GPIO_LINE_DIRECTION_IN;
+	mutex_lock(&chip->lock);
+	chip->lines[offset].dir = GPIO_LINE_DIRECTION_IN;
+	mutex_unlock(&chip->lock);
 
 	return 0;
 }
@@ -232,8 +234,9 @@ static int gpio_mockup_get_direction(struct gpio_chip *gc, unsigned int offset)
 	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
 	int direction;
 
-	scoped_guard(mutex, &chip->lock)
-		direction = chip->lines[offset].dir;
+	mutex_lock(&chip->lock);
+	direction = chip->lines[offset].dir;
+	mutex_unlock(&chip->lock);
 
 	return direction;
 }
@@ -245,23 +248,10 @@ static int gpio_mockup_to_irq(struct gpio_chip *gc, unsigned int offset)
 	return irq_create_mapping(chip->irq_sim_domain, offset);
 }
 
-static int gpio_mockup_request(struct gpio_chip *gc, unsigned int offset)
-{
-	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
-
-	scoped_guard(mutex, &chip->lock)
-		chip->lines[offset].requested = true;
-
-	return 0;
-}
-
 static void gpio_mockup_free(struct gpio_chip *gc, unsigned int offset)
 {
 	struct gpio_mockup_chip *chip = gpiochip_get_data(gc);
 
-	guard(mutex)(&chip->lock);
-
-	chip->lines[offset].requested = false;
 	__gpio_mockup_set(chip, offset, chip->lines[offset].pull);
 }
 
@@ -347,6 +337,7 @@ static const struct file_operations gpio_mockup_debugfs_ops = {
 	.open = gpio_mockup_debugfs_open,
 	.read = gpio_mockup_debugfs_read,
 	.write = gpio_mockup_debugfs_write,
+	.llseek = no_llseek,
 	.release = single_release,
 };
 
@@ -360,16 +351,8 @@ static void gpio_mockup_debugfs_setup(struct device *dev,
 	int i;
 
 	gc = &chip->gc;
+	devname = dev_name(&gc->gpiodev->dev);
 
-	/*
-	 * There can only be a single GPIO device per platform device in
-	 * gpio-mockup so using device_find_any_child() is OK.
-	 */
-	struct device *child __free(put_device) = device_find_any_child(dev);
-	if (!child)
-		return;
-
-	devname = dev_name(child);
 	chip->dbg_dir = debugfs_create_dir(devname, gpio_mockup_dbg_dir);
 
 	for (i = 0; i < gc->ngpio; i++) {
@@ -383,17 +366,11 @@ static void gpio_mockup_debugfs_setup(struct device *dev,
 
 		priv->chip = chip;
 		priv->offset = i;
+		priv->desc = gpiochip_get_desc(gc, i);
 
-		debugfs_create_file(name, 0600, chip->dbg_dir, priv,
+		debugfs_create_file(name, 0200, chip->dbg_dir, priv,
 				    &gpio_mockup_debugfs_ops);
 	}
-}
-
-static void gpio_mockup_debugfs_cleanup(void *data)
-{
-	struct gpio_mockup_chip *chip = data;
-
-	debugfs_remove_recursive(chip->dbg_dir);
 }
 
 static void gpio_mockup_dispose_mappings(void *data)
@@ -453,7 +430,6 @@ static int gpio_mockup_probe(struct platform_device *pdev)
 	gc->get_direction = gpio_mockup_get_direction;
 	gc->set_config = gpio_mockup_set_config;
 	gc->to_irq = gpio_mockup_to_irq;
-	gc->request = gpio_mockup_request;
 	gc->free = gpio_mockup_free;
 
 	chip->lines = devm_kcalloc(dev, gc->ngpio,
@@ -479,7 +455,7 @@ static int gpio_mockup_probe(struct platform_device *pdev)
 
 	gpio_mockup_debugfs_setup(dev, chip);
 
-	return devm_add_action_or_reset(dev, gpio_mockup_debugfs_cleanup, chip);
+	return 0;
 }
 
 static const struct of_device_id gpio_mockup_of_match[] = {
@@ -515,6 +491,27 @@ static void gpio_mockup_unregister_pdevs(void)
 	}
 }
 
+static __init char **gpio_mockup_make_line_names(const char *label,
+						 unsigned int num_lines)
+{
+	unsigned int i;
+	char **names;
+
+	names = kcalloc(num_lines + 1, sizeof(char *), GFP_KERNEL);
+	if (!names)
+		return NULL;
+
+	for (i = 0; i < num_lines; i++) {
+		names[i] = kasprintf(GFP_KERNEL, "%s-%u", label, i);
+		if (!names[i]) {
+			kfree_strarray(names, i);
+			return NULL;
+		}
+	}
+
+	return names;
+}
+
 static int __init gpio_mockup_register_chip(int idx)
 {
 	struct property_entry properties[GPIO_MOCKUP_MAX_PROP];
@@ -541,7 +538,7 @@ static int __init gpio_mockup_register_chip(int idx)
 	properties[prop++] = PROPERTY_ENTRY_U16("nr-gpios", ngpio);
 
 	if (gpio_mockup_named_lines) {
-		line_names = kasprintf_strarray(GFP_KERNEL, chip_label, ngpio);
+		line_names = gpio_mockup_make_line_names(chip_label, ngpio);
 		if (!line_names)
 			return -ENOMEM;
 
@@ -550,10 +547,8 @@ static int __init gpio_mockup_register_chip(int idx)
 	}
 
 	fwnode = fwnode_create_software_node(properties, NULL);
-	if (IS_ERR(fwnode)) {
-		kfree_strarray(line_names, ngpio);
+	if (IS_ERR(fwnode))
 		return PTR_ERR(fwnode);
-	}
 
 	pdevinfo.name = "gpio-mockup";
 	pdevinfo.id = idx;
@@ -616,9 +611,9 @@ static int __init gpio_mockup_init(void)
 
 static void __exit gpio_mockup_exit(void)
 {
-	gpio_mockup_unregister_pdevs();
 	debugfs_remove_recursive(gpio_mockup_dbg_dir);
 	platform_driver_unregister(&gpio_mockup_driver);
+	gpio_mockup_unregister_pdevs();
 }
 
 module_init(gpio_mockup_init);

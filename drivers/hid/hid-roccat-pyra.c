@@ -26,6 +26,9 @@
 
 static uint profile_numbers[5] = {0, 1, 2, 3, 4};
 
+/* pyra_class is used for creating sysfs attributes via roccat char device */
+static struct class *pyra_class;
+
 static void profile_activated(struct pyra_device *pyra,
 		unsigned int new_profile)
 {
@@ -283,7 +286,7 @@ static ssize_t pyra_sysfs_show_actual_cpi(struct device *dev,
 {
 	struct pyra_device *pyra =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", pyra->actual_cpi);
+	return snprintf(buf, PAGE_SIZE, "%d\n", pyra->actual_cpi);
 }
 static DEVICE_ATTR(actual_cpi, 0440, pyra_sysfs_show_actual_cpi, NULL);
 
@@ -300,7 +303,7 @@ static ssize_t pyra_sysfs_show_actual_profile(struct device *dev,
 			&settings, PYRA_SIZE_SETTINGS);
 	mutex_unlock(&pyra->pyra_lock);
 
-	return sysfs_emit(buf, "%d\n", settings.startup_profile);
+	return snprintf(buf, PAGE_SIZE, "%d\n", settings.startup_profile);
 }
 static DEVICE_ATTR(actual_profile, 0440, pyra_sysfs_show_actual_profile, NULL);
 static DEVICE_ATTR(startup_profile, 0440, pyra_sysfs_show_actual_profile, NULL);
@@ -321,7 +324,7 @@ static ssize_t pyra_sysfs_show_firmware_version(struct device *dev,
 			&info, PYRA_SIZE_INFO);
 	mutex_unlock(&pyra->pyra_lock);
 
-	return sysfs_emit(buf, "%d\n", info.firmware_version);
+	return snprintf(buf, PAGE_SIZE, "%d\n", info.firmware_version);
 }
 static DEVICE_ATTR(firmware_version, 0440, pyra_sysfs_show_firmware_version,
 		   NULL);
@@ -361,12 +364,6 @@ static const struct attribute_group pyra_group = {
 static const struct attribute_group *pyra_groups[] = {
 	&pyra_group,
 	NULL,
-};
-
-/* pyra_class is used for creating sysfs attributes via roccat char device */
-static const struct class pyra_class = {
-	.name = "pyra",
-	.dev_groups = pyra_groups,
 };
 
 static int pyra_init_pyra_device_struct(struct usb_device *usb_dev,
@@ -416,7 +413,7 @@ static int pyra_init_specials(struct hid_device *hdev)
 			goto exit_free;
 		}
 
-		retval = roccat_connect(&pyra_class, hdev,
+		retval = roccat_connect(pyra_class, hdev,
 				sizeof(struct pyra_roccat_report));
 		if (retval < 0) {
 			hid_err(hdev, "couldn't init char dev\n");
@@ -588,20 +585,21 @@ static int __init pyra_init(void)
 	int retval;
 
 	/* class name has to be same as driver name */
-	retval = class_register(&pyra_class);
-	if (retval)
-		return retval;
+	pyra_class = class_create(THIS_MODULE, "pyra");
+	if (IS_ERR(pyra_class))
+		return PTR_ERR(pyra_class);
+	pyra_class->dev_groups = pyra_groups;
 
 	retval = hid_register_driver(&pyra_driver);
 	if (retval)
-		class_unregister(&pyra_class);
+		class_destroy(pyra_class);
 	return retval;
 }
 
 static void __exit pyra_exit(void)
 {
 	hid_unregister_driver(&pyra_driver);
-	class_unregister(&pyra_class);
+	class_destroy(pyra_class);
 }
 
 module_init(pyra_init);

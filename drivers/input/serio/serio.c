@@ -7,6 +7,9 @@
  *  Copyright (c) 2003 Daniele Bellucci
  */
 
+/*
+ */
+
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/stddef.h>
@@ -258,7 +261,7 @@ static int serio_queue_event(void *object, struct module *owner,
 		}
 	}
 
-	event = kmalloc(sizeof(*event), GFP_ATOMIC);
+	event = kmalloc(sizeof(struct serio_event), GFP_ATOMIC);
 	if (!event) {
 		pr_err("Not enough memory to queue event %d\n", event_type);
 		retval = -ENOMEM;
@@ -877,10 +880,10 @@ static void serio_set_drv(struct serio *serio, struct serio_driver *drv)
 	serio_continue_rx(serio);
 }
 
-static int serio_bus_match(struct device *dev, const struct device_driver *drv)
+static int serio_bus_match(struct device *dev, struct device_driver *drv)
 {
 	struct serio *serio = to_serio_port(dev);
-	const struct serio_driver *serio_drv = to_serio_driver(drv);
+	struct serio_driver *serio_drv = to_serio_driver(drv);
 
 	if (serio->manual_bind || serio_drv->manual_bind)
 		return 0;
@@ -895,9 +898,9 @@ static int serio_bus_match(struct device *dev, const struct device_driver *drv)
 			return err;					\
 	} while (0)
 
-static int serio_uevent(const struct device *dev, struct kobj_uevent_env *env)
+static int serio_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
-	const struct serio *serio;
+	struct serio *serio;
 
 	if (!dev)
 		return -ENODEV;
@@ -1007,7 +1010,7 @@ irqreturn_t serio_interrupt(struct serio *serio,
 }
 EXPORT_SYMBOL(serio_interrupt);
 
-const struct bus_type serio_bus = {
+struct bus_type serio_bus = {
 	.name		= "serio",
 	.drv_groups	= serio_driver_groups,
 	.match		= serio_bus_match,

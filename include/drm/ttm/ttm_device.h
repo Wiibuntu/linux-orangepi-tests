@@ -30,6 +30,8 @@
 #include <drm/ttm/ttm_resource.h>
 #include <drm/ttm/ttm_pool.h>
 
+#define TTM_NUM_MEM_TYPES 8
+
 struct ttm_device;
 struct ttm_placement;
 struct ttm_buffer_object;
@@ -141,7 +143,7 @@ struct ttm_device_funcs {
 	 * the graphics address space
 	 * @ctx: context for this move with parameters
 	 * @new_mem: the new memory region receiving the buffer
-	 * @hop: placement for driver directed intermediate hop
+	 @ @hop: placement for driver directed intermediate hop
 	 *
 	 * Move a buffer between two memory regions.
 	 * Returns errno -EMULTIHOP if driver requests a hop
@@ -199,6 +201,15 @@ struct ttm_device_funcs {
 			     void *buf, int len, int write);
 
 	/**
+	 * struct ttm_bo_driver member del_from_lru_notify
+	 *
+	 * @bo: the buffer object deleted from lru
+	 *
+	 * notify driver that a BO was deleted from LRU.
+	 */
+	void (*del_from_lru_notify)(struct ttm_buffer_object *bo);
+
+	/**
 	 * Notify the driver that we're about to release a BO
 	 *
 	 * @bo: BO that is about to be released
@@ -223,7 +234,7 @@ struct ttm_device {
 	 * @funcs: Function table for the device.
 	 * Constant after bo device init
 	 */
-	const struct ttm_device_funcs *funcs;
+	struct ttm_device_funcs *funcs;
 
 	/**
 	 * @sysman: Resource manager for the system domain.
@@ -252,6 +263,11 @@ struct ttm_device {
 	spinlock_t lru_lock;
 
 	/**
+	 * @ddestroy: Destroyed but not yet cleaned up buffer objects.
+	 */
+	struct list_head ddestroy;
+
+	/**
 	 * @pinned: Buffer objects which are pinned and so not on any LRU list.
 	 */
 	struct list_head pinned;
@@ -265,7 +281,7 @@ struct ttm_device {
 	/**
 	 * @wq: Work queue structure for the delayed delete workqueue.
 	 */
-	struct workqueue_struct *wq;
+	struct delayed_work wq;
 };
 
 int ttm_global_swapout(struct ttm_operation_ctx *ctx, gfp_t gfp_flags);
@@ -287,7 +303,7 @@ static inline void ttm_set_driver_manager(struct ttm_device *bdev, int type,
 	bdev->man_drv[type] = manager;
 }
 
-int ttm_device_init(struct ttm_device *bdev, const struct ttm_device_funcs *funcs,
+int ttm_device_init(struct ttm_device *bdev, struct ttm_device_funcs *funcs,
 		    struct device *dev, struct address_space *mapping,
 		    struct drm_vma_offset_manager *vma_manager,
 		    bool use_dma_alloc, bool use_dma32);

@@ -47,8 +47,6 @@
 #include <asm/asm-offsets.h>
 #include <asm/regs.h>
 #include <asm/hw_breakpoint.h>
-#include <asm/sections.h>
-#include <asm/traps.h>
 
 extern void ret_from_fork(void);
 extern void ret_from_kernel_thread(void);
@@ -65,114 +63,52 @@ EXPORT_SYMBOL(__stack_chk_guard);
 
 #if XTENSA_HAVE_COPROCESSORS
 
-void local_coprocessors_flush_release_all(void)
+void coprocessor_release_all(struct thread_info *ti)
 {
-	struct thread_info **coprocessor_owner;
-	struct thread_info *unique_owner[XCHAL_CP_MAX];
-	int n = 0;
-	int i, j;
-
-	coprocessor_owner = this_cpu_ptr(&exc_table)->coprocessor_owner;
-	xtensa_set_sr(XCHAL_CP_MASK, cpenable);
-
-	for (i = 0; i < XCHAL_CP_MAX; i++) {
-		struct thread_info *ti = coprocessor_owner[i];
-
-		if (ti) {
-			coprocessor_flush(ti, i);
-
-			for (j = 0; j < n; j++)
-				if (unique_owner[j] == ti)
-					break;
-			if (j == n)
-				unique_owner[n++] = ti;
-
-			coprocessor_owner[i] = NULL;
-		}
-	}
-	for (i = 0; i < n; i++) {
-		/* pairs with memw (1) in fast_coprocessor and memw in switch_to */
-		smp_wmb();
-		unique_owner[i]->cpenable = 0;
-	}
-	xtensa_set_sr(0, cpenable);
-}
-
-static void local_coprocessor_release_all(void *info)
-{
-	struct thread_info *ti = info;
-	struct thread_info **coprocessor_owner;
+	unsigned long cpenable;
 	int i;
 
-	coprocessor_owner = this_cpu_ptr(&exc_table)->coprocessor_owner;
+	/* Make sure we don't switch tasks during this operation. */
+
+	preempt_disable();
 
 	/* Walk through all cp owners and release it for the requested one. */
 
+	cpenable = ti->cpenable;
+
 	for (i = 0; i < XCHAL_CP_MAX; i++) {
-		if (coprocessor_owner[i] == ti)
-			coprocessor_owner[i] = NULL;
+		if (coprocessor_owner[i] == ti) {
+			coprocessor_owner[i] = 0;
+			cpenable &= ~(1 << i);
+		}
 	}
-	/* pairs with memw (1) in fast_coprocessor and memw in switch_to */
-	smp_wmb();
-	ti->cpenable = 0;
+
+	ti->cpenable = cpenable;
 	if (ti == current_thread_info())
 		xtensa_set_sr(0, cpenable);
-}
 
-void coprocessor_release_all(struct thread_info *ti)
-{
-	if (ti->cpenable) {
-		/* pairs with memw (2) in fast_coprocessor */
-		smp_rmb();
-		smp_call_function_single(ti->cp_owner_cpu,
-					 local_coprocessor_release_all,
-					 ti, true);
-	}
-}
-
-static void local_coprocessor_flush_all(void *info)
-{
-	struct thread_info *ti = info;
-	struct thread_info **coprocessor_owner;
-	unsigned long old_cpenable;
-	int i;
-
-	coprocessor_owner = this_cpu_ptr(&exc_table)->coprocessor_owner;
-	old_cpenable = xtensa_xsr(ti->cpenable, cpenable);
-
-	for (i = 0; i < XCHAL_CP_MAX; i++) {
-		if (coprocessor_owner[i] == ti)
-			coprocessor_flush(ti, i);
-	}
-	xtensa_set_sr(old_cpenable, cpenable);
+	preempt_enable();
 }
 
 void coprocessor_flush_all(struct thread_info *ti)
 {
-	if (ti->cpenable) {
-		/* pairs with memw (2) in fast_coprocessor */
-		smp_rmb();
-		smp_call_function_single(ti->cp_owner_cpu,
-					 local_coprocessor_flush_all,
-					 ti, true);
-	}
-}
+	unsigned long cpenable, old_cpenable;
+	int i;
 
-static void local_coprocessor_flush_release_all(void *info)
-{
-	local_coprocessor_flush_all(info);
-	local_coprocessor_release_all(info);
-}
+	preempt_disable();
 
-void coprocessor_flush_release_all(struct thread_info *ti)
-{
-	if (ti->cpenable) {
-		/* pairs with memw (2) in fast_coprocessor */
-		smp_rmb();
-		smp_call_function_single(ti->cp_owner_cpu,
-					 local_coprocessor_flush_release_all,
-					 ti, true);
+	old_cpenable = xtensa_get_sr(cpenable);
+	cpenable = ti->cpenable;
+	xtensa_set_sr(cpenable, cpenable);
+
+	for (i = 0; i < XCHAL_CP_MAX; i++) {
+		if ((cpenable & 1) != 0 && coprocessor_owner[i] == ti)
+			coprocessor_flush(ti, i);
+		cpenable >>= 1;
 	}
+	xtensa_set_sr(old_cpenable, cpenable);
+
+	preempt_enable();
 }
 
 #endif
@@ -184,7 +120,6 @@ void coprocessor_flush_release_all(struct thread_info *ti)
 void arch_cpu_idle(void)
 {
 	platform_idle();
-	raw_local_irq_disable();
 }
 
 /*
@@ -205,7 +140,8 @@ void flush_thread(void)
 {
 #if XTENSA_HAVE_COPROCESSORS
 	struct thread_info *ti = current_thread_info();
-	coprocessor_flush_release_all(ti);
+	coprocessor_flush_all(ti);
+	coprocessor_release_all(ti);
 #endif
 	flush_ptrace_hw_breakpoint(current);
 }
@@ -265,11 +201,10 @@ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
  * involved.  Much simpler to just not copy those live frames across.
  */
 
-int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
+int copy_thread(unsigned long clone_flags, unsigned long usp_thread_fn,
+		unsigned long thread_fn_arg, struct task_struct *p,
+		unsigned long tls)
 {
-	unsigned long clone_flags = args->flags;
-	unsigned long usp_thread_fn = args->stack;
-	unsigned long tls = args->tls;
 	struct pt_regs *childregs = task_pt_regs(p);
 
 #if (XTENSA_HAVE_COPROCESSORS || XTENSA_HAVE_IO_PORTS)
@@ -289,7 +224,7 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 #error Unsupported Xtensa ABI
 #endif
 
-	if (!args->fn) {
+	if (!(p->flags & (PF_KTHREAD | PF_IO_WORKER))) {
 		struct pt_regs *regs = current_pt_regs();
 		unsigned long usp = usp_thread_fn ?
 			usp_thread_fn : regs->areg[1];
@@ -297,6 +232,10 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 		p->thread.ra = MAKE_RA_FOR_CALL(
 				(unsigned long)ret_from_fork, 0x1);
 
+		/* This does not copy all the regs.
+		 * In a bout of brilliance or madness,
+		 * ARs beyond a0-a15 exist past the end of the struct.
+		 */
 		*childregs = *regs;
 		childregs->areg[1] = usp;
 		childregs->areg[2] = 0;
@@ -326,7 +265,13 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 			childregs->wmask = 1;
 			childregs->windowstart = 1;
 			childregs->windowbase = 0;
+		} else {
+			int len = childregs->wmask & ~0xf;
+			memcpy(&childregs->areg[XCHAL_NUM_AREGS - len/4],
+			       &regs->areg[XCHAL_NUM_AREGS - len/4], len);
 		}
+
+		childregs->syscall = regs->syscall;
 
 		if (clone_flags & CLONE_SETTLS)
 			childregs->threadptr = tls;
@@ -341,15 +286,15 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 		 * Window underflow will load registers from the
 		 * spill slots on the stack on return from _switch_to.
 		 */
-		SPILL_SLOT(childregs, 2) = (unsigned long)args->fn;
-		SPILL_SLOT(childregs, 3) = (unsigned long)args->fn_arg;
+		SPILL_SLOT(childregs, 2) = usp_thread_fn;
+		SPILL_SLOT(childregs, 3) = thread_fn_arg;
 #elif defined(__XTENSA_CALL0_ABI__)
 		/*
 		 * a12 = thread_fn, a13 = thread_fn arg.
 		 * _switch_to epilogue will load registers from the stack.
 		 */
-		((unsigned long *)p->thread.sp)[0] = (unsigned long)args->fn;
-		((unsigned long *)p->thread.sp)[1] = (unsigned long)args->fn_arg;
+		((unsigned long *)p->thread.sp)[0] = usp_thread_fn;
+		((unsigned long *)p->thread.sp)[1] = thread_fn_arg;
 #else
 #error Unsupported Xtensa ABI
 #endif
@@ -381,7 +326,7 @@ unsigned long __get_wchan(struct task_struct *p)
 	int count = 0;
 
 	sp = p->thread.sp;
-	pc = MAKE_PC_FROM_RA(p->thread.ra, _text);
+	pc = MAKE_PC_FROM_RA(p->thread.ra, p->thread.sp);
 
 	do {
 		if (sp < stack_page + sizeof(struct task_struct) ||
@@ -393,7 +338,7 @@ unsigned long __get_wchan(struct task_struct *p)
 
 		/* Stack layout: sp-4: ra, sp-3: sp' */
 
-		pc = MAKE_PC_FROM_RA(SPILL_SLOT(sp, 0), _text);
+		pc = MAKE_PC_FROM_RA(SPILL_SLOT(sp, 0), sp);
 		sp = SPILL_SLOT(sp, 1);
 	} while (count++ < 16);
 	return 0;

@@ -14,7 +14,6 @@
 #include <linux/spinlock.h>
 #include <linux/usb/composite.h>
 #include <linux/videodev2.h>
-#include <linux/wait.h>
 
 #include <media/v4l2-device.h>
 #include <media/v4l2-dev.h>
@@ -80,8 +79,6 @@ struct uvc_request {
 	struct uvc_video *video;
 	struct sg_table sgt;
 	u8 header[UVCG_REQUEST_HEADER_LEN];
-	struct uvc_buffer *last_buf;
-	struct list_head list;
 };
 
 struct uvc_video {
@@ -89,7 +86,6 @@ struct uvc_video {
 	struct usb_ep *ep;
 
 	struct work_struct pump;
-	struct workqueue_struct *async_wq;
 
 	/* Frame parameters */
 	u8 bpp;
@@ -102,18 +98,9 @@ struct uvc_video {
 	unsigned int uvc_num_requests;
 
 	/* Requests */
-	bool is_enabled; /* tracks whether video stream is enabled */
 	unsigned int req_size;
-	struct list_head ureqs; /* all uvc_requests allocated by uvc_video */
-
-	/* USB requests that the video pump thread can encode into */
+	struct uvc_request *ureq;
 	struct list_head req_free;
-
-	/*
-	 * USB requests video pump thread has already encoded into. These are
-	 * ready to be queued to the endpoint.
-	 */
-	struct list_head req_ready;
 	spinlock_t req_lock;
 
 	unsigned int req_int_count;
@@ -142,9 +129,6 @@ struct uvc_device {
 	struct usb_function func;
 	struct uvc_video video;
 	bool func_connected;
-	wait_queue_head_t func_connected_queue;
-
-	struct uvcg_streaming_header *header;
 
 	/* Descriptors */
 	struct {
@@ -153,14 +137,12 @@ struct uvc_device {
 		const struct uvc_descriptor_header * const *fs_streaming;
 		const struct uvc_descriptor_header * const *hs_streaming;
 		const struct uvc_descriptor_header * const *ss_streaming;
-		struct list_head *extension_units;
 	} desc;
 
 	unsigned int control_intf;
-	struct usb_ep *interrupt_ep;
+	struct usb_ep *control_ep;
 	struct usb_request *control_req;
 	void *control_buf;
-	bool enable_interrupt_ep;
 
 	unsigned int streaming_intf;
 
@@ -187,7 +169,9 @@ struct uvc_file_handle {
  * Functions
  */
 
-extern void uvc_function_setup_continue(struct uvc_device *uvc, int disable_ep);
+extern void uvc_function_setup_continue(struct uvc_device *uvc);
+extern void uvc_endpoint_stream(struct uvc_device *dev);
+
 extern void uvc_function_connect(struct uvc_device *uvc);
 extern void uvc_function_disconnect(struct uvc_device *uvc);
 

@@ -42,7 +42,8 @@ int qed_rdma_bmap_alloc(struct qed_hwfn *p_hwfn,
 
 	bmap->max_count = max_count;
 
-	bmap->bitmap = bitmap_zalloc(max_count, GFP_KERNEL);
+	bmap->bitmap = kcalloc(BITS_TO_LONGS(max_count), sizeof(long),
+			       GFP_KERNEL);
 	if (!bmap->bitmap)
 		return -ENOMEM;
 
@@ -106,7 +107,7 @@ int qed_bmap_test_id(struct qed_hwfn *p_hwfn,
 
 static bool qed_bmap_is_empty(struct qed_bmap *bmap)
 {
-	return bitmap_empty(bmap->bitmap, bmap->max_count);
+	return bmap->max_count == find_first_bit(bmap->bitmap, bmap->max_count);
 }
 
 static u32 qed_rdma_get_sb_id(void *p_hwfn, u32 rel_sb_id)
@@ -318,31 +319,48 @@ free_rdma_dev:
 void qed_rdma_bmap_free(struct qed_hwfn *p_hwfn,
 			struct qed_bmap *bmap, bool check)
 {
-	unsigned int bit, weight, nbits;
-	unsigned long *b;
+	int weight = bitmap_weight(bmap->bitmap, bmap->max_count);
+	int last_line = bmap->max_count / (64 * 8);
+	int last_item = last_line * 8 +
+	    DIV_ROUND_UP(bmap->max_count % (64 * 8), 64);
+	u64 *pmap = (u64 *)bmap->bitmap;
+	int line, item, offset;
+	u8 str_last_line[200] = { 0 };
 
-	if (!check)
-		goto end;
-
-	weight = bitmap_weight(bmap->bitmap, bmap->max_count);
-	if (!weight)
+	if (!weight || !check)
 		goto end;
 
 	DP_NOTICE(p_hwfn,
 		  "%s bitmap not free - size=%d, weight=%d, 512 bits per line\n",
 		  bmap->name, bmap->max_count, weight);
 
-	for (bit = 0; bit < bmap->max_count; bit += 512) {
-		b =  bmap->bitmap + BITS_TO_LONGS(bit);
-		nbits = min(bmap->max_count - bit, 512U);
-
-		if (!bitmap_empty(b, nbits))
+	/* print aligned non-zero lines, if any */
+	for (item = 0, line = 0; line < last_line; line++, item += 8)
+		if (bitmap_weight((unsigned long *)&pmap[item], 64 * 8))
 			DP_NOTICE(p_hwfn,
-				  "line 0x%04x: %*pb\n", bit / 512, nbits, b);
+				  "line 0x%04x: 0x%016llx 0x%016llx 0x%016llx 0x%016llx 0x%016llx 0x%016llx 0x%016llx 0x%016llx\n",
+				  line,
+				  pmap[item],
+				  pmap[item + 1],
+				  pmap[item + 2],
+				  pmap[item + 3],
+				  pmap[item + 4],
+				  pmap[item + 5],
+				  pmap[item + 6], pmap[item + 7]);
+
+	/* print last unaligned non-zero line, if any */
+	if ((bmap->max_count % (64 * 8)) &&
+	    (bitmap_weight((unsigned long *)&pmap[item],
+			   bmap->max_count - item * 64))) {
+		offset = sprintf(str_last_line, "line 0x%04x: ", line);
+		for (; item < last_item; item++)
+			offset += sprintf(str_last_line + offset,
+					  "0x%016llx ", pmap[item]);
+		DP_NOTICE(p_hwfn, "%s\n", str_last_line);
 	}
 
 end:
-	bitmap_free(bmap->bitmap);
+	kfree(bmap->bitmap);
 	bmap->bitmap = NULL;
 }
 
@@ -1792,6 +1810,8 @@ qed_rdma_create_srq(void *rdma_cxt,
 	rc = qed_cxt_dynamic_ilt_alloc(p_hwfn, elem_type, returned_id);
 	if (rc)
 		goto err;
+
+	opaque_fid = p_hwfn->hw_info.opaque_fid;
 
 	opaque_fid = p_hwfn->hw_info.opaque_fid;
 	init_data.opaque_fid = opaque_fid;

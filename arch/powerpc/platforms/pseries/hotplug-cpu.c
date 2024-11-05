@@ -70,7 +70,6 @@ static void pseries_cpu_offline_self(void)
 		xics_teardown_cpu();
 
 	unregister_slb_shadow(hwcpu);
-	unregister_vpa(hwcpu);
 	rtas_stop_self();
 
 	/* Should never get here... */
@@ -398,16 +397,8 @@ static int dlpar_online_cpu(struct device_node *dn)
 		for_each_present_cpu(cpu) {
 			if (get_hard_smp_processor_id(cpu) != thread)
 				continue;
-
-			if (!topology_is_primary_thread(cpu)) {
-				if (cpu_smt_control != CPU_SMT_ENABLED)
-					break;
-				if (!topology_smt_thread_allowed(cpu))
-					break;
-			}
-
 			cpu_maps_update_done();
-			find_and_update_cpu_nid(cpu);
+			find_and_online_cpu_nid(cpu);
 			rc = device_online(get_cpu_device(cpu));
 			if (rc) {
 				dlpar_offline_cpu(dn);
@@ -501,7 +492,7 @@ static bool valid_cpu_drc_index(struct device_node *parent, u32 drc_index)
 	bool found = false;
 	int rc, index;
 
-	if (of_property_present(parent, "ibm,drc-info"))
+	if (of_find_property(parent, "ibm,drc-info", NULL))
 		return drc_info_valid_index(parent, drc_index);
 
 	/* Note that the format of the ibm,drc-indexes array is
@@ -628,21 +619,17 @@ static ssize_t dlpar_cpu_add(u32 drc_index)
 static unsigned int pseries_cpuhp_cache_use_count(const struct device_node *cachedn)
 {
 	unsigned int use_count = 0;
-	struct device_node *dn, *tn;
+	struct device_node *dn;
 
 	WARN_ON(!of_node_is_type(cachedn, "cache"));
 
 	for_each_of_cpu_node(dn) {
-		tn = of_find_next_cache_node(dn);
-		of_node_put(tn);
-		if (tn == cachedn)
+		if (of_find_next_cache_node(dn) == cachedn)
 			use_count++;
 	}
 
 	for_each_node_by_type(dn, "cache") {
-		tn = of_find_next_cache_node(dn);
-		of_node_put(tn);
-		if (tn == cachedn)
+		if (of_find_next_cache_node(dn) == cachedn)
 			use_count++;
 	}
 
@@ -662,13 +649,10 @@ static int pseries_cpuhp_detach_nodes(struct device_node *cpudn)
 
 	dn = cpudn;
 	while ((dn = of_find_next_cache_node(dn))) {
-		if (pseries_cpuhp_cache_use_count(dn) > 1) {
-			of_node_put(dn);
+		if (pseries_cpuhp_cache_use_count(dn) > 1)
 			break;
-		}
 
 		ret = of_changeset_detach_node(&cs, dn);
-		of_node_put(dn);
 		if (ret)
 			goto out;
 	}
@@ -757,7 +741,7 @@ int dlpar_cpu(struct pseries_hp_errorlog *hp_elog)
 	u32 drc_index;
 	int rc;
 
-	drc_index = be32_to_cpu(hp_elog->_drc_u.drc_index);
+	drc_index = hp_elog->_drc_u.drc_index;
 
 	lock_device_hotplug();
 
@@ -853,27 +837,9 @@ static struct notifier_block pseries_smp_nb = {
 	.notifier_call = pseries_smp_notifier,
 };
 
-void __init pseries_cpu_hotplug_init(void)
+static int __init pseries_cpu_hotplug_init(void)
 {
 	int qcss_tok;
-
-	rtas_stop_self_token = rtas_function_token(RTAS_FN_STOP_SELF);
-	qcss_tok = rtas_function_token(RTAS_FN_QUERY_CPU_STOPPED_STATE);
-
-	if (rtas_stop_self_token == RTAS_UNKNOWN_SERVICE ||
-			qcss_tok == RTAS_UNKNOWN_SERVICE) {
-		printk(KERN_INFO "CPU Hotplug not supported by firmware "
-				"- disabling.\n");
-		return;
-	}
-
-	smp_ops->cpu_offline_self = pseries_cpu_offline_self;
-	smp_ops->cpu_disable = pseries_cpu_disable;
-	smp_ops->cpu_die = pseries_cpu_die;
-}
-
-static int __init pseries_dlpar_init(void)
-{
 	unsigned int node;
 
 #ifdef CONFIG_ARCH_CPU_PROBE_RELEASE
@@ -881,16 +847,29 @@ static int __init pseries_dlpar_init(void)
 	ppc_md.cpu_release = dlpar_cpu_release;
 #endif /* CONFIG_ARCH_CPU_PROBE_RELEASE */
 
+	rtas_stop_self_token = rtas_token("stop-self");
+	qcss_tok = rtas_token("query-cpu-stopped-state");
+
+	if (rtas_stop_self_token == RTAS_UNKNOWN_SERVICE ||
+			qcss_tok == RTAS_UNKNOWN_SERVICE) {
+		printk(KERN_INFO "CPU Hotplug not supported by firmware "
+				"- disabling.\n");
+		return 0;
+	}
+
+	smp_ops->cpu_offline_self = pseries_cpu_offline_self;
+	smp_ops->cpu_disable = pseries_cpu_disable;
+	smp_ops->cpu_die = pseries_cpu_die;
+
 	/* Processors can be added/removed only on LPAR */
 	if (firmware_has_feature(FW_FEATURE_LPAR)) {
 		for_each_node(node) {
-			if (!alloc_cpumask_var_node(&node_recorded_ids_map[node],
-						    GFP_KERNEL, node))
-				return -ENOMEM;
+			alloc_bootmem_cpumask_var(&node_recorded_ids_map[node]);
 
 			/* Record ids of CPU added at boot time */
-			cpumask_copy(node_recorded_ids_map[node],
-				     cpumask_of_node(node));
+			cpumask_or(node_recorded_ids_map[node],
+				   node_recorded_ids_map[node],
+				   cpumask_of_node(node));
 		}
 
 		of_reconfig_notifier_register(&pseries_smp_nb);
@@ -898,4 +877,4 @@ static int __init pseries_dlpar_init(void)
 
 	return 0;
 }
-machine_arch_initcall(pseries, pseries_dlpar_init);
+machine_arch_initcall(pseries, pseries_cpu_hotplug_init);

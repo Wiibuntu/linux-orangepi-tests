@@ -23,7 +23,7 @@
 #include <linux/delay.h>
 #include <linux/mii.h>
 #include <linux/crc32.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/uaccess.h>
 
 #ifdef CONFIG_SPARC
@@ -858,8 +858,8 @@ static struct net_device_stats *tulip_get_stats(struct net_device *dev)
 static void tulip_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
 	struct tulip_private *np = netdev_priv(dev);
-	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strscpy(info->bus_info, pci_name(np->pdev), sizeof(info->bus_info));
+	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strlcpy(info->bus_info, pci_name(np->pdev), sizeof(info->bus_info));
 }
 
 
@@ -1389,7 +1389,7 @@ static int tulip_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	 *	And back to business
 	 */
 
-	i = pcim_enable_device(pdev);
+	i = pci_enable_device(pdev);
 	if (i) {
 		pr_err("Cannot enable tulip board #%d, aborting\n", board_idx);
 		return i;
@@ -1398,7 +1398,7 @@ static int tulip_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	irq = pdev->irq;
 
 	/* alloc_etherdev ensures aligned and zeroed private structures */
-	dev = devm_alloc_etherdev(&pdev->dev, sizeof(*tp));
+	dev = alloc_etherdev (sizeof (*tp));
 	if (!dev)
 		return -ENOMEM;
 
@@ -1408,18 +1408,18 @@ static int tulip_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		       pci_name(pdev),
 		       (unsigned long long)pci_resource_len (pdev, 0),
 		       (unsigned long long)pci_resource_start (pdev, 0));
-		return -ENODEV;
+		goto err_out_free_netdev;
 	}
 
 	/* grab all resources from both PIO and MMIO regions, as we
 	 * don't want anyone else messing around with our hardware */
-	if (pci_request_regions(pdev, DRV_NAME))
-		return -ENODEV;
+	if (pci_request_regions (pdev, DRV_NAME))
+		goto err_out_free_netdev;
 
-	ioaddr = pcim_iomap(pdev, TULIP_BAR, tulip_tbl[chip_idx].io_size);
+	ioaddr =  pci_iomap(pdev, TULIP_BAR, tulip_tbl[chip_idx].io_size);
 
 	if (!ioaddr)
-		return -ENODEV;
+		goto err_out_free_res;
 
 	/*
 	 * initialize private data structure 'tp'
@@ -1428,12 +1428,12 @@ static int tulip_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	tp = netdev_priv(dev);
 	tp->dev = dev;
 
-	tp->rx_ring = dmam_alloc_coherent(&pdev->dev,
-					  sizeof(struct tulip_rx_desc) * RX_RING_SIZE +
-					  sizeof(struct tulip_tx_desc) * TX_RING_SIZE,
-					  &tp->rx_ring_dma, GFP_KERNEL);
+	tp->rx_ring = dma_alloc_coherent(&pdev->dev,
+					 sizeof(struct tulip_rx_desc) * RX_RING_SIZE +
+					 sizeof(struct tulip_tx_desc) * TX_RING_SIZE,
+					 &tp->rx_ring_dma, GFP_KERNEL);
 	if (!tp->rx_ring)
-		return -ENODEV;
+		goto err_out_mtable;
 	tp->tx_ring = (struct tulip_tx_desc *)(tp->rx_ring + RX_RING_SIZE);
 	tp->tx_ring_dma = tp->rx_ring_dma + sizeof(struct tulip_rx_desc) * RX_RING_SIZE;
 
@@ -1689,13 +1689,12 @@ static int tulip_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	dev->netdev_ops = &tulip_netdev_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
 #ifdef CONFIG_TULIP_NAPI
-	netif_napi_add_weight(dev, &tp->napi, tulip_poll, 16);
+	netif_napi_add(dev, &tp->napi, tulip_poll, 16);
 #endif
 	dev->ethtool_ops = &ops;
 
-	i = register_netdev(dev);
-	if (i)
-		return i;
+	if (register_netdev(dev))
+		goto err_out_free_ring;
 
 	pci_set_drvdata(pdev, dev);
 
@@ -1770,6 +1769,23 @@ static int tulip_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	tulip_set_power_state (tp, 0, 1);
 
 	return 0;
+
+err_out_free_ring:
+	dma_free_coherent(&pdev->dev,
+			  sizeof(struct tulip_rx_desc) * RX_RING_SIZE +
+			  sizeof(struct tulip_tx_desc) * TX_RING_SIZE,
+			  tp->rx_ring, tp->rx_ring_dma);
+
+err_out_mtable:
+	kfree (tp->mtable);
+	pci_iounmap(pdev, ioaddr);
+
+err_out_free_res:
+	pci_release_regions (pdev);
+
+err_out_free_netdev:
+	free_netdev (dev);
+	return -ENODEV;
 }
 
 
@@ -1869,11 +1885,24 @@ static int __maybe_unused tulip_resume(struct device *dev_d)
 static void tulip_remove_one(struct pci_dev *pdev)
 {
 	struct net_device *dev = pci_get_drvdata (pdev);
+	struct tulip_private *tp;
 
 	if (!dev)
 		return;
 
+	tp = netdev_priv(dev);
 	unregister_netdev(dev);
+	dma_free_coherent(&pdev->dev,
+			  sizeof(struct tulip_rx_desc) * RX_RING_SIZE +
+			  sizeof(struct tulip_tx_desc) * TX_RING_SIZE,
+			  tp->rx_ring, tp->rx_ring_dma);
+	kfree (tp->mtable);
+	pci_iounmap(pdev, tp->base_addr);
+	free_netdev (dev);
+	pci_release_regions (pdev);
+	pci_disable_device(pdev);
+
+	/* pci_power_off (pdev, -1); */
 }
 
 #ifdef CONFIG_NET_POLL_CONTROLLER

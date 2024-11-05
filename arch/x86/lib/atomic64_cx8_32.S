@@ -16,14 +16,9 @@
 	cmpxchg8b (\reg)
 .endm
 
-.macro read64_nonatomic reg
-	movl (\reg), %eax
-	movl 4(\reg), %edx
-.endm
-
 SYM_FUNC_START(atomic64_read_cx8)
 	read64 %ecx
-	RET
+	ret
 SYM_FUNC_END(atomic64_read_cx8)
 
 SYM_FUNC_START(atomic64_set_cx8)
@@ -33,7 +28,7 @@ SYM_FUNC_START(atomic64_set_cx8)
 	cmpxchg8b (%esi)
 	jne 1b
 
-	RET
+	ret
 SYM_FUNC_END(atomic64_set_cx8)
 
 SYM_FUNC_START(atomic64_xchg_cx8)
@@ -42,7 +37,7 @@ SYM_FUNC_START(atomic64_xchg_cx8)
 	cmpxchg8b (%esi)
 	jne 1b
 
-	RET
+	ret
 SYM_FUNC_END(atomic64_xchg_cx8)
 
 .macro addsub_return func ins insc
@@ -56,7 +51,7 @@ SYM_FUNC_START(atomic64_\func\()_return_cx8)
 	movl %edx, %edi
 	movl %ecx, %ebp
 
-	read64_nonatomic %ecx
+	read64 %ecx
 1:
 	movl %eax, %ebx
 	movl %edx, %ecx
@@ -73,7 +68,7 @@ SYM_FUNC_START(atomic64_\func\()_return_cx8)
 	popl %esi
 	popl %ebx
 	popl %ebp
-	RET
+	ret
 SYM_FUNC_END(atomic64_\func\()_return_cx8)
 .endm
 
@@ -84,7 +79,7 @@ addsub_return sub sub sbb
 SYM_FUNC_START(atomic64_\func\()_return_cx8)
 	pushl %ebx
 
-	read64_nonatomic %esi
+	read64 %esi
 1:
 	movl %eax, %ebx
 	movl %edx, %ecx
@@ -98,7 +93,7 @@ SYM_FUNC_START(atomic64_\func\()_return_cx8)
 	movl %ebx, %eax
 	movl %ecx, %edx
 	popl %ebx
-	RET
+	ret
 SYM_FUNC_END(atomic64_\func\()_return_cx8)
 .endm
 
@@ -123,7 +118,7 @@ SYM_FUNC_START(atomic64_dec_if_positive_cx8)
 	movl %ebx, %eax
 	movl %ecx, %edx
 	popl %ebx
-	RET
+	ret
 SYM_FUNC_END(atomic64_dec_if_positive_cx8)
 
 SYM_FUNC_START(atomic64_add_unless_cx8)
@@ -154,7 +149,7 @@ SYM_FUNC_START(atomic64_add_unless_cx8)
 	addl $8, %esp
 	popl %ebx
 	popl %ebp
-	RET
+	ret
 4:
 	cmpl %edx, 4(%esp)
 	jne 2b
@@ -181,5 +176,5 @@ SYM_FUNC_START(atomic64_inc_not_zero_cx8)
 	movl $1, %eax
 3:
 	popl %ebx
-	RET
+	ret
 SYM_FUNC_END(atomic64_inc_not_zero_cx8)

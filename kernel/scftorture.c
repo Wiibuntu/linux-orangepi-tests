@@ -38,12 +38,15 @@
 #define SCFTORT_STRING "scftorture"
 #define SCFTORT_FLAG SCFTORT_STRING ": "
 
+#define SCFTORTOUT(s, x...) \
+	pr_alert(SCFTORT_FLAG s, ## x)
+
 #define VERBOSE_SCFTORTOUT(s, x...) \
-	do { if (verbose) pr_alert(SCFTORT_FLAG s "\n", ## x); } while (0)
+	do { if (verbose) pr_alert(SCFTORT_FLAG s, ## x); } while (0)
 
-#define SCFTORTOUT_ERRSTRING(s, x...) pr_alert(SCFTORT_FLAG "!!! " s "\n", ## x)
+#define VERBOSE_SCFTORTOUT_ERRSTRING(s, x...) \
+	do { if (verbose) pr_alert(SCFTORT_FLAG "!!! " s, ## x); } while (0)
 
-MODULE_DESCRIPTION("Torture tests on the smp_call_function() family of primitives");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Paul E. McKenney <paulmck@kernel.org>");
 
@@ -68,7 +71,7 @@ torture_param(int, weight_many_wait, -1, "Testing weight for multi-CPU operation
 torture_param(int, weight_all, -1, "Testing weight for all-CPU no-wait operations.");
 torture_param(int, weight_all_wait, -1, "Testing weight for all-CPU operations.");
 
-static char *torture_type = "";
+char *torture_type = "";
 
 #ifdef MODULE
 # define SCFTORT_SHUTDOWN 0
@@ -172,8 +175,7 @@ static void scf_torture_stats_print(void)
 		scfs.n_all_wait += scf_stats_p[i].n_all_wait;
 	}
 	if (atomic_read(&n_errs) || atomic_read(&n_mb_in_errs) ||
-	    atomic_read(&n_mb_out_errs) ||
-	    (!IS_ENABLED(CONFIG_KASAN) && atomic_read(&n_alloc_errs)))
+	    atomic_read(&n_mb_out_errs) || atomic_read(&n_alloc_errs))
 		bangstr = "!!! ";
 	pr_alert("%s %sscf_invoked_count %s: %lld resched: %lld single: %lld/%lld single_ofl: %lld/%lld single_rpc: %lld single_rpc_ofl: %lld many: %lld/%lld all: %lld/%lld ",
 		 SCFTORT_FLAG, bangstr, isdone ? "VER" : "ver", invoked_count, scfs.n_resched,
@@ -269,10 +271,9 @@ static void scf_handler(void *scfc_in)
 	}
 	this_cpu_inc(scf_invoked_count);
 	if (longwait <= 0) {
-		if (!(r & 0xffc0)) {
+		if (!(r & 0xffc0))
 			udelay(r & 0x3f);
-			goto out;
-		}
+		goto out;
 	}
 	if (r & 0xfff)
 		goto out;
@@ -314,7 +315,6 @@ static void scf_handler_1(void *scfc_in)
 // Randomly do an smp_call_function*() invocation.
 static void scftorture_invoke_one(struct scf_statistics *scfp, struct torture_random_state *trsp)
 {
-	bool allocfail = false;
 	uintptr_t cpu;
 	int ret = 0;
 	struct scf_check *scfcp = NULL;
@@ -326,10 +326,8 @@ static void scftorture_invoke_one(struct scf_statistics *scfp, struct torture_ra
 		preempt_disable();
 	if (scfsp->scfs_prim == SCF_PRIM_SINGLE || scfsp->scfs_wait) {
 		scfcp = kmalloc(sizeof(*scfcp), GFP_ATOMIC);
-		if (!scfcp) {
-			WARN_ON_ONCE(!IS_ENABLED(CONFIG_KASAN));
+		if (WARN_ON_ONCE(!scfcp)) {
 			atomic_inc(&n_alloc_errs);
-			allocfail = true;
 		} else {
 			scfcp->scfc_cpu = -1;
 			scfcp->scfc_wait = scfsp->scfs_wait;
@@ -436,9 +434,7 @@ static void scftorture_invoke_one(struct scf_statistics *scfp, struct torture_ra
 		cpus_read_unlock();
 	else
 		preempt_enable();
-	if (allocfail)
-		schedule_timeout_idle((1 + longwait) * HZ);  // Let no-wait handlers complete.
-	else if (!(torture_random(trsp) & 0xfff))
+	if (!(torture_random(trsp) & 0xfff))
 		schedule_timeout_uninterruptible(1);
 }
 
@@ -591,14 +587,14 @@ static int __init scf_torture_init(void)
 	if (weight_resched1 == 0 && weight_single1 == 0 && weight_single_rpc1 == 0 &&
 	    weight_single_wait1 == 0 && weight_many1 == 0 && weight_many_wait1 == 0 &&
 	    weight_all1 == 0 && weight_all_wait1 == 0) {
-		SCFTORTOUT_ERRSTRING("all zero weights makes no sense");
+		VERBOSE_SCFTORTOUT_ERRSTRING("all zero weights makes no sense");
 		firsterr = -EINVAL;
 		goto unwind;
 	}
 	if (IS_BUILTIN(CONFIG_SCF_TORTURE_TEST))
 		scf_sel_add(weight_resched1, SCF_PRIM_RESCHED, false);
 	else if (weight_resched1)
-		SCFTORTOUT_ERRSTRING("built as module, weight_resched ignored");
+		VERBOSE_SCFTORTOUT_ERRSTRING("built as module, weight_resched ignored");
 	scf_sel_add(weight_single1, SCF_PRIM_SINGLE, false);
 	scf_sel_add(weight_single_rpc1, SCF_PRIM_SINGLE_RPC, true);
 	scf_sel_add(weight_single_wait1, SCF_PRIM_SINGLE, true);
@@ -629,12 +625,12 @@ static int __init scf_torture_init(void)
 		nthreads = num_online_cpus();
 	scf_stats_p = kcalloc(nthreads, sizeof(scf_stats_p[0]), GFP_KERNEL);
 	if (!scf_stats_p) {
-		SCFTORTOUT_ERRSTRING("out of memory");
+		VERBOSE_SCFTORTOUT_ERRSTRING("out of memory");
 		firsterr = -ENOMEM;
 		goto unwind;
 	}
 
-	VERBOSE_SCFTORTOUT("Starting %d smp_call_function() threads", nthreads);
+	VERBOSE_SCFTORTOUT("Starting %d smp_call_function() threads\n", nthreads);
 
 	atomic_set(&n_started, nthreads);
 	for (i = 0; i < nthreads; i++) {

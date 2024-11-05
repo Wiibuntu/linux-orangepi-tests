@@ -858,6 +858,7 @@ static void gb_sdio_remove(struct gbphy_device *gbphy_dev)
 	gb_connection_set_data(connection, NULL);
 	mutex_unlock(&host->lock);
 
+	flush_workqueue(host->mrq_workqueue);
 	destroy_workqueue(host->mrq_workqueue);
 	gb_connection_disable_rx(connection);
 	mmc_remove_host(mmc);
@@ -880,5 +881,4 @@ static struct gbphy_driver sdio_driver = {
 };
 
 module_gbphy_driver(sdio_driver);
-MODULE_DESCRIPTION("SD/MMC Greybus driver");
 MODULE_LICENSE("GPL v2");

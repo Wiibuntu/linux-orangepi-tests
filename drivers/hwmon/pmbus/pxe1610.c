@@ -127,9 +127,9 @@ static int pxe1610_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id pxe1610_id[] = {
-	{"pxe1610"},
-	{"pxe1110"},
-	{"pxm1310"},
+	{"pxe1610", 0},
+	{"pxe1110", 0},
+	{"pxm1310", 0},
 	{}
 };
 
@@ -139,7 +139,7 @@ static struct i2c_driver pxe1610_driver = {
 	.driver = {
 			.name = "pxe1610",
 			},
-	.probe = pxe1610_probe,
+	.probe_new = pxe1610_probe,
 	.id_table = pxe1610_id,
 };
 

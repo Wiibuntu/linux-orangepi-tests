@@ -214,7 +214,8 @@ static const struct iio_info cm3323_info = {
 	.attrs		= &cm3323_attribute_group,
 };
 
-static int cm3323_probe(struct i2c_client *client)
+static int cm3323_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct cm3323_data *data;
 	struct iio_dev *indio_dev;
@@ -250,7 +251,7 @@ static int cm3323_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id cm3323_id[] = {
-	{ "cm3323" },
+	{"cm3323", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, cm3323_id);

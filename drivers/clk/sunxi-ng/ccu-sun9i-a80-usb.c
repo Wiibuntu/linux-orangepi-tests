@@ -5,7 +5,7 @@
 
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
-#include <linux/module.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 
 #include "ccu_common.h"
@@ -101,9 +101,12 @@ static int sun9i_a80_usb_clk_probe(struct platform_device *pdev)
 		return PTR_ERR(reg);
 
 	bus_clk = devm_clk_get(&pdev->dev, "bus");
-	if (IS_ERR(bus_clk))
-		return dev_err_probe(&pdev->dev, PTR_ERR(bus_clk),
-				     "Couldn't get bus clk\n");
+	if (IS_ERR(bus_clk)) {
+		ret = PTR_ERR(bus_clk);
+		if (ret != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "Couldn't get bus clk: %d\n", ret);
+		return ret;
+	}
 
 	/* The bus clock needs to be enabled for us to access the registers */
 	ret = clk_prepare_enable(bus_clk);
@@ -127,7 +130,6 @@ static const struct of_device_id sun9i_a80_usb_clk_ids[] = {
 	{ .compatible = "allwinner,sun9i-a80-usb-clks" },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, sun9i_a80_usb_clk_ids);
 
 static struct platform_driver sun9i_a80_usb_clk_driver = {
 	.probe	= sun9i_a80_usb_clk_probe,
@@ -136,8 +138,4 @@ static struct platform_driver sun9i_a80_usb_clk_driver = {
 		.of_match_table	= sun9i_a80_usb_clk_ids,
 	},
 };
-module_platform_driver(sun9i_a80_usb_clk_driver);
-
-MODULE_IMPORT_NS(SUNXI_CCU);
-MODULE_DESCRIPTION("Support for the Allwinner A80 USB CCU");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(sun9i_a80_usb_clk_driver);

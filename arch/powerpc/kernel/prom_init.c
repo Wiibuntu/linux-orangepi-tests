@@ -28,8 +28,6 @@
 #include <linux/bitops.h>
 #include <linux/pgtable.h>
 #include <linux/printk.h>
-#include <linux/of.h>
-#include <linux/of_fdt.h>
 #include <asm/prom.h>
 #include <asm/rtas.h>
 #include <asm/page.h>
@@ -42,7 +40,7 @@
 #include <asm/iommu.h>
 #include <asm/btext.h>
 #include <asm/sections.h>
-#include <asm/setup.h>
+#include <asm/machdep.h>
 #include <asm/asm-prototypes.h>
 #include <asm/ultravisor-api.h>
 
@@ -95,6 +93,12 @@ static int of_workarounds __prombss;
 
 #define OF_WA_CLAIM	1	/* do phys/virt claim separately, then map */
 #define OF_WA_LONGTRAIL	2	/* work around longtrail bugs */
+
+#define PROM_BUG() do {						\
+        prom_printf("kernel BUG at %s line 0x%x!\n",		\
+		    __FILE__, __LINE__);			\
+	__builtin_trap();					\
+} while (0)
 
 #ifdef DEBUG_PROM
 #define prom_debug(x...)	prom_printf(x)
@@ -668,7 +672,7 @@ static inline int __init prom_getproplen(phandle node, const char *pname)
 	return call_prom("getproplen", 2, 1, node, ADDR(pname));
 }
 
-static void __init add_string(char **str, const char *q)
+static void add_string(char **str, const char *q)
 {
 	char *p = *str;
 
@@ -678,7 +682,7 @@ static void __init add_string(char **str, const char *q)
 	*str = p;
 }
 
-static char *__init tohex(unsigned int x)
+static char *tohex(unsigned int x)
 {
 	static const char digits[] __initconst = "0123456789abcdef";
 	static char result[9] __prombss;
@@ -724,7 +728,7 @@ static int __init prom_setprop(phandle node, const char *nodename,
 #define prom_islower(c)	('a' <= (c) && (c) <= 'z')
 #define prom_toupper(c)	(prom_islower(c) ? ((c) - 'a' + 'A') : (c))
 
-static unsigned long __init prom_strtoul(const char *cp, const char **endp)
+static unsigned long prom_strtoul(const char *cp, const char **endp)
 {
 	unsigned long result = 0, base = 10, value;
 
@@ -749,7 +753,7 @@ static unsigned long __init prom_strtoul(const char *cp, const char **endp)
 	return result;
 }
 
-static unsigned long __init prom_memparse(const char *ptr, const char **retptr)
+static unsigned long prom_memparse(const char *ptr, const char **retptr)
 {
 	unsigned long ret = prom_strtoul(ptr, retptr);
 	int shift = 0;
@@ -817,8 +821,8 @@ static void __init early_cmdline_parse(void)
 		opt += 4;
 		prom_memory_limit = prom_memparse(opt, (const char **)&opt);
 #ifdef CONFIG_PPC64
-		/* Align down to 16 MB which is large page size with hash page translation */
-		prom_memory_limit = ALIGN_DOWN(prom_memory_limit, SZ_16M);
+		/* Align to 16 MB == size of ppc64 large page */
+		prom_memory_limit = ALIGN(prom_memory_limit, 0x1000000);
 #endif
 	}
 
@@ -947,7 +951,7 @@ struct option_vector7 {
 } __packed;
 
 struct ibm_arch_vec {
-	struct { __be32 mask, val; } pvrs[16];
+	struct { u32 mask, val; } pvrs[14];
 
 	u8 num_vectors;
 
@@ -1006,14 +1010,6 @@ static const struct ibm_arch_vec ibm_architecture_vec_template __initconst = {
 		{
 			.mask = cpu_to_be32(0xffff0000), /* POWER10 */
 			.val  = cpu_to_be32(0x00800000),
-		},
-		{
-			.mask = cpu_to_be32(0xffff0000), /* POWER11 */
-			.val  = cpu_to_be32(0x00820000),
-		},
-		{
-			.mask = cpu_to_be32(0xffffffff), /* P11 compliant */
-			.val  = cpu_to_be32(0x0f000007),
 		},
 		{
 			.mask = cpu_to_be32(0xffffffff), /* all 3.1-compliant */
@@ -1790,7 +1786,7 @@ static void __init prom_close_stdin(void)
 }
 
 #ifdef CONFIG_PPC_SVM
-static int __init prom_rtas_hcall(uint64_t args)
+static int prom_rtas_hcall(uint64_t args)
 {
 	register uint64_t arg1 asm("r3") = H_RTAS;
 	register uint64_t arg2 asm("r4") = args;
@@ -2304,7 +2300,7 @@ static void __init prom_init_stdout(void)
 
 static int __init prom_find_machine_type(void)
 {
-	static char compat[256] __prombss;
+	char compat[256];
 	int len, i = 0;
 #ifdef CONFIG_PPC64
 	phandle rtas;
@@ -3252,7 +3248,7 @@ static void __init prom_check_initrd(unsigned long r3, unsigned long r4)
 /*
  * Perform the Enter Secure Mode ultracall.
  */
-static int __init enter_secure_mode(unsigned long kbase, unsigned long fdt)
+static int enter_secure_mode(unsigned long kbase, unsigned long fdt)
 {
 	register unsigned long r3 asm("r3") = UV_ESM;
 	register unsigned long r4 asm("r4") = kbase;
@@ -3420,7 +3416,7 @@ unsigned long __init prom_init(unsigned long r3, unsigned long r4,
 	 *
 	 * PowerMacs use a different mechanism to spin CPUs
 	 *
-	 * (This must be done after instantiating RTAS)
+	 * (This must be done after instanciating RTAS)
 	 */
 	if (of_platform != PLATFORM_POWERMAC)
 		prom_hold_cpus();

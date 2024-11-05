@@ -17,6 +17,7 @@
 #include <linux/mfd/syscon/xlnx-vcu.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -179,7 +180,7 @@ struct allegro_dev {
 	struct list_head channels;
 };
 
-static const struct regmap_config allegro_regmap_config = {
+static struct regmap_config allegro_regmap_config = {
 	.name = "regmap",
 	.reg_bits = 32,
 	.val_bits = 32,
@@ -188,7 +189,7 @@ static const struct regmap_config allegro_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static const struct regmap_config allegro_sram_config = {
+static struct regmap_config allegro_sram_config = {
 	.name = "sram",
 	.reg_bits = 32,
 	.val_bits = 32,
@@ -1415,11 +1416,11 @@ static int allegro_mcu_send_encode_frame(struct allegro_dev *dev,
 static int allegro_mcu_wait_for_init_timeout(struct allegro_dev *dev,
 					     unsigned long timeout_ms)
 {
-	unsigned long time_left;
+	unsigned long tmo;
 
-	time_left = wait_for_completion_timeout(&dev->init_complete,
-						msecs_to_jiffies(timeout_ms));
-	if (time_left == 0)
+	tmo = wait_for_completion_timeout(&dev->init_complete,
+					  msecs_to_jiffies(timeout_ms));
+	if (tmo == 0)
 		return -ETIMEDOUT;
 
 	reinit_completion(&dev->init_complete);
@@ -2481,14 +2482,14 @@ static void allegro_mcu_interrupt(struct allegro_dev *dev)
 static void allegro_destroy_channel(struct allegro_channel *channel)
 {
 	struct allegro_dev *dev = channel->dev;
-	unsigned long time_left;
+	unsigned long timeout;
 
 	if (channel_exists(channel)) {
 		reinit_completion(&channel->completion);
 		allegro_mcu_send_destroy_channel(dev, channel);
-		time_left = wait_for_completion_timeout(&channel->completion,
-							msecs_to_jiffies(5000));
-		if (time_left == 0)
+		timeout = wait_for_completion_timeout(&channel->completion,
+						      msecs_to_jiffies(5000));
+		if (timeout == 0)
 			v4l2_warn(&dev->v4l2_dev,
 				  "channel %d: timeout while destroying\n",
 				  channel->mcu_channel_id);
@@ -2544,7 +2545,7 @@ static void allegro_destroy_channel(struct allegro_channel *channel)
 static int allegro_create_channel(struct allegro_channel *channel)
 {
 	struct allegro_dev *dev = channel->dev;
-	unsigned long time_left;
+	unsigned long timeout;
 
 	if (channel_exists(channel)) {
 		v4l2_warn(&dev->v4l2_dev,
@@ -2595,9 +2596,9 @@ static int allegro_create_channel(struct allegro_channel *channel)
 
 	reinit_completion(&channel->completion);
 	allegro_mcu_send_create_channel(dev, channel);
-	time_left = wait_for_completion_timeout(&channel->completion,
-						msecs_to_jiffies(5000));
-	if (time_left == 0)
+	timeout = wait_for_completion_timeout(&channel->completion,
+					      msecs_to_jiffies(5000));
+	if (timeout == 0)
 		channel->error = -ETIMEDOUT;
 	if (channel->error)
 		goto err;
@@ -2814,7 +2815,7 @@ static void allegro_buf_queue(struct vb2_buffer *vb)
 		unsigned int i;
 
 		for (i = 0; i < vb->num_planes; i++)
-			vb2_set_plane_payload(vb, i, 0);
+			vb->planes[i].bytesused = 0;
 
 		vbuf->field = V4L2_FIELD_NONE;
 		vbuf->sequence = channel->csequence++;
@@ -3248,8 +3249,13 @@ static int allegro_release(struct file *file)
 static int allegro_querycap(struct file *file, void *fh,
 			    struct v4l2_capability *cap)
 {
+	struct video_device *vdev = video_devdata(file);
+	struct allegro_dev *dev = video_get_drvdata(vdev);
+
 	strscpy(cap->driver, KBUILD_MODNAME, sizeof(cap->driver));
 	strscpy(cap->card, "Allegro DVT Video Encoder", sizeof(cap->card));
+	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
+		 dev_name(&dev->plat_dev->dev));
 
 	return 0;
 }
@@ -3918,7 +3924,7 @@ static int allegro_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void allegro_remove(struct platform_device *pdev)
+static int allegro_remove(struct platform_device *pdev)
 {
 	struct allegro_dev *dev = platform_get_drvdata(pdev);
 
@@ -3934,6 +3940,8 @@ static void allegro_remove(struct platform_device *pdev)
 	pm_runtime_disable(&dev->plat_dev->dev);
 
 	v4l2_device_unregister(&dev->v4l2_dev);
+
+	return 0;
 }
 
 static int allegro_runtime_resume(struct device *device)
@@ -4003,10 +4011,10 @@ static const struct dev_pm_ops allegro_pm_ops = {
 
 static struct platform_driver allegro_driver = {
 	.probe = allegro_probe,
-	.remove_new = allegro_remove,
+	.remove = allegro_remove,
 	.driver = {
 		.name = "allegro",
-		.of_match_table = allegro_dt_ids,
+		.of_match_table = of_match_ptr(allegro_dt_ids),
 		.pm = &allegro_pm_ops,
 	},
 };

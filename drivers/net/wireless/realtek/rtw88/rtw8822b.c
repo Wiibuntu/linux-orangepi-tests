@@ -26,18 +26,6 @@ static void rtw8822be_efuse_parsing(struct rtw_efuse *efuse,
 	ether_addr_copy(efuse->addr, map->e.mac_addr);
 }
 
-static void rtw8822bu_efuse_parsing(struct rtw_efuse *efuse,
-				    struct rtw8822b_efuse *map)
-{
-	ether_addr_copy(efuse->addr, map->u.mac_addr);
-}
-
-static void rtw8822bs_efuse_parsing(struct rtw_efuse *efuse,
-				    struct rtw8822b_efuse *map)
-{
-	ether_addr_copy(efuse->addr, map->s.mac_addr);
-}
-
 static int rtw8822b_read_efuse(struct rtw_dev *rtwdev, u8 *log_map)
 {
 	struct rtw_efuse *efuse = &rtwdev->efuse;
@@ -46,7 +34,6 @@ static int rtw8822b_read_efuse(struct rtw_dev *rtwdev, u8 *log_map)
 
 	map = (struct rtw8822b_efuse *)log_map;
 
-	efuse->usb_mode_switch = u8_get_bits(map->usb_mode, BIT(7));
 	efuse->rfe_option = map->rfe_option;
 	efuse->rf_board_option = map->rf_board_option;
 	efuse->crystal_cap = map->xtal_k;
@@ -68,12 +55,6 @@ static int rtw8822b_read_efuse(struct rtw_dev *rtwdev, u8 *log_map)
 	switch (rtw_hci_type(rtwdev)) {
 	case RTW_HCI_TYPE_PCIE:
 		rtw8822be_efuse_parsing(efuse, map);
-		break;
-	case RTW_HCI_TYPE_USB:
-		rtw8822bu_efuse_parsing(efuse, map);
-		break;
-	case RTW_HCI_TYPE_SDIO:
-		rtw8822bs_efuse_parsing(efuse, map);
 		break;
 	default:
 		/* unsupported now */
@@ -1031,12 +1012,12 @@ static int rtw8822b_set_antenna(struct rtw_dev *rtwdev,
 		antenna_tx, antenna_rx);
 
 	if (!rtw8822b_check_rf_path(antenna_tx)) {
-		rtw_warn(rtwdev, "unsupported tx path 0x%x\n", antenna_tx);
+		rtw_info(rtwdev, "unsupported tx path 0x%x\n", antenna_tx);
 		return -EINVAL;
 	}
 
 	if (!rtw8822b_check_rf_path(antenna_rx)) {
-		rtw_warn(rtwdev, "unsupported rx path 0x%x\n", antenna_rx);
+		rtw_info(rtwdev, "unsupported rx path 0x%x\n", antenna_rx);
 		return -EINVAL;
 	}
 
@@ -1605,15 +1586,6 @@ static void rtw8822b_adaptivity(struct rtw_dev *rtwdev)
 	}
 
 	rtw_phy_set_edcca_th(rtwdev, l2h, h2l);
-}
-
-static void rtw8822b_fill_txdesc_checksum(struct rtw_dev *rtwdev,
-					  struct rtw_tx_pkt_info *pkt_info,
-					  u8 *txdesc)
-{
-	size_t words = 32 / 2; /* calculate the first 32 bytes (16 words) */
-
-	fill_txdesc_checksum_common(txdesc, words);
 }
 
 static const struct rtw_pwr_seq_cmd trans_carddis_to_cardemu_8822b[] = {
@@ -2191,7 +2163,6 @@ static struct rtw_chip_ops rtw8822b_ops = {
 	.cfg_csi_rate		= rtw_bf_cfg_csi_rate,
 	.adaptivity_init	= rtw8822b_adaptivity_init,
 	.adaptivity		= rtw8822b_adaptivity,
-	.fill_txdesc_checksum	= rtw8822b_fill_txdesc_checksum,
 
 	.coex_set_init		= rtw8822b_coex_cfg_init,
 	.coex_set_ant_switch	= rtw8822b_coex_cfg_ant_switch,
@@ -2526,7 +2497,7 @@ static struct rtw_hw_reg_offset rtw8822b_edcca_th[] = {
 	[EDCCA_TH_H2L_IDX] = {{.addr = 0x8a4, .mask = MASKBYTE1}, .offset = 0},
 };
 
-const struct rtw_chip_info rtw8822b_hw_spec = {
+struct rtw_chip_info rtw8822b_hw_spec = {
 	.ops = &rtw8822b_ops,
 	.id = RTW_CHIP_TYPE_8822B,
 	.fw_name = "rtw88/rtw8822b_fw.bin",
@@ -2541,15 +2512,13 @@ const struct rtw_chip_info rtw8822b_hw_spec = {
 	.txff_size = 262144,
 	.rxff_size = 24576,
 	.fw_rxff_size = 12288,
-	.rsvd_drv_pg_num = 8,
 	.txgi_factor = 1,
 	.is_pwr_by_rate_dec = true,
 	.max_power_index = 0x3f,
 	.csi_buf_pg_num = 0,
 	.band = RTW_BAND_2G | RTW_BAND_5G,
-	.page_size = TX_PAGE_SIZE,
+	.page_size = 128,
 	.dig_min = 0x1c,
-	.usb_tx_agg_desc_num = 3,
 	.ht_supported = true,
 	.vht_supported = true,
 	.lps_deep_mode_supported = BIT(LPS_DEEP_MODE_LCLK),
@@ -2579,15 +2548,12 @@ const struct rtw_chip_info rtw8822b_hw_spec = {
 	.edcca_th = rtw8822b_edcca_th,
 	.l2h_th_ini_cs = 10 + EDCCA_IGI_BASE,
 	.l2h_th_ini_ad = -14 + EDCCA_IGI_BASE,
-	.ampdu_density = IEEE80211_HT_MPDU_DENSITY_2,
-	.max_scan_ie_len = IEEE80211_MAX_DATA_LEN,
 
 	.coex_para_ver = 0x20070206,
 	.bt_desired_ver = 0x6,
 	.scbd_support = true,
 	.new_scbd10_def = false,
 	.ble_hid_profile_support = false,
-	.wl_mimo_ps_support = false,
 	.pstdma_type = COEX_PSTDMA_FORCE_LPSOFF,
 	.bt_rssi_type = COEX_BTRSSI_RATIO,
 	.ant_isolation = 15,

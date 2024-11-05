@@ -37,7 +37,7 @@
 #include <linux/interrupt.h>
 #include <linux/moduleparam.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <linux/io.h>
 
 #include <sound/core.h>
@@ -47,6 +47,7 @@
 #include <sound/initval.h>
 
 #include <asm/irq.h>
+#include <asm/prom.h>
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
@@ -935,8 +936,8 @@ static int snd_amd7930_create(struct snd_card *card,
 	amd->regs = of_ioremap(&op->resource[0], 0,
 			       resource_size(&op->resource[0]), "amd7930");
 	if (!amd->regs) {
-		dev_err(card->dev,
-			"amd7930-%d: Unable to map chip registers.\n", dev);
+		snd_printk(KERN_ERR
+			   "amd7930-%d: Unable to map chip registers.\n", dev);
 		kfree(amd);
 		return -EIO;
 	}
@@ -945,8 +946,8 @@ static int snd_amd7930_create(struct snd_card *card,
 
 	if (request_irq(irq, snd_amd7930_interrupt,
 			IRQF_SHARED, "amd7930", amd)) {
-		dev_err(card->dev, "amd7930-%d: Unable to grab IRQ %d\n",
-			dev, irq);
+		snd_printk(KERN_ERR "amd7930-%d: Unable to grab IRQ %d\n",
+			   dev, irq);
 		snd_amd7930_free(amd);
 		return -EBUSY;
 	}

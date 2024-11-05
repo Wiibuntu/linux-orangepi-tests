@@ -54,7 +54,11 @@ struct smc_wr_tx_pend {	/* control data for a pending send request */
 /* returns true if at least one tx work request is pending on the given link */
 static inline bool smc_wr_is_tx_pend(struct smc_link *link)
 {
-	return !bitmap_empty(link->wr_tx_mask, link->wr_tx_cnt);
+	if (find_first_bit(link->wr_tx_mask, link->wr_tx_cnt) !=
+							link->wr_tx_cnt) {
+		return true;
+	}
+	return false;
 }
 
 /* wait till all pending tx work requests on the given link are completed */
@@ -377,11 +381,12 @@ int smc_wr_reg_send(struct smc_link *link, struct ib_mr *mr)
 	if (rc)
 		return rc;
 
-	percpu_ref_get(&link->wr_reg_refs);
+	atomic_inc(&link->wr_reg_refcnt);
 	rc = wait_event_interruptible_timeout(link->wr_reg_wait,
 					      (link->wr_reg_state != POSTED),
 					      SMC_WR_REG_MR_WAIT_TIME);
-	percpu_ref_put(&link->wr_reg_refs);
+	if (atomic_dec_and_test(&link->wr_reg_refcnt))
+		wake_up_all(&link->wr_reg_wait);
 	if (!rc) {
 		/* timeout - terminate link */
 		smcr_link_down_cond_sched(link);
@@ -453,7 +458,6 @@ static inline void smc_wr_rx_process_cqes(struct ib_wc wc[], int num)
 
 	for (i = 0; i < num; i++) {
 		link = wc[i].qp->qp_context;
-		link->wr_rx_id_compl = wc[i].wr_id;
 		if (wc[i].status == IB_WC_SUCCESS) {
 			link->wr_rx_tstamp = jiffies;
 			smc_wr_rx_demultiplex(&wc[i]);
@@ -465,8 +469,6 @@ static inline void smc_wr_rx_process_cqes(struct ib_wc wc[], int num)
 			case IB_WC_RNR_RETRY_EXC_ERR:
 			case IB_WC_WR_FLUSH_ERR:
 				smcr_link_down_cond_sched(link);
-				if (link->wr_rx_id_compl == link->wr_rx_id)
-					wake_up(&link->wr_rx_empty_wait);
 				break;
 			default:
 				smc_wr_rx_post(link); /* refill WR RX */
@@ -556,11 +558,10 @@ void smc_wr_remember_qp_attr(struct smc_link *lnk)
 static void smc_wr_init_sge(struct smc_link *lnk)
 {
 	int sges_per_buf = (lnk->lgr->smc_version == SMC_V2) ? 2 : 1;
-	bool send_inline = (lnk->qp_attr.cap.max_inline_data > SMC_WR_TX_SIZE);
 	u32 i;
 
 	for (i = 0; i < lnk->wr_tx_cnt; i++) {
-		lnk->wr_tx_sges[i].addr = send_inline ? (uintptr_t)(&lnk->wr_tx_bufs[i]) :
+		lnk->wr_tx_sges[i].addr =
 			lnk->wr_tx_dma_addr + i * SMC_WR_BUF_SIZE;
 		lnk->wr_tx_sges[i].length = SMC_WR_TX_SIZE;
 		lnk->wr_tx_sges[i].lkey = lnk->roce_pd->local_dma_lkey;
@@ -578,8 +579,6 @@ static void smc_wr_init_sge(struct smc_link *lnk)
 		lnk->wr_tx_ibs[i].opcode = IB_WR_SEND;
 		lnk->wr_tx_ibs[i].send_flags =
 			IB_SEND_SIGNALED | IB_SEND_SOLICITED;
-		if (send_inline)
-			lnk->wr_tx_ibs[i].send_flags |= IB_SEND_INLINE;
 		lnk->wr_tx_rdmas[i].wr_tx_rdma[0].wr.opcode = IB_WR_RDMA_WRITE;
 		lnk->wr_tx_rdmas[i].wr_tx_rdma[1].wr.opcode = IB_WR_RDMA_WRITE;
 		lnk->wr_tx_rdmas[i].wr_tx_rdma[0].wr.sg_list =
@@ -641,17 +640,12 @@ void smc_wr_free_link(struct smc_link *lnk)
 		return;
 	ibdev = lnk->smcibdev->ibdev;
 
-	smc_wr_drain_cq(lnk);
 	smc_wr_wakeup_reg_wait(lnk);
 	smc_wr_wakeup_tx_wait(lnk);
 
 	smc_wr_tx_wait_no_pending_sends(lnk);
-	percpu_ref_kill(&lnk->wr_reg_refs);
-	wait_for_completion(&lnk->reg_ref_comp);
-	percpu_ref_exit(&lnk->wr_reg_refs);
-	percpu_ref_kill(&lnk->wr_tx_refs);
-	wait_for_completion(&lnk->tx_ref_comp);
-	percpu_ref_exit(&lnk->wr_tx_refs);
+	wait_event(lnk->wr_reg_wait, (!atomic_read(&lnk->wr_reg_refcnt)));
+	wait_event(lnk->wr_tx_wait, (!atomic_read(&lnk->wr_tx_refcnt)));
 
 	if (lnk->wr_rx_dma_addr) {
 		ib_dma_unmap_single(ibdev, lnk->wr_rx_dma_addr,
@@ -702,7 +696,7 @@ void smc_wr_free_link_mem(struct smc_link *lnk)
 	lnk->wr_tx_compl = NULL;
 	kfree(lnk->wr_tx_pends);
 	lnk->wr_tx_pends = NULL;
-	bitmap_free(lnk->wr_tx_mask);
+	kfree(lnk->wr_tx_mask);
 	lnk->wr_tx_mask = NULL;
 	kfree(lnk->wr_tx_sges);
 	lnk->wr_tx_sges = NULL;
@@ -778,7 +772,9 @@ int smc_wr_alloc_link_mem(struct smc_link *link)
 				   GFP_KERNEL);
 	if (!link->wr_rx_sges)
 		goto no_mem_wr_tx_sges;
-	link->wr_tx_mask = bitmap_zalloc(SMC_WR_BUF_CNT, GFP_KERNEL);
+	link->wr_tx_mask = kcalloc(BITS_TO_LONGS(SMC_WR_BUF_CNT),
+				   sizeof(*link->wr_tx_mask),
+				   GFP_KERNEL);
 	if (!link->wr_tx_mask)
 		goto no_mem_wr_rx_sges;
 	link->wr_tx_pends = kcalloc(SMC_WR_BUF_CNT,
@@ -850,20 +846,6 @@ void smc_wr_add_dev(struct smc_ib_device *smcibdev)
 	tasklet_setup(&smcibdev->send_tasklet, smc_wr_tx_tasklet_fn);
 }
 
-static void smcr_wr_tx_refs_free(struct percpu_ref *ref)
-{
-	struct smc_link *lnk = container_of(ref, struct smc_link, wr_tx_refs);
-
-	complete(&lnk->tx_ref_comp);
-}
-
-static void smcr_wr_reg_refs_free(struct percpu_ref *ref)
-{
-	struct smc_link *lnk = container_of(ref, struct smc_link, wr_reg_refs);
-
-	complete(&lnk->reg_ref_comp);
-}
-
 int smc_wr_create_link(struct smc_link *lnk)
 {
 	struct ib_device *ibdev = lnk->smcibdev->ibdev;
@@ -905,22 +887,14 @@ int smc_wr_create_link(struct smc_link *lnk)
 		goto dma_unmap;
 	}
 	smc_wr_init_sge(lnk);
-	bitmap_zero(lnk->wr_tx_mask, SMC_WR_BUF_CNT);
+	memset(lnk->wr_tx_mask, 0,
+	       BITS_TO_LONGS(SMC_WR_BUF_CNT) * sizeof(*lnk->wr_tx_mask));
 	init_waitqueue_head(&lnk->wr_tx_wait);
-	rc = percpu_ref_init(&lnk->wr_tx_refs, smcr_wr_tx_refs_free, 0, GFP_KERNEL);
-	if (rc)
-		goto dma_unmap;
-	init_completion(&lnk->tx_ref_comp);
+	atomic_set(&lnk->wr_tx_refcnt, 0);
 	init_waitqueue_head(&lnk->wr_reg_wait);
-	rc = percpu_ref_init(&lnk->wr_reg_refs, smcr_wr_reg_refs_free, 0, GFP_KERNEL);
-	if (rc)
-		goto cancel_ref;
-	init_completion(&lnk->reg_ref_comp);
-	init_waitqueue_head(&lnk->wr_rx_empty_wait);
+	atomic_set(&lnk->wr_reg_refcnt, 0);
 	return rc;
 
-cancel_ref:
-	percpu_ref_exit(&lnk->wr_tx_refs);
 dma_unmap:
 	if (lnk->wr_rx_v2_dma_addr) {
 		ib_dma_unmap_single(ibdev, lnk->wr_rx_v2_dma_addr,

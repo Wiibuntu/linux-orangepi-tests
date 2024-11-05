@@ -5,7 +5,6 @@
  **************************************************************************/
 
 #include <linux/highmem.h>
-#include <linux/vmalloc.h>
 
 #include "mmu.h"
 #include "psb_drv.h"
@@ -185,17 +184,17 @@ struct psb_mmu_pd *psb_mmu_alloc_pd(struct psb_mmu_driver *driver,
 		pd->invalid_pte = 0;
 	}
 
-	v = kmap_local_page(pd->dummy_pt);
+	v = kmap(pd->dummy_pt);
 	for (i = 0; i < (PAGE_SIZE / sizeof(uint32_t)); ++i)
 		v[i] = pd->invalid_pte;
 
-	kunmap_local(v);
+	kunmap(pd->dummy_pt);
 
-	v = kmap_local_page(pd->p);
+	v = kmap(pd->p);
 	for (i = 0; i < (PAGE_SIZE / sizeof(uint32_t)); ++i)
 		v[i] = pd->invalid_pde;
 
-	kunmap_local(v);
+	kunmap(pd->p);
 
 	clear_page(kmap(pd->dummy_page));
 	kunmap(pd->dummy_page);

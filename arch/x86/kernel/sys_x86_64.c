@@ -52,6 +52,13 @@ static unsigned long get_align_bits(void)
 	return va_align.bits & get_align_mask();
 }
 
+unsigned long align_vdso_addr(unsigned long addr)
+{
+	unsigned long align_mask = get_align_mask();
+	addr = (addr + align_mask) & ~align_mask;
+	return addr | get_align_bits();
+}
+
 static int __init control_va_addr_alignment(char *str)
 {
 	/* guard against enabling this on other CPU families */
@@ -60,6 +67,9 @@ static int __init control_va_addr_alignment(char *str)
 
 	if (*str == 0)
 		return 1;
+
+	if (*str == '=')
+		str++;
 
 	if (!strcmp(str, "32"))
 		va_align.flags = ALIGN_VA_32;
@@ -70,11 +80,11 @@ static int __init control_va_addr_alignment(char *str)
 	else if (!strcmp(str, "on"))
 		va_align.flags = ALIGN_VA_32 | ALIGN_VA_64;
 	else
-		pr_warn("invalid option value: 'align_va_addr=%s'\n", str);
+		return 0;
 
 	return 1;
 }
-__setup("align_va_addr=", control_va_addr_alignment);
+__setup("align_va_addr", control_va_addr_alignment);
 
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 		unsigned long, prot, unsigned long, flags,
@@ -112,21 +122,13 @@ static void find_start_end(unsigned long addr, unsigned long flags,
 		*end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
 }
 
-static inline unsigned long stack_guard_placement(vm_flags_t vm_flags)
-{
-	if (vm_flags & VM_SHADOW_STACK)
-		return PAGE_SIZE;
-
-	return 0;
-}
-
 unsigned long
-arch_get_unmapped_area(struct file *filp, unsigned long addr, unsigned long len,
-		       unsigned long pgoff, unsigned long flags, vm_flags_t vm_flags)
+arch_get_unmapped_area(struct file *filp, unsigned long addr,
+		unsigned long len, unsigned long pgoff, unsigned long flags)
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
-	struct vm_unmapped_area_info info = {};
+	struct vm_unmapped_area_info info;
 	unsigned long begin, end;
 
 	if (flags & MAP_FIXED)
@@ -145,11 +147,12 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr, unsigned long len,
 			return addr;
 	}
 
+	info.flags = 0;
 	info.length = len;
 	info.low_limit = begin;
 	info.high_limit = end;
+	info.align_mask = 0;
 	info.align_offset = pgoff << PAGE_SHIFT;
-	info.start_gap = stack_guard_placement(vm_flags);
 	if (filp) {
 		info.align_mask = get_align_mask();
 		info.align_offset += get_align_bits();
@@ -158,14 +161,14 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr, unsigned long len,
 }
 
 unsigned long
-arch_get_unmapped_area_topdown(struct file *filp, unsigned long addr0,
-			  unsigned long len, unsigned long pgoff,
-			  unsigned long flags, vm_flags_t vm_flags)
+arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
+			  const unsigned long len, const unsigned long pgoff,
+			  const unsigned long flags)
 {
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
 	unsigned long addr = addr0;
-	struct vm_unmapped_area_info info = {};
+	struct vm_unmapped_area_info info;
 
 	/* requested length too big for entire address space */
 	if (len > TASK_SIZE)
@@ -193,13 +196,8 @@ get_unmapped_area:
 
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
-	if (!in_32bit_syscall() && (flags & MAP_ABOVE4G))
-		info.low_limit = SZ_4G;
-	else
-		info.low_limit = PAGE_SIZE;
-
+	info.low_limit = PAGE_SIZE;
 	info.high_limit = get_mmap_base(0);
-	info.start_gap = stack_guard_placement(vm_flags);
 
 	/*
 	 * If hint address is above DEFAULT_MAP_WINDOW, look for unmapped area
@@ -211,6 +209,7 @@ get_unmapped_area:
 	if (addr > DEFAULT_MAP_WINDOW && !in_32bit_syscall())
 		info.high_limit += TASK_SIZE_MAX - DEFAULT_MAP_WINDOW;
 
+	info.align_mask = 0;
 	info.align_offset = pgoff << PAGE_SHIFT;
 	if (filp) {
 		info.align_mask = get_align_mask();
@@ -228,5 +227,5 @@ bottomup:
 	 * can happen with large stack limits and large mmap()
 	 * allocations.
 	 */
-	return arch_get_unmapped_area(filp, addr0, len, pgoff, flags, 0);
+	return arch_get_unmapped_area(filp, addr0, len, pgoff, flags);
 }

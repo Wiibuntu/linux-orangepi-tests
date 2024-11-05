@@ -32,8 +32,12 @@ static struct w1_master *w1_alloc_dev(u32 id, int slave_count, int slave_ttl,
 	 * We are in process context(kernel thread), so can sleep.
 	 */
 	dev = kzalloc(sizeof(struct w1_master) + sizeof(struct w1_bus_master), GFP_KERNEL);
-	if (!dev)
+	if (!dev) {
+		pr_err("Failed to allocate %zd bytes for new w1 device.\n",
+			sizeof(struct w1_master));
 		return NULL;
+	}
+
 
 	dev->bus_master = (struct w1_bus_master *)(dev + 1);
 
@@ -47,9 +51,10 @@ static struct w1_master *w1_alloc_dev(u32 id, int slave_count, int slave_ttl,
 	dev->search_count	= w1_search_count;
 	dev->enable_pullup	= w1_enable_pullup;
 
-	/* For __w1_remove_master_device to decrement
+	/* 1 for w1_process to decrement
+	 * 1 for __w1_remove_master_device to decrement
 	 */
-	atomic_set(&dev->refcnt, 1);
+	atomic_set(&dev->refcnt, 2);
 
 	INIT_LIST_HEAD(&dev->slist);
 	INIT_LIST_HEAD(&dev->async_list);

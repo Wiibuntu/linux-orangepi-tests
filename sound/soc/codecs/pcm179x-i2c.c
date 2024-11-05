@@ -14,7 +14,8 @@
 
 #include "pcm179x.h"
 
-static int pcm179x_i2c_probe(struct i2c_client *client)
+static int pcm179x_i2c_probe(struct i2c_client *client,
+			      const struct i2c_device_id *id)
 {
 	struct regmap *regmap;
 	int ret;
@@ -38,7 +39,7 @@ MODULE_DEVICE_TABLE(of, pcm179x_of_match);
 #endif
 
 static const struct i2c_device_id pcm179x_i2c_ids[] = {
-	{ "pcm179x" },
+	{ "pcm179x", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pcm179x_i2c_ids);

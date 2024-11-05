@@ -24,7 +24,7 @@ struct {
 	__uint(value_size, sizeof(__u32));
 } map_out SEC(".maps");
 
-SEC("tc")
+SEC("test")
 int _test(struct __sk_buff *skb)
 {
 	void *data_end = (void *)(long)skb->data_end;

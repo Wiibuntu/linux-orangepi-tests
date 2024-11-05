@@ -23,6 +23,8 @@
  *
  */
 
+#include <linux/slab.h>
+
 #include "dm_services.h"
 #include "basics/conversion.h"
 
@@ -574,6 +576,7 @@ static void dce60_opp_program_clamping_and_pixel_encoding(
 	dce60_set_pixel_encoding(opp110, params);
 }
 #endif
+
 
 static void program_formatter_420_memory(struct output_pixel_processor *opp)
 {

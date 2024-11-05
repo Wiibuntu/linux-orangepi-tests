@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2021 Purism SPC
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
@@ -1353,8 +1353,7 @@ static int hi846_set_ctrl(struct v4l2_ctrl *ctrl)
 					 exposure_max);
 	}
 
-	ret = pm_runtime_get_if_in_use(&client->dev);
-	if (!ret || ret == -EAGAIN)
+	if (!pm_runtime_get_if_in_use(&client->dev))
 		return 0;
 
 	switch (ctrl->id) {
@@ -1473,26 +1472,21 @@ static int hi846_init_controls(struct hi846 *hi846)
 	if (ctrl_hdlr->error) {
 		dev_err(&client->dev, "v4l ctrl handler error: %d\n",
 			ctrl_hdlr->error);
-		ret = ctrl_hdlr->error;
-		goto error;
+		return ctrl_hdlr->error;
 	}
 
 	ret = v4l2_fwnode_device_parse(&client->dev, &props);
 	if (ret)
-		goto error;
+		return ret;
 
 	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &hi846_ctrl_ops,
 					      &props);
 	if (ret)
-		goto error;
+		return ret;
 
 	hi846->sd.ctrl_handler = ctrl_hdlr;
 
 	return 0;
-
-error:
-	v4l2_ctrl_handler_free(ctrl_hdlr);
-	return ret;
 }
 
 static int hi846_set_video_mode(struct hi846 *hi846, int fps)
@@ -1607,12 +1601,17 @@ static int hi846_set_stream(struct v4l2_subdev *sd, int enable)
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret = 0;
 
+	if (hi846->streaming == enable)
+		return 0;
+
 	mutex_lock(&hi846->mutex);
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(&client->dev);
-		if (ret)
+		ret = pm_runtime_get_sync(&client->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(&client->dev);
 			goto out;
+		}
 
 		ret = hi846_start_streaming(hi846);
 	}
@@ -1657,7 +1656,7 @@ err_reg:
 	return ret;
 }
 
-static int hi846_power_off(struct hi846 *hi846)
+static void hi846_power_off(struct hi846 *hi846)
 {
 	if (hi846->rst_gpio)
 		gpiod_set_value_cansleep(hi846->rst_gpio, 1);
@@ -1666,7 +1665,7 @@ static int hi846_power_off(struct hi846 *hi846)
 		gpiod_set_value_cansleep(hi846->shutdown_gpio, 1);
 
 	clk_disable_unprepare(hi846->clock);
-	return regulator_bulk_disable(HI846_NUM_SUPPLIES, hi846->supplies);
+	regulator_bulk_disable(HI846_NUM_SUPPLIES, hi846->supplies);
 }
 
 static int __maybe_unused hi846_suspend(struct device *dev)
@@ -1675,7 +1674,12 @@ static int __maybe_unused hi846_suspend(struct device *dev)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct hi846 *hi846 = to_hi846(sd);
 
-	return hi846_power_off(hi846);
+	if (hi846->streaming)
+		hi846_stop_streaming(hi846);
+
+	hi846_power_off(hi846);
+
+	return 0;
 }
 
 static int __maybe_unused hi846_resume(struct device *dev)
@@ -1683,8 +1687,26 @@ static int __maybe_unused hi846_resume(struct device *dev)
 	struct i2c_client *client = to_i2c_client(dev);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct hi846 *hi846 = to_hi846(sd);
+	int ret;
 
-	return hi846_power_on(hi846);
+	ret = hi846_power_on(hi846);
+	if (ret)
+		return ret;
+
+	if (hi846->streaming) {
+		ret = hi846_start_streaming(hi846);
+		if (ret) {
+			dev_err(dev, "%s: start streaming failed: %d\n",
+				__func__, ret);
+			goto error;
+		}
+	}
+
+	return 0;
+
+error:
+	hi846_power_off(hi846);
+	return ret;
 }
 
 static int hi846_set_format(struct v4l2_subdev *sd,
@@ -1705,7 +1727,7 @@ static int hi846_set_format(struct v4l2_subdev *sd,
 	}
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_state_get_format(sd_state, format->pad) = *mf;
+		*v4l2_subdev_get_try_format(sd, sd_state, format->pad) = *mf;
 		return 0;
 	}
 
@@ -1783,8 +1805,9 @@ static int hi846_get_format(struct v4l2_subdev *sd,
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
-		format->format = *v4l2_subdev_state_get_format(sd_state,
-							       format->pad);
+		format->format = *v4l2_subdev_get_try_format(&hi846->sd,
+							sd_state,
+							format->pad);
 		return 0;
 	}
 
@@ -1851,7 +1874,7 @@ static int hi846_get_selection(struct v4l2_subdev *sd,
 		mutex_lock(&hi846->mutex);
 		switch (sel->which) {
 		case V4L2_SUBDEV_FORMAT_TRY:
-			sel->r = *v4l2_subdev_state_get_crop(sd_state, sel->pad);
+			v4l2_subdev_get_try_crop(sd, sd_state, sel->pad);
 			break;
 		case V4L2_SUBDEV_FORMAT_ACTIVE:
 			sel->r = hi846->cur_mode->crop;
@@ -1871,13 +1894,13 @@ static int hi846_get_selection(struct v4l2_subdev *sd,
 	}
 }
 
-static int hi846_init_state(struct v4l2_subdev *sd,
-			    struct v4l2_subdev_state *sd_state)
+static int hi846_init_cfg(struct v4l2_subdev *sd,
+			  struct v4l2_subdev_state *sd_state)
 {
 	struct hi846 *hi846 = to_hi846(sd);
 	struct v4l2_mbus_framefmt *mf;
 
-	mf = v4l2_subdev_state_get_format(sd_state, 0);
+	mf = v4l2_subdev_get_try_format(sd, sd_state, 0);
 
 	mutex_lock(&hi846->mutex);
 	mf->code        = HI846_MEDIA_BUS_FORMAT;
@@ -1895,6 +1918,7 @@ static const struct v4l2_subdev_video_ops hi846_video_ops = {
 };
 
 static const struct v4l2_subdev_pad_ops hi846_pad_ops = {
+	.init_cfg = hi846_init_cfg,
 	.enum_frame_size = hi846_enum_frame_size,
 	.enum_mbus_code = hi846_enum_mbus_code,
 	.set_fmt = hi846_set_format,
@@ -1905,10 +1929,6 @@ static const struct v4l2_subdev_pad_ops hi846_pad_ops = {
 static const struct v4l2_subdev_ops hi846_subdev_ops = {
 	.video = &hi846_video_ops,
 	.pad = &hi846_pad_ops,
-};
-
-static const struct v4l2_subdev_internal_ops hi846_internal_ops = {
-	.init_state = hi846_init_state,
 };
 
 static const struct media_entity_operations hi846_subdev_entity_ops = {
@@ -1990,24 +2010,22 @@ static int hi846_parse_dt(struct hi846 *hi846, struct device *dev)
 	    bus_cfg.bus.mipi_csi2.num_data_lanes != 4) {
 		dev_err(dev, "number of CSI2 data lanes %d is not supported",
 			bus_cfg.bus.mipi_csi2.num_data_lanes);
-		ret = -EINVAL;
-		goto check_hwcfg_error;
+		v4l2_fwnode_endpoint_free(&bus_cfg);
+		return -EINVAL;
 	}
 
 	hi846->nr_lanes = bus_cfg.bus.mipi_csi2.num_data_lanes;
 
 	if (!bus_cfg.nr_of_link_frequencies) {
 		dev_err(dev, "link-frequency property not found in DT\n");
-		ret = -EINVAL;
-		goto check_hwcfg_error;
+		return -EINVAL;
 	}
 
 	/* Check that link frequences for all the modes are in device tree */
 	fq = hi846_check_link_freqs(hi846, &bus_cfg);
 	if (fq) {
 		dev_err(dev, "Link frequency of %lld is not supported\n", fq);
-		ret = -EINVAL;
-		goto check_hwcfg_error;
+		return -EINVAL;
 	}
 
 	v4l2_fwnode_endpoint_free(&bus_cfg);
@@ -2028,10 +2046,6 @@ static int hi846_parse_dt(struct hi846 *hi846, struct device *dev)
 	}
 
 	return 0;
-
-check_hwcfg_error:
-	v4l2_fwnode_endpoint_free(&bus_cfg);
-	return ret;
 }
 
 static int hi846_probe(struct i2c_client *client)
@@ -2074,7 +2088,6 @@ static int hi846_probe(struct i2c_client *client)
 		return ret;
 
 	v4l2_i2c_subdev_init(&hi846->sd, client, &hi846_subdev_ops);
-	hi846->sd.internal_ops = &hi846_internal_ops;
 
 	mutex_init(&hi846->mutex);
 
@@ -2132,7 +2145,7 @@ err_mutex:
 	return ret;
 }
 
-static void hi846_remove(struct i2c_client *client)
+static int hi846_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct hi846 *hi846 = to_hi846(sd);
@@ -2147,11 +2160,11 @@ static void hi846_remove(struct i2c_client *client)
 	pm_runtime_set_suspended(&client->dev);
 
 	mutex_destroy(&hi846->mutex);
+
+	return 0;
 }
 
-static const struct dev_pm_ops hi846_pm_ops = {
-	SET_RUNTIME_PM_OPS(hi846_suspend, hi846_resume, NULL)
-};
+static UNIVERSAL_DEV_PM_OPS(hi846_pm_ops, hi846_suspend, hi846_resume, NULL);
 
 static const struct of_device_id hi846_of_match[] = {
 	{ .compatible = "hynix,hi846", },
@@ -2165,7 +2178,7 @@ static struct i2c_driver hi846_i2c_driver = {
 		.pm = &hi846_pm_ops,
 		.of_match_table = hi846_of_match,
 	},
-	.probe = hi846_probe,
+	.probe_new = hi846_probe,
 	.remove = hi846_remove,
 };
 

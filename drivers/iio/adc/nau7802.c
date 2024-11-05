@@ -8,11 +8,10 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/property.h>
 #include <linux/wait.h>
 #include <linux/log2.h>
+#include <linux/of.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -408,13 +407,20 @@ static const struct iio_info nau7802_info = {
 	.attrs = &nau7802_attribute_group,
 };
 
-static int nau7802_probe(struct i2c_client *client)
+static int nau7802_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct iio_dev *indio_dev;
 	struct nau7802_state *st;
+	struct device_node *np = client->dev.of_node;
 	int i, ret;
 	u8 data;
 	u32 tmp = 0;
+
+	if (!client->dev.of_node) {
+		dev_err(&client->dev, "No device tree node available.\n");
+		return -EINVAL;
+	}
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*st));
 	if (indio_dev == NULL)
@@ -451,7 +457,7 @@ static int nau7802_probe(struct i2c_client *client)
 	if (!(ret & NAU7802_PUCTRL_PUR_BIT))
 		return ret;
 
-	device_property_read_u32(&client->dev, "nuvoton,vldo", &tmp);
+	of_property_read_u32(np, "nuvoton,vldo", &tmp);
 	st->vref_mv = tmp;
 
 	data = NAU7802_PUCTRL_PUD_BIT | NAU7802_PUCTRL_PUA_BIT |
@@ -532,14 +538,14 @@ static int nau7802_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id nau7802_i2c_id[] = {
-	{ "nau7802" },
+	{ "nau7802", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, nau7802_i2c_id);
 
 static const struct of_device_id nau7802_dt_ids[] = {
 	{ .compatible = "nuvoton,nau7802" },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, nau7802_dt_ids);
 

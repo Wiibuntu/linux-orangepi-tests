@@ -724,6 +724,10 @@ static const struct v4l2_ioctl_ops deinterlace_ioctl_ops = {
 /*
  * Queue operations
  */
+struct vb2_dc_conf {
+	struct device           *dev;
+};
+
 static int deinterlace_queue_setup(struct vb2_queue *vq,
 				unsigned int *nbuffers, unsigned int *nplanes,
 				unsigned int sizes[], struct device *alloc_devs[])
@@ -980,7 +984,7 @@ rel_dma:
 	return ret;
 }
 
-static void deinterlace_remove(struct platform_device *pdev)
+static int deinterlace_remove(struct platform_device *pdev)
 {
 	struct deinterlace_dev *pcdev = platform_get_drvdata(pdev);
 
@@ -989,11 +993,13 @@ static void deinterlace_remove(struct platform_device *pdev)
 	video_unregister_device(&pcdev->vfd);
 	v4l2_device_unregister(&pcdev->v4l2_dev);
 	dma_release_channel(pcdev->dma_chan);
+
+	return 0;
 }
 
 static struct platform_driver deinterlace_pdrv = {
 	.probe		= deinterlace_probe,
-	.remove_new	= deinterlace_remove,
+	.remove		= deinterlace_remove,
 	.driver		= {
 		.name	= MEM2MEM_NAME,
 	},

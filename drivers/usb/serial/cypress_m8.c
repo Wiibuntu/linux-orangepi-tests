@@ -36,7 +36,7 @@
 #include <linux/kfifo.h>
 #include <linux/delay.h>
 #include <linux/uaccess.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "cypress_m8.h"
 
@@ -125,8 +125,7 @@ static void cypress_send(struct usb_serial_port *port);
 static unsigned int cypress_write_room(struct tty_struct *tty);
 static void cypress_earthmate_init_termios(struct tty_struct *tty);
 static void cypress_set_termios(struct tty_struct *tty,
-				struct usb_serial_port *port,
-				const struct ktermios *old_termios);
+			struct usb_serial_port *port, struct ktermios *old);
 static int  cypress_tiocmget(struct tty_struct *tty);
 static int  cypress_tiocmset(struct tty_struct *tty,
 			unsigned int set, unsigned int clear);
@@ -139,6 +138,7 @@ static void cypress_write_int_callback(struct urb *urb);
 
 static struct usb_serial_driver cypress_earthmate_device = {
 	.driver = {
+		.owner =		THIS_MODULE,
 		.name =			"earthmate",
 	},
 	.description =			"DeLorme Earthmate USB",
@@ -165,6 +165,7 @@ static struct usb_serial_driver cypress_earthmate_device = {
 
 static struct usb_serial_driver cypress_hidcom_device = {
 	.driver = {
+		.owner =		THIS_MODULE,
 		.name =			"cyphidcom",
 	},
 	.description =			"HID->COM RS232 Adapter",
@@ -190,6 +191,7 @@ static struct usb_serial_driver cypress_hidcom_device = {
 
 static struct usb_serial_driver cypress_ca42v2_device = {
 	.driver = {
+		.owner =		THIS_MODULE,
 		.name =			"nokiaca42v2",
 	},
 	.description =			"Nokia CA-42 V2 Adapter",
@@ -254,7 +256,7 @@ static int analyze_baud_rate(struct usb_serial_port *port, speed_t new_rate)
 		/*
 		 * Mike Isely <isely@pobox.com> 2-Feb-2008: The
 		 * Cypress app note that describes this mechanism
-		 * states that the low-speed part can't handle more
+		 * states the the low-speed part can't handle more
 		 * than 800 bytes/sec, in which case 4800 baud is the
 		 * safest speed for a part like that.
 		 */
@@ -857,8 +859,7 @@ static void cypress_earthmate_init_termios(struct tty_struct *tty)
 }
 
 static void cypress_set_termios(struct tty_struct *tty,
-				struct usb_serial_port *port,
-				const struct ktermios *old_termios)
+	struct usb_serial_port *port, struct ktermios *old_termios)
 {
 	struct cypress_private *priv = usb_get_serial_port_data(port);
 	struct device *dev = &port->dev;

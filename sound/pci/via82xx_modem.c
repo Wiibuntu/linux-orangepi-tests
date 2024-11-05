@@ -1008,6 +1008,7 @@ static int snd_via82xx_chip_init(struct via82xx_modem *chip)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 /*
  * power management
  */
@@ -1041,7 +1042,11 @@ static int snd_via82xx_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(snd_via82xx_pm, snd_via82xx_suspend, snd_via82xx_resume);
+static SIMPLE_DEV_PM_OPS(snd_via82xx_pm, snd_via82xx_suspend, snd_via82xx_resume);
+#define SND_VIA82XX_PM_OPS	&snd_via82xx_pm
+#else
+#define SND_VIA82XX_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
 
 static void snd_via82xx_free(struct snd_card *card)
 {
@@ -1098,8 +1103,8 @@ static int snd_via82xx_create(struct snd_card *card,
 }
 
 
-static int __snd_via82xx_probe(struct pci_dev *pci,
-			       const struct pci_device_id *pci_id)
+static int snd_via82xx_probe(struct pci_dev *pci,
+			     const struct pci_device_id *pci_id)
 {
 	struct snd_card *card;
 	struct via82xx_modem *chip;
@@ -1152,18 +1157,12 @@ static int __snd_via82xx_probe(struct pci_dev *pci,
 	return 0;
 }
 
-static int snd_via82xx_probe(struct pci_dev *pci,
-			     const struct pci_device_id *pci_id)
-{
-	return snd_card_free_on_error(&pci->dev, __snd_via82xx_probe(pci, pci_id));
-}
-
 static struct pci_driver via82xx_modem_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = snd_via82xx_modem_ids,
 	.probe = snd_via82xx_probe,
 	.driver = {
-		.pm = &snd_via82xx_pm,
+		.pm = SND_VIA82XX_PM_OPS,
 	},
 };
 

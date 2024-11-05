@@ -23,6 +23,8 @@
  *
  */
 
+#include <linux/slab.h>
+
 #include "dm_services.h"
 
 #include "include/gpio_interface.h"
@@ -127,7 +129,7 @@ void dal_hw_hpd_init(
 	enum gpio_id id,
 	uint32_t en)
 {
-	if (en > GPIO_DDC_LINE_MAX) {
+	if ((en < GPIO_DDC_LINE_MIN) || (en > GPIO_DDC_LINE_MAX)) {
 		ASSERT_CRITICAL(false);
 		*hw_hpd = NULL;
 	}

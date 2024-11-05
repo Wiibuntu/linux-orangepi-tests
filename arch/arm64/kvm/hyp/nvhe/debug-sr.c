@@ -27,16 +27,17 @@ static void __debug_save_spe(u64 *pmscr_el1)
 	 * Check if the host is actually using it ?
 	 */
 	reg = read_sysreg_s(SYS_PMBLIMITR_EL1);
-	if (!(reg & BIT(PMBLIMITR_EL1_E_SHIFT)))
+	if (!(reg & BIT(SYS_PMBLIMITR_EL1_E_SHIFT)))
 		return;
 
 	/* Yes; save the control register and disable data generation */
-	*pmscr_el1 = read_sysreg_el1(SYS_PMSCR);
-	write_sysreg_el1(0, SYS_PMSCR);
+	*pmscr_el1 = read_sysreg_s(SYS_PMSCR_EL1);
+	write_sysreg_s(0, SYS_PMSCR_EL1);
 	isb();
 
 	/* Now drain all buffered data to memory */
 	psb_csync();
+	dsb(nsh);
 }
 
 static void __debug_restore_spe(u64 pmscr_el1)
@@ -48,7 +49,7 @@ static void __debug_restore_spe(u64 pmscr_el1)
 	isb();
 
 	/* Re-enable data generation */
-	write_sysreg_el1(pmscr_el1, SYS_PMSCR);
+	write_sysreg_s(pmscr_el1, SYS_PMSCR_EL1);
 }
 
 static void __debug_save_trace(u64 *trfcr_el1)
@@ -56,18 +57,19 @@ static void __debug_save_trace(u64 *trfcr_el1)
 	*trfcr_el1 = 0;
 
 	/* Check if the TRBE is enabled */
-	if (!(read_sysreg_s(SYS_TRBLIMITR_EL1) & TRBLIMITR_EL1_E))
+	if (!(read_sysreg_s(SYS_TRBLIMITR_EL1) & TRBLIMITR_ENABLE))
 		return;
 	/*
 	 * Prohibit trace generation while we are in guest.
 	 * Since access to TRFCR_EL1 is trapped, the guest can't
 	 * modify the filtering set by the host.
 	 */
-	*trfcr_el1 = read_sysreg_el1(SYS_TRFCR);
-	write_sysreg_el1(0, SYS_TRFCR);
+	*trfcr_el1 = read_sysreg_s(SYS_TRFCR_EL1);
+	write_sysreg_s(0, SYS_TRFCR_EL1);
 	isb();
 	/* Drain the trace buffer to memory */
 	tsb_csync();
+	dsb(nsh);
 }
 
 static void __debug_restore_trace(u64 trfcr_el1)
@@ -76,17 +78,17 @@ static void __debug_restore_trace(u64 trfcr_el1)
 		return;
 
 	/* Restore trace filter controls */
-	write_sysreg_el1(trfcr_el1, SYS_TRFCR);
+	write_sysreg_s(trfcr_el1, SYS_TRFCR_EL1);
 }
 
 void __debug_save_host_buffers_nvhe(struct kvm_vcpu *vcpu)
 {
 	/* Disable and flush SPE data generation */
-	if (vcpu_get_flag(vcpu, DEBUG_STATE_SAVE_SPE))
-		__debug_save_spe(host_data_ptr(host_debug_state.pmscr_el1));
+	if (vcpu->arch.flags & KVM_ARM64_DEBUG_STATE_SAVE_SPE)
+		__debug_save_spe(&vcpu->arch.host_debug_state.pmscr_el1);
 	/* Disable and flush Self-Hosted Trace generation */
-	if (vcpu_get_flag(vcpu, DEBUG_STATE_SAVE_TRBE))
-		__debug_save_trace(host_data_ptr(host_debug_state.trfcr_el1));
+	if (vcpu->arch.flags & KVM_ARM64_DEBUG_STATE_SAVE_TRBE)
+		__debug_save_trace(&vcpu->arch.host_debug_state.trfcr_el1);
 }
 
 void __debug_switch_to_guest(struct kvm_vcpu *vcpu)
@@ -96,10 +98,10 @@ void __debug_switch_to_guest(struct kvm_vcpu *vcpu)
 
 void __debug_restore_host_buffers_nvhe(struct kvm_vcpu *vcpu)
 {
-	if (vcpu_get_flag(vcpu, DEBUG_STATE_SAVE_SPE))
-		__debug_restore_spe(*host_data_ptr(host_debug_state.pmscr_el1));
-	if (vcpu_get_flag(vcpu, DEBUG_STATE_SAVE_TRBE))
-		__debug_restore_trace(*host_data_ptr(host_debug_state.trfcr_el1));
+	if (vcpu->arch.flags & KVM_ARM64_DEBUG_STATE_SAVE_SPE)
+		__debug_restore_spe(vcpu->arch.host_debug_state.pmscr_el1);
+	if (vcpu->arch.flags & KVM_ARM64_DEBUG_STATE_SAVE_TRBE)
+		__debug_restore_trace(vcpu->arch.host_debug_state.trfcr_el1);
 }
 
 void __debug_switch_to_host(struct kvm_vcpu *vcpu)

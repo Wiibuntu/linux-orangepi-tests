@@ -558,6 +558,7 @@ err_unmap:
 err_release_regions:
 	pci_release_regions(dev);
 err_disable_dev:
+	pci_clear_master(dev);
 	pci_disable_device(dev);
 
 	return err;
@@ -576,6 +577,7 @@ static void ec_bhf_remove(struct pci_dev *dev)
 	free_netdev(net_dev);
 
 	pci_release_regions(dev);
+	pci_clear_master(dev);
 	pci_disable_device(dev);
 }
 
@@ -590,6 +592,5 @@ module_pci_driver(pci_driver);
 module_param(polling_frequency, long, 0444);
 MODULE_PARM_DESC(polling_frequency, "Polling timer frequency in ns");
 
-MODULE_DESCRIPTION("Beckhoff CX5020 EtherCAT Ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Dariusz Marcinkiewicz <reksio@newterm.pl>");

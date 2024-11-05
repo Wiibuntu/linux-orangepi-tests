@@ -275,8 +275,7 @@ struct input_handle;
  *	it may not sleep
  * @events: event sequence handler. This method is being called by
  *	input core with interrupts disabled and dev->event_lock
- *	spinlock held and so it may not sleep. The method must return
- *	number of events passed to it.
+ *	spinlock held and so it may not sleep
  * @filter: similar to @event; separates normal event handlers from
  *	"filters".
  * @match: called after comparing device's id with handler's id_table
@@ -313,8 +312,8 @@ struct input_handler {
 	void *private;
 
 	void (*event)(struct input_handle *handle, unsigned int type, unsigned int code, int value);
-	unsigned int (*events)(struct input_handle *handle,
-			       struct input_value *vals, unsigned int count);
+	void (*events)(struct input_handle *handle,
+		       const struct input_value *vals, unsigned int count);
 	bool (*filter)(struct input_handle *handle, unsigned int type, unsigned int code, int value);
 	bool (*match)(struct input_handler *handler, struct input_dev *dev);
 	int (*connect)(struct input_handler *handler, struct input_dev *dev, const struct input_device_id *id);
@@ -476,8 +475,6 @@ static inline void input_set_events_per_packet(struct input_dev *dev, int n_even
 void input_alloc_absinfo(struct input_dev *dev);
 void input_set_abs_params(struct input_dev *dev, unsigned int axis,
 			  int min, int max, int fuzz, int flat);
-void input_copy_abs(struct input_dev *dst, unsigned int dst_axis,
-		    const struct input_dev *src, unsigned int src_axis);
 
 #define INPUT_GENERATE_ABS_ACCESSORS(_suffix, _item)			\
 static inline int input_abs_get_##_suffix(struct input_dev *dev,	\
@@ -515,7 +512,7 @@ void input_enable_softrepeat(struct input_dev *dev, int delay, int period);
 
 bool input_device_enabled(struct input_dev *dev);
 
-extern const struct class input_class;
+extern struct class input_class;
 
 /**
  * struct ff_device - force-feedback part of an input device
@@ -563,7 +560,7 @@ struct ff_device {
 
 	int max_effects;
 	struct ff_effect *effects;
-	struct file *effect_owners[] __counted_by(max_effects);
+	struct file *effect_owners[];
 };
 
 int input_ff_create(struct input_dev *dev, unsigned int max_effects);

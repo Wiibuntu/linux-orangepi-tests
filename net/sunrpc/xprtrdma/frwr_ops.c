@@ -45,6 +45,10 @@
 #include "xprt_rdma.h"
 #include <trace/events/rpcrdma.h>
 
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
+# define RPCDBG_FACILITY	RPCDBG_TRANS
+#endif
+
 static void frwr_cid_init(struct rpcrdma_ep *ep,
 			  struct rpcrdma_mr *mr)
 {
@@ -54,7 +58,7 @@ static void frwr_cid_init(struct rpcrdma_ep *ep,
 	cid->ci_completion_id = mr->mr_ibmr->res.id;
 }
 
-static void frwr_mr_unmap(struct rpcrdma_mr *mr)
+static void frwr_mr_unmap(struct rpcrdma_xprt *r_xprt, struct rpcrdma_mr *mr)
 {
 	if (mr->mr_device) {
 		trace_xprtrdma_mr_unmap(mr);
@@ -73,7 +77,7 @@ void frwr_mr_release(struct rpcrdma_mr *mr)
 {
 	int rc;
 
-	frwr_mr_unmap(mr);
+	frwr_mr_unmap(mr->mr_xprt, mr);
 
 	rc = ib_dereg_mr(mr->mr_ibmr);
 	if (rc)
@@ -84,7 +88,7 @@ void frwr_mr_release(struct rpcrdma_mr *mr)
 
 static void frwr_mr_put(struct rpcrdma_mr *mr)
 {
-	frwr_mr_unmap(mr);
+	frwr_mr_unmap(mr->mr_xprt, mr);
 
 	/* The MR is returned to the req's MR free list instead
 	 * of to the xprt's MR free list. No spinlock is needed.
@@ -92,8 +96,7 @@ static void frwr_mr_put(struct rpcrdma_mr *mr)
 	rpcrdma_mr_push(mr, &mr->mr_req->rl_free_mrs);
 }
 
-/**
- * frwr_reset - Place MRs back on @req's free list
+/* frwr_reset - Place MRs back on the free list
  * @req: request to reset
  *
  * Used after a failed marshal. For FRWR, this means the MRs
@@ -125,15 +128,15 @@ int frwr_mr_init(struct rpcrdma_xprt *r_xprt, struct rpcrdma_mr *mr)
 	unsigned int depth = ep->re_max_fr_depth;
 	struct scatterlist *sg;
 	struct ib_mr *frmr;
-
-	sg = kcalloc_node(depth, sizeof(*sg), XPRTRDMA_GFP_FLAGS,
-			  ibdev_to_node(ep->re_id->device));
-	if (!sg)
-		return -ENOMEM;
+	int rc;
 
 	frmr = ib_alloc_mr(ep->re_pd, ep->re_mrtype, depth);
 	if (IS_ERR(frmr))
 		goto out_mr_err;
+
+	sg = kmalloc_array(depth, sizeof(*sg), GFP_NOFS);
+	if (!sg)
+		goto out_list_err;
 
 	mr->mr_xprt = r_xprt;
 	mr->mr_ibmr = frmr;
@@ -147,9 +150,13 @@ int frwr_mr_init(struct rpcrdma_xprt *r_xprt, struct rpcrdma_mr *mr)
 	return 0;
 
 out_mr_err:
-	kfree(sg);
-	trace_xprtrdma_frwr_alloc(mr, PTR_ERR(frmr));
-	return PTR_ERR(frmr);
+	rc = PTR_ERR(frmr);
+	trace_xprtrdma_frwr_alloc(mr, rc);
+	return rc;
+
+out_list_err:
+	ib_dereg_mr(frmr);
+	return -ENOMEM;
 }
 
 /**
@@ -192,7 +199,7 @@ int frwr_query_device(struct rpcrdma_ep *ep, const struct ib_device *device)
 	ep->re_attr.cap.max_recv_sge = 1;
 
 	ep->re_mrtype = IB_MR_TYPE_MEM_REG;
-	if (attrs->kernel_cap_flags & IBK_SG_GAPS_REG)
+	if (attrs->device_cap_flags & IB_DEVICE_SG_GAPS_REG)
 		ep->re_mrtype = IB_MR_TYPE_SG_GAPS;
 
 	/* Quirk: Some devices advertise a large max_fast_reg_page_list_len

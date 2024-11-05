@@ -15,8 +15,6 @@
 
 #include "ctl.h"
 
-#define CREATE_TRACE_POINTS
-#include "trace.h"
 
 #define TB_CTL_RX_PKG_COUNT	10
 #define TB_CTL_RETRIES		4
@@ -34,7 +32,6 @@
  * @timeout_msec: Default timeout for non-raw control messages
  * @callback: Callback called when hotplug message is received
  * @callback_data: Data passed to @callback
- * @index: Domain number. This will be output with the trace record.
  */
 struct tb_ctl {
 	struct tb_nhi *nhi;
@@ -50,8 +47,6 @@ struct tb_ctl {
 	int timeout_msec;
 	event_cb callback;
 	void *callback_data;
-
-	int index;
 };
 
 
@@ -163,20 +158,21 @@ static bool tb_cfg_request_is_active(struct tb_cfg_request *req)
 static struct tb_cfg_request *
 tb_cfg_request_find(struct tb_ctl *ctl, struct ctl_pkg *pkg)
 {
-	struct tb_cfg_request *req = NULL, *iter;
+	struct tb_cfg_request *req;
+	bool found = false;
 
 	mutex_lock(&pkg->ctl->request_queue_lock);
-	list_for_each_entry(iter, &pkg->ctl->request_queue, list) {
-		tb_cfg_request_get(iter);
-		if (iter->match(iter, pkg)) {
-			req = iter;
+	list_for_each_entry(req, &pkg->ctl->request_queue, list) {
+		tb_cfg_request_get(req);
+		if (req->match(req, pkg)) {
+			found = true;
 			break;
 		}
-		tb_cfg_request_put(iter);
+		tb_cfg_request_put(req);
 	}
 	mutex_unlock(&pkg->ctl->request_queue_lock);
 
-	return req;
+	return found ? req : NULL;
 }
 
 /* utility functions */
@@ -235,6 +231,7 @@ static int check_config_address(struct tb_cfg_address addr,
 static struct tb_cfg_result decode_error(const struct ctl_pkg *response)
 {
 	struct cfg_error_pkg *pkg = response->buffer;
+	struct tb_ctl *ctl = response->ctl;
 	struct tb_cfg_result res = { 0 };
 	res.response_route = tb_cfg_get_route(&pkg->header);
 	res.response_port = 0;
@@ -242,6 +239,13 @@ static struct tb_cfg_result decode_error(const struct ctl_pkg *response)
 			       tb_cfg_get_route(&pkg->header));
 	if (res.err)
 		return res;
+
+	if (pkg->zero1)
+		tb_ctl_warn(ctl, "pkg->zero1 is %#x\n", pkg->zero1);
+	if (pkg->zero2)
+		tb_ctl_warn(ctl, "pkg->zero2 is %#x\n", pkg->zero2);
+	if (pkg->zero3)
+		tb_ctl_warn(ctl, "pkg->zero3 is %#x\n", pkg->zero3);
 
 	res.err = 1;
 	res.tb_error = pkg->error;
@@ -374,9 +378,6 @@ static int tb_ctl_tx(struct tb_ctl *ctl, const void *data, size_t len,
 	pkg->frame.size = len + 4;
 	pkg->frame.sof = type;
 	pkg->frame.eof = type;
-
-	trace_tb_tx(ctl->index, type, data, len);
-
 	cpu_to_be32_array(pkg->buffer, data, len / 4);
 	*(__be32 *) (pkg->buffer + len) = tb_crc(pkg->buffer, len);
 
@@ -392,7 +393,6 @@ static int tb_ctl_tx(struct tb_ctl *ctl, const void *data, size_t len,
 static bool tb_ctl_handle_event(struct tb_ctl *ctl, enum tb_cfg_pkg_type type,
 				struct ctl_pkg *pkg, size_t size)
 {
-	trace_tb_event(ctl->index, type, pkg->buffer, size);
 	return ctl->callback(ctl->callback_data, type, pkg->buffer, size);
 }
 
@@ -408,7 +408,7 @@ static void tb_ctl_rx_submit(struct ctl_pkg *pkg)
 
 static int tb_async_error(const struct ctl_pkg *pkg)
 {
-	const struct cfg_error_pkg *error = pkg->buffer;
+	const struct cfg_error_pkg *error = (const struct cfg_error_pkg *)pkg;
 
 	if (pkg->frame.eof != TB_CFG_PKG_ERROR)
 		return false;
@@ -417,14 +417,6 @@ static int tb_async_error(const struct ctl_pkg *pkg)
 	case TB_CFG_ERROR_LINK_ERROR:
 	case TB_CFG_ERROR_HEC_ERROR_DETECTED:
 	case TB_CFG_ERROR_FLOW_CONTROL_ERROR:
-	case TB_CFG_ERROR_DP_BW:
-	case TB_CFG_ERROR_ROP_CMPLT:
-	case TB_CFG_ERROR_POP_CMPLT:
-	case TB_CFG_ERROR_PCIE_WAKE:
-	case TB_CFG_ERROR_DP_CON_CHANGE:
-	case TB_CFG_ERROR_DPTX_DISCOVERY:
-	case TB_CFG_ERROR_LINK_RECOVERY:
-	case TB_CFG_ERROR_ASYM_LINK:
 		return true;
 
 	default:
@@ -498,9 +490,6 @@ static void tb_ctl_rx_callback(struct tb_ring *ring, struct ring_frame *frame,
 	 * triggered from messing with the active requests.
 	 */
 	req = tb_cfg_request_find(pkg->ctl, pkg);
-
-	trace_tb_rx(pkg->ctl->index, frame->eof, pkg->buffer, frame->size, !req);
-
 	if (req) {
 		if (req->copy(req, pkg))
 			schedule_work(&req->work);
@@ -626,7 +615,6 @@ struct tb_cfg_result tb_cfg_request_sync(struct tb_ctl *ctl,
 /**
  * tb_ctl_alloc() - allocate a control channel
  * @nhi: Pointer to NHI
- * @index: Domain number
  * @timeout_msec: Default timeout used with non-raw control messages
  * @cb: Callback called for plug events
  * @cb_data: Data passed to @cb
@@ -635,16 +623,14 @@ struct tb_cfg_result tb_cfg_request_sync(struct tb_ctl *ctl,
  *
  * Return: Returns a pointer on success or NULL on failure.
  */
-struct tb_ctl *tb_ctl_alloc(struct tb_nhi *nhi, int index, int timeout_msec,
-			    event_cb cb, void *cb_data)
+struct tb_ctl *tb_ctl_alloc(struct tb_nhi *nhi, int timeout_msec, event_cb cb,
+			    void *cb_data)
 {
 	int i;
 	struct tb_ctl *ctl = kzalloc(sizeof(*ctl), GFP_KERNEL);
 	if (!ctl)
 		return NULL;
-
 	ctl->nhi = nhi;
-	ctl->index = index;
 	ctl->timeout_msec = timeout_msec;
 	ctl->callback = cb;
 	ctl->callback_data = cb_data;
@@ -709,7 +695,7 @@ void tb_ctl_free(struct tb_ctl *ctl)
 }
 
 /**
- * tb_ctl_start() - start/resume the control channel
+ * tb_cfg_start() - start/resume the control channel
  * @ctl: Control channel to start
  */
 void tb_ctl_start(struct tb_ctl *ctl)
@@ -725,7 +711,7 @@ void tb_ctl_start(struct tb_ctl *ctl)
 }
 
 /**
- * tb_ctl_stop() - pause the control channel
+ * tb_ctrl_stop() - pause the control channel
  * @ctl: Control channel to stop
  *
  * All invocations of ctl->callback will have finished after this method
@@ -751,68 +737,6 @@ void tb_ctl_stop(struct tb_ctl *ctl)
 /* public interface, commands */
 
 /**
- * tb_cfg_ack_notification() - Ack notification
- * @ctl: Control channel to use
- * @route: Router that originated the event
- * @error: Pointer to the notification package
- *
- * Call this as response for non-plug notification to ack it. Returns
- * %0 on success or an error code on failure.
- */
-int tb_cfg_ack_notification(struct tb_ctl *ctl, u64 route,
-			    const struct cfg_error_pkg *error)
-{
-	struct cfg_ack_pkg pkg = {
-		.header = tb_cfg_make_header(route),
-	};
-	const char *name;
-
-	switch (error->error) {
-	case TB_CFG_ERROR_LINK_ERROR:
-		name = "link error";
-		break;
-	case TB_CFG_ERROR_HEC_ERROR_DETECTED:
-		name = "HEC error";
-		break;
-	case TB_CFG_ERROR_FLOW_CONTROL_ERROR:
-		name = "flow control error";
-		break;
-	case TB_CFG_ERROR_DP_BW:
-		name = "DP_BW";
-		break;
-	case TB_CFG_ERROR_ROP_CMPLT:
-		name = "router operation completion";
-		break;
-	case TB_CFG_ERROR_POP_CMPLT:
-		name = "port operation completion";
-		break;
-	case TB_CFG_ERROR_PCIE_WAKE:
-		name = "PCIe wake";
-		break;
-	case TB_CFG_ERROR_DP_CON_CHANGE:
-		name = "DP connector change";
-		break;
-	case TB_CFG_ERROR_DPTX_DISCOVERY:
-		name = "DPTX discovery";
-		break;
-	case TB_CFG_ERROR_LINK_RECOVERY:
-		name = "link recovery";
-		break;
-	case TB_CFG_ERROR_ASYM_LINK:
-		name = "asymmetric link";
-		break;
-	default:
-		name = "unknown";
-		break;
-	}
-
-	tb_ctl_dbg(ctl, "acking %s (%#x) notification on %llx\n", name,
-		   error->error, route);
-
-	return tb_ctl_tx(ctl, &pkg, sizeof(pkg), TB_CFG_PKG_NOTIFY_ACK);
-}
-
-/**
  * tb_cfg_ack_plug() - Ack hot plug/unplug event
  * @ctl: Control channel to use
  * @route: Router that originated the event
@@ -831,7 +755,7 @@ int tb_cfg_ack_plug(struct tb_ctl *ctl, u64 route, u32 port, bool unplug)
 		.pg = unplug ? TB_CFG_ERROR_PG_HOT_UNPLUG
 			     : TB_CFG_ERROR_PG_HOT_PLUG,
 	};
-	tb_ctl_dbg(ctl, "acking hot %splug event on %llx:%u\n",
+	tb_ctl_dbg(ctl, "acking hot %splug event on %llx:%x\n",
 		   unplug ? "un" : "", route, port);
 	return tb_ctl_tx(ctl, &pkg, sizeof(pkg), TB_CFG_PKG_ERROR);
 }
@@ -989,7 +913,7 @@ struct tb_cfg_result tb_cfg_read_raw(struct tb_ctl *ctl, void *buffer,
 }
 
 /**
- * tb_cfg_write_raw() - write from buffer into config space
+ * tb_cfg_write() - write from buffer into config space
  * @ctl: Pointer to the control channel
  * @buffer: Data to write
  * @route: Route string of the router
@@ -1076,7 +1000,7 @@ static int tb_cfg_get_error(struct tb_ctl *ctl, enum tb_cfg_space space,
 
 	if (res->tb_error == TB_CFG_ERROR_LOCK)
 		return -EACCES;
-	if (res->tb_error == TB_CFG_ERROR_PORT_NOT_CONNECTED)
+	else if (res->tb_error == TB_CFG_ERROR_PORT_NOT_CONNECTED)
 		return -ENOTCONN;
 
 	return -EIO;

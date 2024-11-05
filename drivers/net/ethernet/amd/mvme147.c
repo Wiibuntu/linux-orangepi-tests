@@ -74,7 +74,6 @@ static struct net_device * __init mvme147lance_probe(void)
 	static int called;
 	static const char name[] = "MVME147 LANCE";
 	struct m147lance_private *lp;
-	u8 macaddr[ETH_ALEN];
 	u_long *addr;
 	u_long address;
 	int err;
@@ -94,16 +93,19 @@ static struct net_device * __init mvme147lance_probe(void)
 
 	addr = (u_long *)ETHERNET_ADDRESS;
 	address = *addr;
-	macaddr[0] = 0x08;
-	macaddr[1] = 0x00;
-	macaddr[2] = 0x3e;
+	dev->dev_addr[0] = 0x08;
+	dev->dev_addr[1] = 0x00;
+	dev->dev_addr[2] = 0x3e;
 	address = address >> 8;
-	macaddr[5] = address&0xff;
+	dev->dev_addr[5] = address&0xff;
 	address = address >> 8;
-	macaddr[4] = address&0xff;
+	dev->dev_addr[4] = address&0xff;
 	address = address >> 8;
-	macaddr[3] = address&0xff;
-	eth_hw_addr_set(dev, macaddr);
+	dev->dev_addr[3] = address&0xff;
+
+	printk("%s: MVME147 at 0x%08lx, irq %d, Hardware Address %pM\n",
+	       dev->name, dev->base_addr, MVME147_LANCE_IRQ,
+	       dev->dev_addr);
 
 	lp = netdev_priv(dev);
 	lp->ram = __get_dma_pages(GFP_ATOMIC, 3);	/* 32K */
@@ -133,9 +135,6 @@ static struct net_device * __init mvme147lance_probe(void)
 		free_netdev(dev);
 		return ERR_PTR(err);
 	}
-
-	netdev_info(dev, "MVME147 at 0x%08lx, irq %d, Hardware Address %pM\n",
-		    dev->base_addr, MVME147_LANCE_IRQ, dev->dev_addr);
 
 	return dev;
 }
@@ -177,7 +176,6 @@ static int m147lance_close(struct net_device *dev)
 	return 0;
 }
 
-MODULE_DESCRIPTION("MVME147 LANCE Ethernet driver");
 MODULE_LICENSE("GPL");
 
 static struct net_device *dev_mvme147_lance;

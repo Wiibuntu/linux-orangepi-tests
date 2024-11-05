@@ -603,9 +603,9 @@ static void qedi_scsi_completion(struct qedi_ctx *qedi,
 		goto error;
 	}
 
-	if (!iscsi_cmd(sc_cmd)->task) {
+	if (!sc_cmd->SCp.ptr) {
 		QEDI_WARN(&qedi->dbg_ctx,
-			  "NULL task pointer, returned in another context.\n");
+			  "SCp.ptr is NULL, returned in another context.\n");
 		goto error;
 	}
 

@@ -10,7 +10,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
@@ -19,7 +18,7 @@
 #include <linux/init.h>
 #include <linux/leds.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
+#include <linux/of.h>
 #include <linux/regulator/consumer.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
@@ -157,6 +156,7 @@ static int cm3605_probe(struct platform_device *pdev)
 	struct cm3605 *cm3605;
 	struct iio_dev *indio_dev;
 	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node;
 	enum iio_chan_type ch_type;
 	u32 rset;
 	int irq;
@@ -171,7 +171,7 @@ static int cm3605_probe(struct platform_device *pdev)
 	cm3605->dev = dev;
 	cm3605->dir = IIO_EV_DIR_FALLING;
 
-	ret = device_property_read_u32(dev, "capella,aset-resistance-ohms", &rset);
+	ret = of_property_read_u32(np, "capella,aset-resistance-ohms", &rset);
 	if (ret) {
 		dev_info(dev, "no RSET specified, assuming 100K\n");
 		rset = 100000;
@@ -226,10 +226,8 @@ static int cm3605_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		ret = irq;
-		goto out_disable_aset;
-	}
+	if (irq < 0)
+		return dev_err_probe(dev, irq, "failed to get irq\n");
 
 	ret = devm_request_threaded_irq(dev, irq, cm3605_prox_irq,
 					NULL, 0, "cm3605", indio_dev);
@@ -266,7 +264,7 @@ out_disable_vdd:
 	return ret;
 }
 
-static void cm3605_remove(struct platform_device *pdev)
+static int cm3605_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct cm3605 *cm3605 = iio_priv(indio_dev);
@@ -276,9 +274,11 @@ static void cm3605_remove(struct platform_device *pdev)
 	gpiod_set_value_cansleep(cm3605->aset, 0);
 	iio_device_unregister(indio_dev);
 	regulator_disable(cm3605->vdd);
+
+	return 0;
 }
 
-static int cm3605_pm_suspend(struct device *dev)
+static int __maybe_unused cm3605_pm_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct cm3605 *cm3605 = iio_priv(indio_dev);
@@ -289,7 +289,7 @@ static int cm3605_pm_suspend(struct device *dev)
 	return 0;
 }
 
-static int cm3605_pm_resume(struct device *dev)
+static int __maybe_unused cm3605_pm_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct cm3605 *cm3605 = iio_priv(indio_dev);
@@ -302,8 +302,11 @@ static int cm3605_pm_resume(struct device *dev)
 
 	return 0;
 }
-static DEFINE_SIMPLE_DEV_PM_OPS(cm3605_dev_pm_ops, cm3605_pm_suspend,
-				cm3605_pm_resume);
+
+static const struct dev_pm_ops cm3605_dev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(cm3605_pm_suspend,
+				cm3605_pm_resume)
+};
 
 static const struct of_device_id cm3605_of_match[] = {
 	{.compatible = "capella,cm3605"},
@@ -315,10 +318,10 @@ static struct platform_driver cm3605_driver = {
 	.driver = {
 		.name = "cm3605",
 		.of_match_table = cm3605_of_match,
-		.pm = pm_sleep_ptr(&cm3605_dev_pm_ops),
+		.pm = &cm3605_dev_pm_ops,
 	},
 	.probe = cm3605_probe,
-	.remove_new = cm3605_remove,
+	.remove = cm3605_remove,
 };
 module_platform_driver(cm3605_driver);
 

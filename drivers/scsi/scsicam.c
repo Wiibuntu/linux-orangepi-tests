@@ -14,11 +14,12 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
+#include <linux/genhd.h>
 #include <linux/kernel.h>
 #include <linux/blkdev.h>
 #include <linux/pagemap.h>
 #include <linux/msdos_partition.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <scsi/scsicam.h>
 
@@ -32,16 +33,17 @@
  */
 unsigned char *scsi_bios_ptable(struct block_device *dev)
 {
-	struct address_space *mapping = bdev_whole(dev)->bd_mapping;
+	struct address_space *mapping = bdev_whole(dev)->bd_inode->i_mapping;
 	unsigned char *res = NULL;
-	struct folio *folio;
+	struct page *page;
 
-	folio = read_mapping_folio(mapping, 0, NULL);
-	if (IS_ERR(folio))
+	page = read_mapping_page(mapping, 0, NULL);
+	if (IS_ERR(page))
 		return NULL;
 
-	res = kmemdup(folio_address(folio) + 0x1be, 66, GFP_KERNEL);
-	folio_put(folio);
+	if (!PageError(page))
+		res = kmemdup(page_address(page) + 0x1be, 66, GFP_KERNEL);
+	put_page(page);
 	return res;
 }
 EXPORT_SYMBOL(scsi_bios_ptable);

@@ -8,7 +8,7 @@
 #include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/sched.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "common.h"
 
@@ -111,8 +111,7 @@ static int p8_i2c_occ_putscom_be(struct i2c_client *client, u32 address,
 				      be32_to_cpu(data1));
 }
 
-static int p8_i2c_occ_send_cmd(struct occ *occ, u8 *cmd, size_t len,
-			       void *resp, size_t resp_len)
+static int p8_i2c_occ_send_cmd(struct occ *occ, u8 *cmd, size_t len)
 {
 	int i, rc;
 	unsigned long start;
@@ -121,7 +120,7 @@ static int p8_i2c_occ_send_cmd(struct occ *occ, u8 *cmd, size_t len,
 	const long wait_time = msecs_to_jiffies(OCC_CMD_IN_PRG_WAIT_MS);
 	struct p8_i2c_occ *ctx = to_p8_i2c_occ(occ);
 	struct i2c_client *client = ctx->client;
-	struct occ_response *or = (struct occ_response *)resp;
+	struct occ_response *resp = &occ->resp;
 
 	start = jiffies;
 
@@ -152,7 +151,7 @@ static int p8_i2c_occ_send_cmd(struct occ *occ, u8 *cmd, size_t len,
 			return rc;
 
 		/* wait for OCC */
-		if (or->return_status == OCC_RESP_CMD_IN_PRG) {
+		if (resp->return_status == OCC_RESP_CMD_IN_PRG) {
 			rc = -EALREADY;
 
 			if (time_after(jiffies, start + timeout))
@@ -164,7 +163,7 @@ static int p8_i2c_occ_send_cmd(struct occ *occ, u8 *cmd, size_t len,
 	} while (rc);
 
 	/* check the OCC response */
-	switch (or->return_status) {
+	switch (resp->return_status) {
 	case OCC_RESP_CMD_IN_PRG:
 		rc = -ETIMEDOUT;
 		break;
@@ -193,8 +192,8 @@ static int p8_i2c_occ_send_cmd(struct occ *occ, u8 *cmd, size_t len,
 	if (rc < 0)
 		return rc;
 
-	data_length = get_unaligned_be16(&or->data_length);
-	if ((data_length + 7) > resp_len)
+	data_length = get_unaligned_be16(&resp->data_length);
+	if (data_length > OCC_RESP_DATA_BYTES)
 		return -EMSGSIZE;
 
 	/* fetch the rest of the response data */
@@ -224,14 +223,16 @@ static int p8_i2c_occ_probe(struct i2c_client *client)
 	occ->poll_cmd_data = 0x10;		/* P8 OCC poll data */
 	occ->send_cmd = p8_i2c_occ_send_cmd;
 
-	return occ_setup(occ);
+	return occ_setup(occ, "p8_occ");
 }
 
-static void p8_i2c_occ_remove(struct i2c_client *client)
+static int p8_i2c_occ_remove(struct i2c_client *client)
 {
 	struct occ *occ = dev_get_drvdata(&client->dev);
 
 	occ_shutdown(occ);
+
+	return 0;
 }
 
 static const struct of_device_id p8_i2c_occ_of_match[] = {
@@ -241,11 +242,12 @@ static const struct of_device_id p8_i2c_occ_of_match[] = {
 MODULE_DEVICE_TABLE(of, p8_i2c_occ_of_match);
 
 static struct i2c_driver p8_i2c_occ_driver = {
+	.class = I2C_CLASS_HWMON,
 	.driver = {
 		.name = "occ-hwmon",
 		.of_match_table = p8_i2c_occ_of_match,
 	},
-	.probe = p8_i2c_occ_probe,
+	.probe_new = p8_i2c_occ_probe,
 	.remove = p8_i2c_occ_remove,
 };
 

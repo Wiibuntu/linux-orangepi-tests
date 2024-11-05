@@ -53,7 +53,6 @@ struct snd_ctl_led_ctl {
 
 static DEFINE_MUTEX(snd_ctl_led_mutex);
 static bool snd_ctl_led_card_valid[SNDRV_CARDS];
-static struct led_trigger *snd_ctl_ledtrig_audio[NUM_AUDIO_LEDS];
 static struct snd_ctl_led snd_ctl_leds[MAX_LED] = {
 	{
 		.name = "speaker",
@@ -148,38 +147,37 @@ static void snd_ctl_led_set_state(struct snd_card *card, unsigned int access,
 		return;
 	route = -1;
 	found = false;
-	scoped_guard(mutex, &snd_ctl_led_mutex) {
-		/* the card may not be registered (active) at this point */
-		if (card && !snd_ctl_led_card_valid[card->number])
-			return;
-		list_for_each_entry(lctl, &led->controls, list) {
-			if (lctl->kctl == kctl && lctl->index_offset == ioff)
-				found = true;
+	mutex_lock(&snd_ctl_led_mutex);
+	/* the card may not be registered (active) at this point */
+	if (card && !snd_ctl_led_card_valid[card->number]) {
+		mutex_unlock(&snd_ctl_led_mutex);
+		return;
+	}
+	list_for_each_entry(lctl, &led->controls, list) {
+		if (lctl->kctl == kctl && lctl->index_offset == ioff)
+			found = true;
+		UPDATE_ROUTE(route, snd_ctl_led_get(lctl));
+	}
+	if (!found && kctl && card) {
+		lctl = kzalloc(sizeof(*lctl), GFP_KERNEL);
+		if (lctl) {
+			lctl->card = card;
+			lctl->access = access;
+			lctl->kctl = kctl;
+			lctl->index_offset = ioff;
+			list_add(&lctl->list, &led->controls);
 			UPDATE_ROUTE(route, snd_ctl_led_get(lctl));
 		}
-		if (!found && kctl && card) {
-			lctl = kzalloc(sizeof(*lctl), GFP_KERNEL);
-			if (lctl) {
-				lctl->card = card;
-				lctl->access = access;
-				lctl->kctl = kctl;
-				lctl->index_offset = ioff;
-				list_add(&lctl->list, &led->controls);
-				UPDATE_ROUTE(route, snd_ctl_led_get(lctl));
-			}
-		}
 	}
+	mutex_unlock(&snd_ctl_led_mutex);
 	switch (led->mode) {
 	case MODE_OFF:		route = 1; break;
 	case MODE_ON:		route = 0; break;
 	case MODE_FOLLOW_ROUTE:	if (route >= 0) route ^= 1; break;
 	case MODE_FOLLOW_MUTE:	/* noop */ break;
 	}
-	if (route >= 0) {
-		struct led_trigger *trig = snd_ctl_ledtrig_audio[led->trigger_type];
-
-		led_trigger_event(trig, route ? LED_OFF : LED_ON);
-	}
+	if (route >= 0)
+		ledtrig_audio_set(led->trigger_type, route ? LED_OFF : LED_ON);
 }
 
 static struct snd_ctl_led_ctl *snd_ctl_led_find(struct snd_kcontrol *kctl, unsigned int ioff)
@@ -203,13 +201,14 @@ static unsigned int snd_ctl_led_remove(struct snd_kcontrol *kctl, unsigned int i
 	struct snd_ctl_led_ctl *lctl;
 	unsigned int ret = 0;
 
-	guard(mutex)(&snd_ctl_led_mutex);
+	mutex_lock(&snd_ctl_led_mutex);
 	lctl = snd_ctl_led_find(kctl, ioff);
 	if (lctl && (access == 0 || access != lctl->access)) {
 		ret = lctl->access;
 		list_del(&lctl->list);
 		kfree(lctl);
 	}
+	mutex_unlock(&snd_ctl_led_mutex);
 	return ret;
 }
 
@@ -240,36 +239,44 @@ static void snd_ctl_led_notify(struct snd_card *card, unsigned int mask,
 	}
 }
 
-DEFINE_FREE(snd_card_unref, struct snd_card *, if (_T) snd_card_unref(_T))
-
 static int snd_ctl_led_set_id(int card_number, struct snd_ctl_elem_id *id,
 			      unsigned int group, bool set)
 {
-	struct snd_card *card __free(snd_card_unref) = NULL;
+	struct snd_card *card;
 	struct snd_kcontrol *kctl;
 	struct snd_kcontrol_volatile *vd;
 	unsigned int ioff, access, new_access;
+	int err = 0;
 
 	card = snd_card_ref(card_number);
-	if (!card)
-		return -ENXIO;
-	guard(rwsem_write)(&card->controls_rwsem);
-	kctl = snd_ctl_find_id(card, id);
-	if (!kctl)
-		return -ENOENT;
-	ioff = snd_ctl_get_ioff(kctl, id);
-	vd = &kctl->vd[ioff];
-	access = vd->access & SNDRV_CTL_ELEM_ACCESS_LED_MASK;
-	if (access != 0 && access != group_to_access(group))
-		return -EXDEV;
-	new_access = vd->access & ~SNDRV_CTL_ELEM_ACCESS_LED_MASK;
-	if (set)
-		new_access |= group_to_access(group);
-	if (new_access != vd->access) {
-		vd->access = new_access;
-		snd_ctl_led_notify(card, SNDRV_CTL_EVENT_MASK_INFO, kctl, ioff);
+	if (card) {
+		down_write(&card->controls_rwsem);
+		kctl = snd_ctl_find_id(card, id);
+		if (kctl) {
+			ioff = snd_ctl_get_ioff(kctl, id);
+			vd = &kctl->vd[ioff];
+			access = vd->access & SNDRV_CTL_ELEM_ACCESS_LED_MASK;
+			if (access != 0 && access != group_to_access(group)) {
+				err = -EXDEV;
+				goto unlock;
+			}
+			new_access = vd->access & ~SNDRV_CTL_ELEM_ACCESS_LED_MASK;
+			if (set)
+				new_access |= group_to_access(group);
+			if (new_access != vd->access) {
+				vd->access = new_access;
+				snd_ctl_led_notify(card, SNDRV_CTL_EVENT_MASK_INFO, kctl, ioff);
+			}
+		} else {
+			err = -ENOENT;
+		}
+unlock:
+		up_write(&card->controls_rwsem);
+		snd_card_unref(card);
+	} else {
+		err = -ENXIO;
 	}
-	return 0;
+	return err;
 }
 
 static void snd_ctl_led_refresh(void)
@@ -289,22 +296,25 @@ static void snd_ctl_led_ctl_destroy(struct snd_ctl_led_ctl *lctl)
 static void snd_ctl_led_clean(struct snd_card *card)
 {
 	unsigned int group;
-	struct snd_ctl_led_ctl *lctl, *_lctl;
 	struct snd_ctl_led *led;
+	struct snd_ctl_led_ctl *lctl;
 
 	for (group = 0; group < MAX_LED; group++) {
 		led = &snd_ctl_leds[group];
-		list_for_each_entry_safe(lctl, _lctl, &led->controls, list)
-			if (!card || lctl->card == card)
+repeat:
+		list_for_each_entry(lctl, &led->controls, list)
+			if (!card || lctl->card == card) {
 				snd_ctl_led_ctl_destroy(lctl);
+				goto repeat;
+			}
 	}
 }
 
 static int snd_ctl_led_reset(int card_number, unsigned int group)
 {
-	struct snd_card *card __free(snd_card_unref) = NULL;
-	struct snd_ctl_led_ctl *lctl, *_lctl;
+	struct snd_card *card;
 	struct snd_ctl_led *led;
+	struct snd_ctl_led_ctl *lctl;
 	struct snd_kcontrol_volatile *vd;
 	bool change = false;
 
@@ -312,20 +322,26 @@ static int snd_ctl_led_reset(int card_number, unsigned int group)
 	if (!card)
 		return -ENXIO;
 
-	scoped_guard(mutex, &snd_ctl_led_mutex) {
-		if (!snd_ctl_led_card_valid[card_number])
-			return -ENXIO;
-		led = &snd_ctl_leds[group];
-		list_for_each_entry_safe(lctl, _lctl, &led->controls, list)
-			if (lctl->card == card) {
-				vd = &lctl->kctl->vd[lctl->index_offset];
-				vd->access &= ~group_to_access(group);
-				snd_ctl_led_ctl_destroy(lctl);
-				change = true;
-			}
+	mutex_lock(&snd_ctl_led_mutex);
+	if (!snd_ctl_led_card_valid[card_number]) {
+		mutex_unlock(&snd_ctl_led_mutex);
+		snd_card_unref(card);
+		return -ENXIO;
 	}
+	led = &snd_ctl_leds[group];
+repeat:
+	list_for_each_entry(lctl, &led->controls, list)
+		if (lctl->card == card) {
+			vd = &lctl->kctl->vd[lctl->index_offset];
+			vd->access &= ~group_to_access(group);
+			snd_ctl_led_ctl_destroy(lctl);
+			change = true;
+			goto repeat;
+		}
+	mutex_unlock(&snd_ctl_led_mutex);
 	if (change)
 		snd_ctl_led_set_state(NULL, group_to_access(group), NULL, 0);
+	snd_card_unref(card);
 	return 0;
 }
 
@@ -337,8 +353,9 @@ static void snd_ctl_led_register(struct snd_card *card)
 	if (snd_BUG_ON(card->number < 0 ||
 		       card->number >= ARRAY_SIZE(snd_ctl_led_card_valid)))
 		return;
-	scoped_guard(mutex, &snd_ctl_led_mutex)
-		snd_ctl_led_card_valid[card->number] = true;
+	mutex_lock(&snd_ctl_led_mutex);
+	snd_ctl_led_card_valid[card->number] = true;
+	mutex_unlock(&snd_ctl_led_mutex);
 	/* the register callback is already called with held card->controls_rwsem */
 	list_for_each_entry(kctl, &card->controls, list)
 		for (ioff = 0; ioff < kctl->count; ioff++)
@@ -350,10 +367,10 @@ static void snd_ctl_led_register(struct snd_card *card)
 static void snd_ctl_led_disconnect(struct snd_card *card)
 {
 	snd_ctl_led_sysfs_remove(card);
-	scoped_guard(mutex, &snd_ctl_led_mutex) {
-		snd_ctl_led_card_valid[card->number] = false;
-		snd_ctl_led_clean(card);
-	}
+	mutex_lock(&snd_ctl_led_mutex);
+	snd_ctl_led_card_valid[card->number] = false;
+	snd_ctl_led_clean(card);
+	mutex_unlock(&snd_ctl_led_mutex);
 	snd_ctl_led_refresh();
 }
 
@@ -388,7 +405,7 @@ static ssize_t mode_show(struct device *dev,
 	case MODE_ON:		str = "on"; break;
 	case MODE_OFF:		str = "off"; break;
 	}
-	return sysfs_emit(buf, "%s\n", str);
+	return sprintf(buf, "%s\n", str);
 }
 
 static ssize_t mode_store(struct device *dev,
@@ -413,8 +430,9 @@ static ssize_t mode_store(struct device *dev,
 	else
 		return count;
 
-	scoped_guard(mutex, &snd_ctl_led_mutex)
-		led->mode = mode;
+	mutex_lock(&snd_ctl_led_mutex);
+	led->mode = mode;
+	mutex_unlock(&snd_ctl_led_mutex);
 
 	snd_ctl_led_set_state(NULL, group_to_access(led->group), NULL, 0);
 	return count;
@@ -424,9 +442,8 @@ static ssize_t brightness_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	struct snd_ctl_led *led = container_of(dev, struct snd_ctl_led, dev);
-	struct led_trigger *trig = snd_ctl_ledtrig_audio[led->trigger_type];
 
-	return sysfs_emit(buf, "%u\n", led_trigger_get_brightness(trig));
+	return sprintf(buf, "%u\n", ledtrig_audio_get(led->trigger_type));
 }
 
 static DEVICE_ATTR_RW(mode);
@@ -492,7 +509,7 @@ static char *parse_string(char *s, char *val, size_t val_size)
 	return s;
 }
 
-static char *parse_iface(char *s, snd_ctl_elem_iface_t *val)
+static char *parse_iface(char *s, unsigned int *val)
 {
 	if (!strncasecmp(s, "card", 4))
 		*val = SNDRV_CTL_ELEM_IFACE_CARD;
@@ -513,11 +530,12 @@ static ssize_t set_led_id(struct snd_ctl_led_card *led_card, const char *buf, si
 			  bool attach)
 {
 	char buf2[256], *s, *os;
+	size_t len = max(sizeof(s) - 1, count);
 	struct snd_ctl_elem_id id;
 	int err;
 
-	if (strscpy(buf2, buf, sizeof(buf2)) < 0)
-		return -E2BIG;
+	strncpy(buf2, buf, len);
+	buf2[len] = '\0';
 	memset(&id, 0, sizeof(id));
 	id.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
 	s = buf2;
@@ -598,26 +616,34 @@ static ssize_t list_show(struct device *dev,
 			 struct device_attribute *attr, char *buf)
 {
 	struct snd_ctl_led_card *led_card = container_of(dev, struct snd_ctl_led_card, dev);
-	struct snd_card *card __free(snd_card_unref) = NULL;
+	struct snd_card *card;
 	struct snd_ctl_led_ctl *lctl;
-	size_t l = 0;
+	char *buf2 = buf;
+	size_t l;
 
 	card = snd_card_ref(led_card->number);
 	if (!card)
 		return -ENXIO;
-	guard(rwsem_read)(&card->controls_rwsem);
-	guard(mutex)(&snd_ctl_led_mutex);
+	down_read(&card->controls_rwsem);
+	mutex_lock(&snd_ctl_led_mutex);
 	if (snd_ctl_led_card_valid[led_card->number]) {
-		list_for_each_entry(lctl, &led_card->led->controls, list) {
-			if (lctl->card != card)
-				continue;
-			if (l)
-				l += sysfs_emit_at(buf, l, " ");
-			l += sysfs_emit_at(buf, l, "%u",
-					   lctl->kctl->id.numid + lctl->index_offset);
-		}
+		list_for_each_entry(lctl, &led_card->led->controls, list)
+			if (lctl->card == card) {
+				if (buf2 - buf > PAGE_SIZE - 16)
+					break;
+				if (buf2 != buf)
+					*buf2++ = ' ';
+				l = scnprintf(buf2, 15, "%u",
+						lctl->kctl->id.numid +
+							lctl->index_offset);
+				buf2[l] = '\0';
+				buf2 += l + 1;
+			}
 	}
-	return l;
+	mutex_unlock(&snd_ctl_led_mutex);
+	up_read(&card->controls_rwsem);
+	snd_card_unref(card);
+	return buf2 - buf;
 }
 
 static DEVICE_ATTR_WO(attach);
@@ -668,7 +694,7 @@ static void snd_ctl_led_sysfs_add(struct snd_card *card)
 			goto cerr;
 		led->cards[card->number] = led_card;
 		snprintf(link_name, sizeof(link_name), "led-%s", led->name);
-		WARN(sysfs_create_link(&card->ctl_dev->kobj, &led_card->dev.kobj, link_name),
+		WARN(sysfs_create_link(&card->ctl_dev.kobj, &led_card->dev.kobj, link_name),
 			"can't create symlink to controlC%i device\n", card->number);
 		WARN(sysfs_create_link(&led_card->dev.kobj, &card->card_dev.kobj, "card"),
 			"can't create symlink to card%i\n", card->number);
@@ -677,7 +703,7 @@ static void snd_ctl_led_sysfs_add(struct snd_card *card)
 cerr:
 		put_device(&led_card->dev);
 cerr2:
-		dev_err(card->dev, "snd_ctl_led: unable to add card%d", card->number);
+		printk(KERN_ERR "snd_ctl_led: unable to add card%d", card->number);
 	}
 }
 
@@ -694,7 +720,7 @@ static void snd_ctl_led_sysfs_remove(struct snd_card *card)
 		if (!led_card)
 			continue;
 		snprintf(link_name, sizeof(link_name), "led-%s", led->name);
-		sysfs_remove_link(&card->ctl_dev->kobj, link_name);
+		sysfs_remove_link(&card->ctl_dev.kobj, link_name);
 		sysfs_remove_link(&led_card->dev.kobj, "card");
 		device_unregister(&led_card->dev);
 		led->cards[card->number] = NULL;
@@ -716,11 +742,8 @@ static int __init snd_ctl_led_init(void)
 	struct snd_ctl_led *led;
 	unsigned int group;
 
-	led_trigger_register_simple("audio-mute", &snd_ctl_ledtrig_audio[LED_AUDIO_MUTE]);
-	led_trigger_register_simple("audio-micmute", &snd_ctl_ledtrig_audio[LED_AUDIO_MICMUTE]);
-
 	device_initialize(&snd_ctl_led_dev);
-	snd_ctl_led_dev.class = &sound_class;
+	snd_ctl_led_dev.class = sound_class;
 	snd_ctl_led_dev.release = snd_ctl_led_dev_release;
 	dev_set_name(&snd_ctl_led_dev, "ctl-led");
 	if (device_add(&snd_ctl_led_dev)) {
@@ -771,13 +794,7 @@ static void __exit snd_ctl_led_exit(void)
 	}
 	device_unregister(&snd_ctl_led_dev);
 	snd_ctl_led_clean(NULL);
-
-	led_trigger_unregister_simple(snd_ctl_ledtrig_audio[LED_AUDIO_MUTE]);
-	led_trigger_unregister_simple(snd_ctl_ledtrig_audio[LED_AUDIO_MICMUTE]);
 }
 
 module_init(snd_ctl_led_init)
 module_exit(snd_ctl_led_exit)
-
-MODULE_ALIAS("ledtrig:audio-mute");
-MODULE_ALIAS("ledtrig:audio-micmute");

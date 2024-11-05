@@ -195,7 +195,8 @@ static const struct acpi_gpio_mapping acpi_st_nci_gpios[] = {
 	{},
 };
 
-static int st_nci_i2c_probe(struct i2c_client *client)
+static int st_nci_i2c_probe(struct i2c_client *client,
+				  const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct st_nci_i2c_phy *phy;
@@ -249,15 +250,17 @@ static int st_nci_i2c_probe(struct i2c_client *client)
 	return r;
 }
 
-static void st_nci_i2c_remove(struct i2c_client *client)
+static int st_nci_i2c_remove(struct i2c_client *client)
 {
 	struct st_nci_i2c_phy *phy = i2c_get_clientdata(client);
 
 	ndlc_remove(phy->ndlc);
+
+	return 0;
 }
 
 static const struct i2c_device_id st_nci_i2c_id_table[] = {
-	{ ST_NCI_DRIVER_NAME },
+	{ST_NCI_DRIVER_NAME, 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, st_nci_i2c_id_table);

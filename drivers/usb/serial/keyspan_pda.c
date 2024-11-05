@@ -299,7 +299,7 @@ static speed_t keyspan_pda_setbaud(struct usb_serial *serial, speed_t baud)
 	return baud;
 }
 
-static int keyspan_pda_break_ctl(struct tty_struct *tty, int break_state)
+static void keyspan_pda_break_ctl(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct usb_serial *serial = port->serial;
@@ -315,18 +315,13 @@ static int keyspan_pda_break_ctl(struct tty_struct *tty, int break_state)
 			4, /* set break */
 			USB_TYPE_VENDOR | USB_RECIP_INTERFACE | USB_DIR_OUT,
 			value, 0, NULL, 0, 2000);
-	if (result < 0) {
+	if (result < 0)
 		dev_dbg(&port->dev, "%s - error %d from usb_control_msg\n",
 			__func__, result);
-		return result;
-	}
-
-	return 0;
 }
 
 static void keyspan_pda_set_termios(struct tty_struct *tty,
-				    struct usb_serial_port *port,
-				    const struct ktermios *old_termios)
+		struct usb_serial_port *port, struct ktermios *old_termios)
 {
 	struct usb_serial *serial = port->serial;
 	speed_t speed;
@@ -676,6 +671,7 @@ static void keyspan_pda_port_remove(struct usb_serial_port *port)
 
 static struct usb_serial_driver keyspan_pda_fake_device = {
 	.driver = {
+		.owner =	THIS_MODULE,
 		.name =		"keyspan_pda_pre",
 	},
 	.description =		"Keyspan PDA - (prerenumeration)",
@@ -686,6 +682,7 @@ static struct usb_serial_driver keyspan_pda_fake_device = {
 
 static struct usb_serial_driver keyspan_pda_device = {
 	.driver = {
+		.owner =	THIS_MODULE,
 		.name =		"keyspan_pda",
 	},
 	.description =		"Keyspan PDA",

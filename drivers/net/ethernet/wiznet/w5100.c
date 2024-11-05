@@ -719,9 +719,9 @@ static void w5100_hw_close(struct w5100_priv *priv)
 static void w5100_get_drvinfo(struct net_device *ndev,
 			      struct ethtool_drvinfo *info)
 {
-	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strscpy(info->version, DRV_VERSION, sizeof(info->version));
-	strscpy(info->bus_info, dev_name(ndev->dev.parent),
+	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
+	strlcpy(info->bus_info, dev_name(ndev->dev.parent),
 		sizeof(info->bus_info));
 }
 
@@ -883,7 +883,7 @@ static void w5100_rx_work(struct work_struct *work)
 	struct sk_buff *skb;
 
 	while ((skb = w5100_rx_skb(priv->ndev)))
-		netif_rx(skb);
+		netif_rx_ni(skb);
 
 	w5100_enable_intr(priv);
 }
@@ -930,8 +930,8 @@ static irqreturn_t w5100_interrupt(int irq, void *ndev_instance)
 
 		if (priv->ops->may_sleep)
 			queue_work(priv->xfer_wq, &priv->rx_work);
-		else
-			napi_schedule(&priv->napi);
+		else if (napi_schedule_prep(&priv->napi))
+			__napi_schedule(&priv->napi);
 	}
 
 	return IRQ_HANDLED;
@@ -1062,9 +1062,11 @@ static int w5100_mmio_probe(struct platform_device *pdev)
 			   mac_addr, irq, data ? data->link_gpio : -EINVAL);
 }
 
-static void w5100_mmio_remove(struct platform_device *pdev)
+static int w5100_mmio_remove(struct platform_device *pdev)
 {
 	w5100_remove(&pdev->dev);
+
+	return 0;
 }
 
 void *w5100_ops_priv(const struct net_device *ndev)
@@ -1131,7 +1133,7 @@ int w5100_probe(struct device *dev, const struct w5100_ops *ops,
 
 	ndev->netdev_ops = &w5100_netdev_ops;
 	ndev->ethtool_ops = &w5100_ethtool_ops;
-	netif_napi_add_weight(ndev, &priv->napi, w5100_napi_poll, 16);
+	netif_napi_add(ndev, &priv->napi, w5100_napi_poll, 16);
 
 	/* This chip doesn't support VLAN packets with normal MTU,
 	 * so disable VLAN for this device.
@@ -1271,6 +1273,6 @@ static struct platform_driver w5100_mmio_driver = {
 		.pm	= &w5100_pm_ops,
 	},
 	.probe		= w5100_mmio_probe,
-	.remove_new	= w5100_mmio_remove,
+	.remove		= w5100_mmio_remove,
 };
 module_platform_driver(w5100_mmio_driver);

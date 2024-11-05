@@ -31,28 +31,9 @@
 #include <linux/slab.h>
 
 #include <linux/io.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 
 #include "niu.h"
-
-/* This driver wants to store a link to a "next page" within the
- * page struct itself by overloading the content of the "mapping"
- * member. This is not expected by the page API, but does currently
- * work. However, the randstruct plugin gets very bothered by this
- * case because "mapping" (struct address_space) is randomized, so
- * casts to/from it trigger warnings. Hide this by way of a union,
- * to create a typed alias of "mapping", since that's how it is
- * actually being used here.
- */
-union niu_page {
-	struct page page;
-	struct {
-		unsigned long __flags;	/* unused alias of "flags" */
-		struct list_head __lru;	/* unused alias of "lru" */
-		struct page *next;	/* alias of "mapping" */
-	};
-};
-#define niu_next_page(p)	container_of(p, union niu_page, page)->next
 
 #define DRV_MODULE_NAME		"niu"
 #define DRV_MODULE_VERSION	"1.1"
@@ -61,7 +42,7 @@ union niu_page {
 static char version[] =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
-MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
+MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
 MODULE_DESCRIPTION("NIU ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -3302,7 +3283,7 @@ static struct page *niu_find_rxpage(struct rx_ring_info *rp, u64 addr,
 
 	addr &= PAGE_MASK;
 	pp = &rp->rxhash[h];
-	for (; (p = *pp) != NULL; pp = &niu_next_page(p)) {
+	for (; (p = *pp) != NULL; pp = (struct page **) &p->mapping) {
 		if (p->index == addr) {
 			*link = pp;
 			goto found;
@@ -3319,7 +3300,7 @@ static void niu_hash_page(struct rx_ring_info *rp, struct page *page, u64 base)
 	unsigned int h = niu_hash_rxaddr(rp, base);
 
 	page->index = base;
-	niu_next_page(page) = rp->rxhash[h];
+	page->mapping = (struct address_space *) rp->rxhash[h];
 	rp->rxhash[h] = page;
 }
 
@@ -3401,11 +3382,11 @@ static int niu_rx_pkt_ignore(struct niu *np, struct rx_ring_info *rp)
 		rcr_size = rp->rbr_sizes[(val & RCR_ENTRY_PKTBUFSZ) >>
 					 RCR_ENTRY_PKTBUFSZ_SHIFT];
 		if ((page->index + PAGE_SIZE) - rcr_size == addr) {
-			*link = niu_next_page(page);
+			*link = (struct page *) page->mapping;
 			np->ops->unmap_page(np->device, page->index,
 					    PAGE_SIZE, DMA_FROM_DEVICE);
 			page->index = 0;
-			niu_next_page(page) = NULL;
+			page->mapping = NULL;
 			__free_page(page);
 			rp->rbr_refill_pending++;
 		}
@@ -3470,11 +3451,11 @@ static int niu_process_rx_pkt(struct napi_struct *napi, struct niu *np,
 
 		niu_rx_skb_append(skb, page, off, append_size, rcr_size);
 		if ((page->index + rp->rbr_block_size) - rcr_size == addr) {
-			*link = niu_next_page(page);
+			*link = (struct page *) page->mapping;
 			np->ops->unmap_page(np->device, page->index,
 					    PAGE_SIZE, DMA_FROM_DEVICE);
 			page->index = 0;
-			niu_next_page(page) = NULL;
+			page->mapping = NULL;
 			rp->rbr_refill_pending++;
 		} else
 			get_page(page);
@@ -3537,13 +3518,13 @@ static void niu_rbr_free(struct niu *np, struct rx_ring_info *rp)
 
 		page = rp->rxhash[i];
 		while (page) {
-			struct page *next = niu_next_page(page);
+			struct page *next = (struct page *) page->mapping;
 			u64 base = page->index;
 
 			np->ops->unmap_page(np->device, base, PAGE_SIZE,
 					    DMA_FROM_DEVICE);
 			page->index = 0;
-			niu_next_page(page) = NULL;
+			page->mapping = NULL;
 
 			__free_page(page);
 
@@ -4522,7 +4503,7 @@ static int niu_alloc_channels(struct niu *np)
 
 		err = niu_rbr_fill(np, rp, GFP_KERNEL);
 		if (err)
-			goto out_err;
+			return err;
 	}
 
 	tx_rings = kcalloc(num_tx_rings, sizeof(struct tx_ring_info),
@@ -6459,7 +6440,8 @@ static void niu_reset_buffers(struct niu *np)
 
 				page = rp->rxhash[j];
 				while (page) {
-					struct page *next = niu_next_page(page);
+					struct page *next =
+						(struct page *) page->mapping;
 					u64 base = page->index;
 					base = base >> RBR_DESCR_ADDR_SHIFT;
 					rp->rbr[k++] = cpu_to_le32(base);
@@ -6751,7 +6733,7 @@ static int niu_change_mtu(struct net_device *dev, int new_mtu)
 	orig_jumbo = (dev->mtu > ETH_DATA_LEN);
 	new_jumbo = (new_mtu > ETH_DATA_LEN);
 
-	WRITE_ONCE(dev->mtu, new_mtu);
+	dev->mtu = new_mtu;
 
 	if (!netif_running(dev) ||
 	    (orig_jumbo == new_jumbo))
@@ -6798,12 +6780,12 @@ static void niu_get_drvinfo(struct net_device *dev,
 	struct niu *np = netdev_priv(dev);
 	struct niu_vpd *vpd = &np->vpd;
 
-	strscpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
-	strscpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
+	strlcpy(info->driver, DRV_MODULE_NAME, sizeof(info->driver));
+	strlcpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
 	snprintf(info->fw_version, sizeof(info->fw_version), "%d.%d",
 		vpd->fcode_major, vpd->fcode_minor);
 	if (np->parent->plat_type != PLAT_TYPE_NIU)
-		strscpy(info->bus_info, pci_name(np->pdev),
+		strlcpy(info->bus_info, pci_name(np->pdev),
 			sizeof(info->bus_info));
 }
 
@@ -7927,7 +7909,7 @@ static int niu_ldg_assign_ldn(struct niu *np, struct niu_parent *parent,
 		 * won't get any interrupts and that's painful to debug.
 		 */
 		if (nr64(LDG_NUM(ldn)) != ldg) {
-			dev_err(np->device, "Port %u, mismatched LDG assignment for ldn %d, should be %d is %llu\n",
+			dev_err(np->device, "Port %u, mis-matched LDG assignment for ldn %d, should be %d is %llu\n",
 				np->port, ldn, ldg,
 				(unsigned long long) nr64(LDG_NUM(ldn)));
 			return -EINVAL;
@@ -9115,7 +9097,7 @@ static int niu_ldg_init(struct niu *np)
 	for (i = 0; i < np->num_ldg; i++) {
 		struct niu_ldg *lp = &np->ldg[i];
 
-		netif_napi_add(np->dev, &lp->napi, niu_poll);
+		netif_napi_add(np->dev, &lp->napi, niu_poll, 64);
 
 		lp->np = np;
 		lp->ldg_num = ldg_num_map[i];
@@ -9271,7 +9253,7 @@ static int niu_get_of_props(struct niu *np)
 	if (model)
 		strcpy(np->vpd.model, model);
 
-	if (of_property_read_bool(dp, "hot-swappable-phy")) {
+	if (of_find_property(dp, "hot-swappable-phy", NULL)) {
 		np->flags |= (NIU_FLAGS_10G | NIU_FLAGS_FIBER |
 			NIU_FLAGS_HOTPLUG_PHY);
 	}
@@ -10132,7 +10114,7 @@ err_out:
 	return err;
 }
 
-static void niu_of_remove(struct platform_device *op)
+static int niu_of_remove(struct platform_device *op)
 {
 	struct net_device *dev = platform_get_drvdata(op);
 
@@ -10165,6 +10147,7 @@ static void niu_of_remove(struct platform_device *op)
 
 		free_netdev(dev);
 	}
+	return 0;
 }
 
 static const struct of_device_id niu_match[] = {
@@ -10182,7 +10165,7 @@ static struct platform_driver niu_of_driver = {
 		.of_match_table = niu_match,
 	},
 	.probe		= niu_of_probe,
-	.remove_new	= niu_of_remove,
+	.remove		= niu_of_remove,
 };
 
 #endif /* CONFIG_SPARC64 */
@@ -10192,9 +10175,6 @@ static int __init niu_init(void)
 	int err = 0;
 
 	BUILD_BUG_ON(PAGE_SIZE < 4 * 1024);
-
-	BUILD_BUG_ON(offsetof(struct page, mapping) !=
-		     offsetof(union niu_page, next));
 
 	niu_debug = netif_msg_init(debug, NIU_MSG_DEFAULT);
 

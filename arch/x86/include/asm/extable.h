@@ -21,7 +21,7 @@
  */
 
 struct exception_table_entry {
-	int insn, fixup, data;
+	int insn, fixup, type;
 };
 struct pt_regs;
 
@@ -31,23 +31,20 @@ struct pt_regs;
 	do {							\
 		(a)->fixup = (b)->fixup + (delta);		\
 		(b)->fixup = (tmp).fixup - (delta);		\
-		(a)->data = (b)->data;				\
-		(b)->data = (tmp).data;				\
+		(a)->type = (b)->type;				\
+		(b)->type = (tmp).type;				\
 	} while (0)
 
 extern int fixup_exception(struct pt_regs *regs, int trapnr,
 			   unsigned long error_code, unsigned long fault_addr);
+extern int fixup_bug(struct pt_regs *regs, int trapnr);
 extern int ex_get_fixup_type(unsigned long ip);
 extern void early_fixup_exception(struct pt_regs *regs, int trapnr);
 
 #ifdef CONFIG_X86_MCE
-extern void __noreturn ex_handler_msr_mce(struct pt_regs *regs, bool wrmsr);
+extern void ex_handler_msr_mce(struct pt_regs *regs, bool wrmsr);
 #else
-static inline void __noreturn ex_handler_msr_mce(struct pt_regs *regs, bool wrmsr)
-{
-	for (;;)
-		cpu_relax();
-}
+static inline void ex_handler_msr_mce(struct pt_regs *regs, bool wrmsr) { }
 #endif
 
 #if defined(CONFIG_BPF_JIT) && defined(CONFIG_X86_64)

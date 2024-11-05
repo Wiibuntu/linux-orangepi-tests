@@ -107,16 +107,15 @@ void bch_btree_verify(struct btree *b)
 
 void bch_data_verify(struct cached_dev *dc, struct bio *bio)
 {
-	unsigned int nr_segs = bio_segments(bio);
 	struct bio *check;
 	struct bio_vec bv, cbv;
 	struct bvec_iter iter, citer = { 0 };
 
-	check = bio_kmalloc(nr_segs, GFP_NOIO);
+	check = bio_kmalloc(GFP_NOIO, bio_segments(bio));
 	if (!check)
 		return;
-	bio_init(check, bio->bi_bdev, check->bi_inline_vecs, nr_segs,
-		 REQ_OP_READ);
+	bio_set_dev(check, bio->bi_bdev);
+	check->bi_opf = REQ_OP_READ;
 	check->bi_iter.bi_sector = bio->bi_iter.bi_sector;
 	check->bi_iter.bi_size = bio->bi_iter.bi_size;
 
@@ -147,8 +146,7 @@ void bch_data_verify(struct cached_dev *dc, struct bio *bio)
 
 	bio_free_pages(check);
 out_put:
-	bio_uninit(check);
-	kfree(check);
+	bio_put(check);
 }
 
 #endif

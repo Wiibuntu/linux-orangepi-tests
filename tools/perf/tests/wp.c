@@ -2,9 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <errno.h>
 #include <sys/ioctl.h>
-#include <linux/compiler.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/kernel.h>
 #include "tests.h"
@@ -20,12 +18,7 @@ do {                                            \
 	TEST_ASSERT_VAL(text, count == val);    \
 } while (0)
 
-#ifdef __i386__
-/* Only breakpoint length less-than 8 has hardware support on i386. */
-volatile u32 data1;
-#else
 volatile u64 data1;
-#endif
 volatile u8 data2[3];
 
 #ifndef __s390x__
@@ -64,10 +57,8 @@ static int __event(int wp_type, void *wp_addr, unsigned long wp_len)
 	get__perf_event_attr(&attr, wp_type, wp_addr, wp_len);
 	fd = sys_perf_event_open(&attr, 0, -1, -1,
 				 perf_event_open_cloexec_flag());
-	if (fd < 0) {
-		fd = -errno;
+	if (fd < 0)
 		pr_debug("failed opening event %x\n", attr.bp_type);
-	}
 
 	return fd;
 }
@@ -84,7 +75,7 @@ static int test__wp_ro(struct test_suite *test __maybe_unused,
 
 	fd = __event(HW_BREAKPOINT_R, (void *)&data1, sizeof(data1));
 	if (fd < 0)
-		return fd == -ENODEV ? TEST_SKIP : -1;
+		return -1;
 
 	tmp = data1;
 	WP_TEST_ASSERT_VAL(fd, "RO watchpoint", 1);
@@ -108,7 +99,7 @@ static int test__wp_wo(struct test_suite *test __maybe_unused,
 
 	fd = __event(HW_BREAKPOINT_W, (void *)&data1, sizeof(data1));
 	if (fd < 0)
-		return fd == -ENODEV ? TEST_SKIP : -1;
+		return -1;
 
 	tmp = data1;
 	WP_TEST_ASSERT_VAL(fd, "WO watchpoint", 0);
@@ -133,7 +124,7 @@ static int test__wp_rw(struct test_suite *test __maybe_unused,
 	fd = __event(HW_BREAKPOINT_R | HW_BREAKPOINT_W, (void *)&data1,
 		     sizeof(data1));
 	if (fd < 0)
-		return fd == -ENODEV ? TEST_SKIP : -1;
+		return -1;
 
 	tmp = data1;
 	WP_TEST_ASSERT_VAL(fd, "RW watchpoint", 1);
@@ -146,7 +137,8 @@ static int test__wp_rw(struct test_suite *test __maybe_unused,
 #endif
 }
 
-static int test__wp_modify(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
+static int test__wp_modify(struct test_suite *test __maybe_unused,
+			   int subtest __maybe_unused)
 {
 #if defined(__s390x__)
 	return TEST_SKIP;
@@ -157,7 +149,7 @@ static int test__wp_modify(struct test_suite *test __maybe_unused, int subtest _
 
 	fd = __event(HW_BREAKPOINT_W, (void *)&data1, sizeof(data1));
 	if (fd < 0)
-		return fd == -ENODEV ? TEST_SKIP : -1;
+		return -1;
 
 	data1 = tmp;
 	WP_TEST_ASSERT_VAL(fd, "Modify watchpoint", 1);
@@ -168,11 +160,6 @@ static int test__wp_modify(struct test_suite *test __maybe_unused, int subtest _
 	new_attr.disabled = 1;
 	ret = ioctl(fd, PERF_EVENT_IOC_MODIFY_ATTRIBUTES, &new_attr);
 	if (ret < 0) {
-		if (errno == ENOTTY) {
-			test->test_cases[subtest].skip_reason = "missing kernel support";
-			ret = TEST_SKIP;
-		}
-
 		pr_debug("ioctl(PERF_EVENT_IOC_MODIFY_ATTRIBUTES) failed\n");
 		close(fd);
 		return ret;

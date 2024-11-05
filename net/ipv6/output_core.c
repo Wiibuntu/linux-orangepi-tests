@@ -15,7 +15,13 @@ static u32 __ipv6_select_ident(struct net *net,
 			       const struct in6_addr *dst,
 			       const struct in6_addr *src)
 {
-	return get_random_u32_above(0);
+	u32 id;
+
+	do {
+		id = prandom_u32();
+	} while (!id);
+
+	return id;
 }
 
 /* This function exists only for tap drivers that must support broken
@@ -111,9 +117,9 @@ int ip6_dst_hoplimit(struct dst_entry *dst)
 		rcu_read_lock();
 		idev = __in6_dev_get(dev);
 		if (idev)
-			hoplimit = READ_ONCE(idev->cnf.hop_limit);
+			hoplimit = idev->cnf.hop_limit;
 		else
-			hoplimit = READ_ONCE(dev_net(dev)->ipv6.devconf_all->hop_limit);
+			hoplimit = dev_net(dev)->ipv6.devconf_all->hop_limit;
 		rcu_read_unlock();
 	}
 	return hoplimit;

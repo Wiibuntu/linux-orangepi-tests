@@ -33,7 +33,6 @@ struct amdgpu_df_hash_status {
 struct amdgpu_df_funcs {
 	void (*sw_init)(struct amdgpu_device *adev);
 	void (*sw_fini)(struct amdgpu_device *adev);
-	void (*hw_init)(struct amdgpu_device *adev);
 	void (*enable_broadcast_mode)(struct amdgpu_device *adev,
 				      bool enable);
 	u32 (*get_fb_channel_number)(struct amdgpu_device *adev);
@@ -41,7 +40,7 @@ struct amdgpu_df_funcs {
 	void (*update_medium_grain_clock_gating)(struct amdgpu_device *adev,
 						 bool enable);
 	void (*get_clockgating_state)(struct amdgpu_device *adev,
-				      u64 *flags);
+				      u32 *flags);
 	void (*enable_ecc_force_par_wr_rmw)(struct amdgpu_device *adev,
 					    bool enable);
 	int (*pmc_start)(struct amdgpu_device *adev, uint64_t config,

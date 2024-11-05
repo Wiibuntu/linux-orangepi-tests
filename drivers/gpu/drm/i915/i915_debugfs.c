@@ -28,12 +28,8 @@
 
 #include <linux/sched/mm.h>
 #include <linux/sort.h>
-#include <linux/string_helpers.h>
 
-#include <linux/debugfs.h>
 #include <drm/drm_debugfs.h>
-
-#include "display/intel_display_params.h"
 
 #include "gem/i915_gem_context.h"
 #include "gt/intel_gt.h"
@@ -42,7 +38,6 @@
 #include "gt/intel_gt_debugfs.h"
 #include "gt/intel_gt_pm.h"
 #include "gt/intel_gt_pm_debugfs.h"
-#include "gt/intel_gt_regs.h"
 #include "gt/intel_gt_requests.h"
 #include "gt/intel_rc6.h"
 #include "gt/intel_reset.h"
@@ -51,12 +46,10 @@
 
 #include "i915_debugfs.h"
 #include "i915_debugfs_params.h"
-#include "i915_driver.h"
-#include "i915_gpu_error.h"
 #include "i915_irq.h"
-#include "i915_reg.h"
 #include "i915_scheduler.h"
-#include "intel_mchbar_regs.h"
+#include "i915_trace.h"
+#include "intel_pm.h"
 
 static inline struct drm_i915_private *node_to_i915(struct drm_info_node *node)
 {
@@ -66,19 +59,17 @@ static inline struct drm_i915_private *node_to_i915(struct drm_info_node *node)
 static int i915_capabilities(struct seq_file *m, void *data)
 {
 	struct drm_i915_private *i915 = node_to_i915(m->private);
-	struct intel_display *display = &i915->display;
 	struct drm_printer p = drm_seq_file_printer(m);
 
 	seq_printf(m, "pch: %d\n", INTEL_PCH_TYPE(i915));
 
-	intel_device_info_print(INTEL_INFO(i915), RUNTIME_INFO(i915), &p);
-	i915_print_iommu_status(i915, &p);
-	intel_gt_info_print(&to_gt(i915)->info, &p);
+	intel_device_info_print_static(INTEL_INFO(i915), &p);
+	intel_device_info_print_runtime(RUNTIME_INFO(i915), &p);
+	intel_gt_info_print(&i915->gt.info, &p);
 	intel_driver_caps_print(&i915->caps, &p);
 
 	kernel_param_lock(THIS_MODULE);
 	i915_params_dump(&i915->params, &p);
-	intel_display_params_dump(display, &p);
 	kernel_param_unlock(THIS_MODULE);
 
 	return 0;
@@ -145,42 +136,10 @@ static const char *stringify_vma_type(const struct i915_vma *vma)
 	return "ppgtt";
 }
 
-static const char *i915_cache_level_str(struct drm_i915_gem_object *obj)
-{
-	struct drm_i915_private *i915 = obj_to_i915(obj);
-
-	if (IS_GFX_GT_IP_RANGE(to_gt(i915), IP_VER(12, 70), IP_VER(12, 74))) {
-		switch (obj->pat_index) {
-		case 0: return " WB";
-		case 1: return " WT";
-		case 2: return " UC";
-		case 3: return " WB (1-Way Coh)";
-		case 4: return " WB (2-Way Coh)";
-		default: return " not defined";
-		}
-	} else if (GRAPHICS_VER(i915) >= 12) {
-		switch (obj->pat_index) {
-		case 0: return " WB";
-		case 1: return " WC";
-		case 2: return " WT";
-		case 3: return " UC";
-		default: return " not defined";
-		}
-	} else {
-		switch (obj->pat_index) {
-		case 0: return " UC";
-		case 1: return HAS_LLC(i915) ?
-			       " LLC" : " snooped";
-		case 2: return " L3+LLC";
-		case 3: return " WT";
-		default: return " not defined";
-		}
-	}
-}
-
 void
 i915_debugfs_describe_obj(struct seq_file *m, struct drm_i915_gem_object *obj)
 {
+	struct drm_i915_private *dev_priv = to_i915(obj->base.dev);
 	struct i915_vma *vma;
 	int pin_count = 0;
 
@@ -192,7 +151,7 @@ i915_debugfs_describe_obj(struct seq_file *m, struct drm_i915_gem_object *obj)
 		   obj->base.size / 1024,
 		   obj->read_domains,
 		   obj->write_domain,
-		   i915_cache_level_str(obj),
+		   i915_cache_level_str(dev_priv, obj->cache_level),
 		   obj->mm.dirty ? " dirty" : "",
 		   obj->mm.madv == I915_MADV_DONTNEED ? " purgeable" : "");
 	if (obj->base.name)
@@ -210,51 +169,50 @@ i915_debugfs_describe_obj(struct seq_file *m, struct drm_i915_gem_object *obj)
 
 		seq_printf(m, " (%s offset: %08llx, size: %08llx, pages: %s",
 			   stringify_vma_type(vma),
-			   i915_vma_offset(vma), i915_vma_size(vma),
-			   stringify_page_sizes(vma->resource->page_sizes_gtt,
-						NULL, 0));
+			   vma->node.start, vma->node.size,
+			   stringify_page_sizes(vma->page_sizes.gtt, NULL, 0));
 		if (i915_vma_is_ggtt(vma) || i915_vma_is_dpt(vma)) {
-			switch (vma->gtt_view.type) {
-			case I915_GTT_VIEW_NORMAL:
+			switch (vma->ggtt_view.type) {
+			case I915_GGTT_VIEW_NORMAL:
 				seq_puts(m, ", normal");
 				break;
 
-			case I915_GTT_VIEW_PARTIAL:
+			case I915_GGTT_VIEW_PARTIAL:
 				seq_printf(m, ", partial [%08llx+%x]",
-					   vma->gtt_view.partial.offset << PAGE_SHIFT,
-					   vma->gtt_view.partial.size << PAGE_SHIFT);
+					   vma->ggtt_view.partial.offset << PAGE_SHIFT,
+					   vma->ggtt_view.partial.size << PAGE_SHIFT);
 				break;
 
-			case I915_GTT_VIEW_ROTATED:
+			case I915_GGTT_VIEW_ROTATED:
 				seq_printf(m, ", rotated [(%ux%u, src_stride=%u, dst_stride=%u, offset=%u), (%ux%u, src_stride=%u, dst_stride=%u, offset=%u)]",
-					   vma->gtt_view.rotated.plane[0].width,
-					   vma->gtt_view.rotated.plane[0].height,
-					   vma->gtt_view.rotated.plane[0].src_stride,
-					   vma->gtt_view.rotated.plane[0].dst_stride,
-					   vma->gtt_view.rotated.plane[0].offset,
-					   vma->gtt_view.rotated.plane[1].width,
-					   vma->gtt_view.rotated.plane[1].height,
-					   vma->gtt_view.rotated.plane[1].src_stride,
-					   vma->gtt_view.rotated.plane[1].dst_stride,
-					   vma->gtt_view.rotated.plane[1].offset);
+					   vma->ggtt_view.rotated.plane[0].width,
+					   vma->ggtt_view.rotated.plane[0].height,
+					   vma->ggtt_view.rotated.plane[0].src_stride,
+					   vma->ggtt_view.rotated.plane[0].dst_stride,
+					   vma->ggtt_view.rotated.plane[0].offset,
+					   vma->ggtt_view.rotated.plane[1].width,
+					   vma->ggtt_view.rotated.plane[1].height,
+					   vma->ggtt_view.rotated.plane[1].src_stride,
+					   vma->ggtt_view.rotated.plane[1].dst_stride,
+					   vma->ggtt_view.rotated.plane[1].offset);
 				break;
 
-			case I915_GTT_VIEW_REMAPPED:
+			case I915_GGTT_VIEW_REMAPPED:
 				seq_printf(m, ", remapped [(%ux%u, src_stride=%u, dst_stride=%u, offset=%u), (%ux%u, src_stride=%u, dst_stride=%u, offset=%u)]",
-					   vma->gtt_view.remapped.plane[0].width,
-					   vma->gtt_view.remapped.plane[0].height,
-					   vma->gtt_view.remapped.plane[0].src_stride,
-					   vma->gtt_view.remapped.plane[0].dst_stride,
-					   vma->gtt_view.remapped.plane[0].offset,
-					   vma->gtt_view.remapped.plane[1].width,
-					   vma->gtt_view.remapped.plane[1].height,
-					   vma->gtt_view.remapped.plane[1].src_stride,
-					   vma->gtt_view.remapped.plane[1].dst_stride,
-					   vma->gtt_view.remapped.plane[1].offset);
+					   vma->ggtt_view.remapped.plane[0].width,
+					   vma->ggtt_view.remapped.plane[0].height,
+					   vma->ggtt_view.remapped.plane[0].src_stride,
+					   vma->ggtt_view.remapped.plane[0].dst_stride,
+					   vma->ggtt_view.remapped.plane[0].offset,
+					   vma->ggtt_view.remapped.plane[1].width,
+					   vma->ggtt_view.remapped.plane[1].height,
+					   vma->ggtt_view.remapped.plane[1].src_stride,
+					   vma->ggtt_view.remapped.plane[1].dst_stride,
+					   vma->ggtt_view.remapped.plane[1].offset);
 				break;
 
 			default:
-				MISSING_CASE(vma->gtt_view.type);
+				MISSING_CASE(vma->ggtt_view.type);
 				break;
 			}
 		}
@@ -290,10 +248,110 @@ static int i915_gem_object_info(struct seq_file *m, void *data)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_DRM_I915_CAPTURE_ERROR)
+static ssize_t gpu_state_read(struct file *file, char __user *ubuf,
+			      size_t count, loff_t *pos)
+{
+	struct i915_gpu_coredump *error;
+	ssize_t ret;
+	void *buf;
+
+	error = file->private_data;
+	if (!error)
+		return 0;
+
+	/* Bounce buffer required because of kernfs __user API convenience. */
+	buf = kmalloc(count, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	ret = i915_gpu_coredump_copy_to_buffer(error, buf, *pos, count);
+	if (ret <= 0)
+		goto out;
+
+	if (!copy_to_user(ubuf, buf, ret))
+		*pos += ret;
+	else
+		ret = -EFAULT;
+
+out:
+	kfree(buf);
+	return ret;
+}
+
+static int gpu_state_release(struct inode *inode, struct file *file)
+{
+	i915_gpu_coredump_put(file->private_data);
+	return 0;
+}
+
+static int i915_gpu_info_open(struct inode *inode, struct file *file)
+{
+	struct drm_i915_private *i915 = inode->i_private;
+	struct i915_gpu_coredump *gpu;
+	intel_wakeref_t wakeref;
+
+	gpu = NULL;
+	with_intel_runtime_pm(&i915->runtime_pm, wakeref)
+		gpu = i915_gpu_coredump(&i915->gt, ALL_ENGINES);
+	if (IS_ERR(gpu))
+		return PTR_ERR(gpu);
+
+	file->private_data = gpu;
+	return 0;
+}
+
+static const struct file_operations i915_gpu_info_fops = {
+	.owner = THIS_MODULE,
+	.open = i915_gpu_info_open,
+	.read = gpu_state_read,
+	.llseek = default_llseek,
+	.release = gpu_state_release,
+};
+
+static ssize_t
+i915_error_state_write(struct file *filp,
+		       const char __user *ubuf,
+		       size_t cnt,
+		       loff_t *ppos)
+{
+	struct i915_gpu_coredump *error = filp->private_data;
+
+	if (!error)
+		return 0;
+
+	drm_dbg(&error->i915->drm, "Resetting error state\n");
+	i915_reset_error_state(error->i915);
+
+	return cnt;
+}
+
+static int i915_error_state_open(struct inode *inode, struct file *file)
+{
+	struct i915_gpu_coredump *error;
+
+	error = i915_first_error_state(inode->i_private);
+	if (IS_ERR(error))
+		return PTR_ERR(error);
+
+	file->private_data  = error;
+	return 0;
+}
+
+static const struct file_operations i915_error_state_fops = {
+	.owner = THIS_MODULE,
+	.open = i915_error_state_open,
+	.read = gpu_state_read,
+	.write = i915_error_state_write,
+	.llseek = default_llseek,
+	.release = gpu_state_release,
+};
+#endif
+
 static int i915_frequency_info(struct seq_file *m, void *unused)
 {
 	struct drm_i915_private *i915 = node_to_i915(m->private);
-	struct intel_gt *gt = to_gt(i915);
+	struct intel_gt *gt = &i915->gt;
 	struct drm_printer p = drm_seq_file_printer(m);
 
 	intel_gt_pm_frequency_dump(gt, &p);
@@ -332,11 +390,11 @@ static int i915_swizzle_info(struct seq_file *m, void *data)
 	intel_wakeref_t wakeref;
 
 	seq_printf(m, "bit6 swizzle for X-tiling = %s\n",
-		   swizzle_string(to_gt(dev_priv)->ggtt->bit_6_swizzle_x));
+		   swizzle_string(dev_priv->ggtt.bit_6_swizzle_x));
 	seq_printf(m, "bit6 swizzle for Y-tiling = %s\n",
-		   swizzle_string(to_gt(dev_priv)->ggtt->bit_6_swizzle_y));
+		   swizzle_string(dev_priv->ggtt.bit_6_swizzle_y));
 
-	if (dev_priv->gem_quirks & GEM_QUIRK_PIN_SWIZZLED_PAGES)
+	if (dev_priv->quirks & QUIRK_PIN_SWIZZLED_PAGES)
 		seq_puts(m, "L-shaped memory detected\n");
 
 	/* On BDW+, swizzling is not used. See detect_bit_6_swizzle() */
@@ -381,13 +439,11 @@ static int i915_swizzle_info(struct seq_file *m, void *data)
 static int i915_rps_boost_info(struct seq_file *m, void *data)
 {
 	struct drm_i915_private *dev_priv = node_to_i915(m->private);
-	struct intel_rps *rps = &to_gt(dev_priv)->rps;
+	struct intel_rps *rps = &dev_priv->gt.rps;
 
-	seq_printf(m, "RPS enabled? %s\n",
-		   str_yes_no(intel_rps_is_enabled(rps)));
-	seq_printf(m, "RPS active? %s\n",
-		   str_yes_no(intel_rps_is_active(rps)));
-	seq_printf(m, "GPU busy? %s\n", str_yes_no(to_gt(dev_priv)->awake));
+	seq_printf(m, "RPS enabled? %s\n", yesno(intel_rps_is_enabled(rps)));
+	seq_printf(m, "RPS active? %s\n", yesno(intel_rps_is_active(rps)));
+	seq_printf(m, "GPU busy? %s\n", yesno(dev_priv->gt.awake));
 	seq_printf(m, "Boosts outstanding? %d\n",
 		   atomic_read(&rps->num_waiters));
 	seq_printf(m, "Interactive? %d\n", READ_ONCE(rps->power.interactive));
@@ -418,11 +474,11 @@ static int i915_runtime_pm_status(struct seq_file *m, void *unused)
 		seq_puts(m, "Runtime power management not supported\n");
 
 	seq_printf(m, "Runtime power status: %s\n",
-		   str_enabled_disabled(!dev_priv->display.power.domains.init_wakeref));
+		   enableddisabled(!dev_priv->power_domains.init_wakeref));
 
-	seq_printf(m, "GPU idle: %s\n", str_yes_no(!to_gt(dev_priv)->awake));
+	seq_printf(m, "GPU idle: %s\n", yesno(!dev_priv->gt.awake));
 	seq_printf(m, "IRQs disabled: %s\n",
-		   str_yes_no(!intel_irqs_enabled(dev_priv)));
+		   yesno(!intel_irqs_enabled(dev_priv)));
 #ifdef CONFIG_PM
 	seq_printf(m, "Usage count: %d\n",
 		   atomic_read(&dev_priv->drm.dev->power.usage_count));
@@ -452,18 +508,18 @@ static int i915_engine_info(struct seq_file *m, void *unused)
 	wakeref = intel_runtime_pm_get(&i915->runtime_pm);
 
 	seq_printf(m, "GT awake? %s [%d], %llums\n",
-		   str_yes_no(to_gt(i915)->awake),
-		   atomic_read(&to_gt(i915)->wakeref.count),
-		   ktime_to_ms(intel_gt_get_awake_time(to_gt(i915))));
+		   yesno(i915->gt.awake),
+		   atomic_read(&i915->gt.wakeref.count),
+		   ktime_to_ms(intel_gt_get_awake_time(&i915->gt)));
 	seq_printf(m, "CS timestamp frequency: %u Hz, %d ns\n",
-		   to_gt(i915)->clock_frequency,
-		   to_gt(i915)->clock_period_ns);
+		   i915->gt.clock_frequency,
+		   i915->gt.clock_period_ns);
 
 	p = drm_seq_file_printer(m);
 	for_each_uabi_engine(engine, i915)
 		intel_engine_dump(engine, &p, "%s\n", engine->name);
 
-	intel_gt_show_timelines(to_gt(i915), &p, i915_request_show_with_schedule);
+	intel_gt_show_timelines(&i915->gt, &p, i915_request_show_with_schedule);
 
 	intel_runtime_pm_put(&i915->runtime_pm, wakeref);
 
@@ -501,36 +557,15 @@ static int i915_wa_registers(struct seq_file *m, void *unused)
 static int i915_wedged_get(void *data, u64 *val)
 {
 	struct drm_i915_private *i915 = data;
-	struct intel_gt *gt;
-	unsigned int i;
 
-	*val = 0;
-
-	for_each_gt(gt, i915, i) {
-		int ret;
-
-		ret = intel_gt_debugfs_reset_show(gt, val);
-		if (ret)
-			return ret;
-
-		/* at least one tile should be wedged */
-		if (*val)
-			break;
-	}
-
-	return 0;
+	return intel_gt_debugfs_reset_show(&i915->gt, val);
 }
 
 static int i915_wedged_set(void *data, u64 val)
 {
 	struct drm_i915_private *i915 = data;
-	struct intel_gt *gt;
-	unsigned int i;
 
-	for_each_gt(gt, i915, i)
-		intel_gt_debugfs_reset_store(gt, val);
-
-	return 0;
+	return intel_gt_debugfs_reset_store(&i915->gt, val);
 }
 
 DEFINE_SIMPLE_ATTRIBUTE(i915_wedged_fops,
@@ -546,7 +581,7 @@ i915_perf_noa_delay_set(void *data, u64 val)
 	 * This would lead to infinite waits as we're doing timestamp
 	 * difference on the CS with only 32bits.
 	 */
-	if (intel_gt_ns_to_clock_interval(to_gt(i915), val) > U32_MAX)
+	if (intel_gt_ns_to_clock_interval(&i915->gt, val) > U32_MAX)
 		return -EINVAL;
 
 	atomic64_set(&i915->perf.noa_programming_delay, val);
@@ -594,14 +629,13 @@ i915_drop_caches_get(void *data, u64 *val)
 
 	return 0;
 }
-
 static int
 gt_drop_caches(struct intel_gt *gt, u64 val)
 {
 	int ret;
 
 	if (val & DROP_RESET_ACTIVE &&
-	    wait_for(intel_engines_are_idle(gt), 200))
+	    wait_for(intel_engines_are_idle(gt), I915_IDLE_ENGINES_TIMEOUT))
 		intel_gt_set_wedged(gt);
 
 	if (val & DROP_RETIRE)
@@ -632,22 +666,16 @@ static int
 i915_drop_caches_set(void *data, u64 val)
 {
 	struct drm_i915_private *i915 = data;
-	struct intel_gt *gt;
-	unsigned int flags;
-	unsigned int i;
 	int ret;
 
-	drm_dbg(&i915->drm, "Dropping caches: 0x%08llx [0x%08llx]\n",
-		val, val & DROP_ALL);
+	DRM_DEBUG("Dropping caches: 0x%08llx [0x%08llx]\n",
+		  val, val & DROP_ALL);
 
-	for_each_gt(gt, i915, i) {
-		ret = gt_drop_caches(gt, val);
-		if (ret)
-			return ret;
-	}
+	ret = gt_drop_caches(&i915->gt, val);
+	if (ret)
+		return ret;
 
 	fs_reclaim_acquire(GFP_KERNEL);
-	flags = memalloc_noreclaim_save();
 	if (val & DROP_BOUND)
 		i915_gem_shrink(NULL, i915, LONG_MAX, NULL, I915_SHRINK_BOUND);
 
@@ -656,7 +684,6 @@ i915_drop_caches_set(void *data, u64 val)
 
 	if (val & DROP_SHRINK_ALL)
 		i915_gem_shrink_all(i915);
-	memalloc_noreclaim_restore(flags);
 	fs_reclaim_release(GFP_KERNEL);
 
 	if (val & DROP_RCU)
@@ -675,7 +702,7 @@ DEFINE_SIMPLE_ATTRIBUTE(i915_drop_caches_fops,
 static int i915_sseu_status(struct seq_file *m, void *unused)
 {
 	struct drm_i915_private *i915 = node_to_i915(m->private);
-	struct intel_gt *gt = to_gt(i915);
+	struct intel_gt *gt = &i915->gt;
 
 	return intel_sseu_status(m, gt);
 }
@@ -683,25 +710,15 @@ static int i915_sseu_status(struct seq_file *m, void *unused)
 static int i915_forcewake_open(struct inode *inode, struct file *file)
 {
 	struct drm_i915_private *i915 = inode->i_private;
-	struct intel_gt *gt;
-	unsigned int i;
 
-	for_each_gt(gt, i915, i)
-		intel_gt_pm_debugfs_forcewake_user_open(gt);
-
-	return 0;
+	return intel_gt_pm_debugfs_forcewake_user_open(&i915->gt);
 }
 
 static int i915_forcewake_release(struct inode *inode, struct file *file)
 {
 	struct drm_i915_private *i915 = inode->i_private;
-	struct intel_gt *gt;
-	unsigned int i;
 
-	for_each_gt(gt, i915, i)
-		intel_gt_pm_debugfs_forcewake_user_release(gt);
-
-	return 0;
+	return intel_gt_pm_debugfs_forcewake_user_release(&i915->gt);
 }
 
 static const struct file_operations i915_forcewake_fops = {
@@ -721,6 +738,7 @@ static const struct drm_info_list i915_debugfs_list[] = {
 	{"i915_sseu_status", i915_sseu_status, 0},
 	{"i915_rps_boost_info", i915_rps_boost_info, 0},
 };
+#define I915_DEBUGFS_ENTRIES ARRAY_SIZE(i915_debugfs_list)
 
 static const struct i915_debugfs_files {
 	const char *name;
@@ -729,6 +747,10 @@ static const struct i915_debugfs_files {
 	{"i915_perf_noa_delay", &i915_perf_noa_delay_fops},
 	{"i915_wedged", &i915_wedged_fops},
 	{"i915_gem_drop_caches", &i915_drop_caches_fops},
+#if IS_ENABLED(CONFIG_DRM_I915_CAPTURE_ERROR)
+	{"i915_error_state", &i915_error_state_fops},
+	{"i915_gpu_info", &i915_gpu_info_fops},
+#endif
 };
 
 void i915_debugfs_register(struct drm_i915_private *dev_priv)
@@ -749,8 +771,6 @@ void i915_debugfs_register(struct drm_i915_private *dev_priv)
 	}
 
 	drm_debugfs_create_files(i915_debugfs_list,
-				 ARRAY_SIZE(i915_debugfs_list),
+				 I915_DEBUGFS_ENTRIES,
 				 minor->debugfs_root, minor);
-
-	i915_gpu_error_debugfs_register(dev_priv);
 }

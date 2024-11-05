@@ -61,11 +61,11 @@ struct rxe_queue *rxe_queue_init(struct rxe_dev *rxe, int *num_elem,
 
 	/* num_elem == 0 is allowed, but uninteresting */
 	if (*num_elem < 0)
-		return NULL;
+		goto err1;
 
 	q = kzalloc(sizeof(*q), GFP_KERNEL);
 	if (!q)
-		return NULL;
+		goto err1;
 
 	q->rxe = rxe;
 	q->type = type;
@@ -100,6 +100,7 @@ struct rxe_queue *rxe_queue_init(struct rxe_dev *rxe, int *num_elem,
 
 err2:
 	kfree(q);
+err1:
 	return NULL;
 }
 
@@ -111,25 +112,23 @@ static int resize_finish(struct rxe_queue *q, struct rxe_queue *new_q,
 			 unsigned int num_elem)
 {
 	enum queue_type type = q->type;
-	u32 new_prod;
 	u32 prod;
 	u32 cons;
 
 	if (!queue_empty(q, q->type) && (num_elem < queue_count(q, type)))
 		return -EINVAL;
 
-	new_prod = queue_get_producer(new_q, type);
-	prod = queue_get_producer(q, type);
+	prod = queue_get_producer(new_q, type);
 	cons = queue_get_consumer(q, type);
 
-	while ((prod - cons) & q->index_mask) {
-		memcpy(queue_addr_from_index(new_q, new_prod),
+	while (!queue_empty(q, type)) {
+		memcpy(queue_addr_from_index(new_q, prod),
 		       queue_addr_from_index(q, cons), new_q->elem_size);
-		new_prod = queue_next_index(new_q, new_prod);
+		prod = queue_next_index(new_q, prod);
 		cons = queue_next_index(q, cons);
 	}
 
-	new_q->buf->producer_index = new_prod;
+	new_q->buf->producer_index = prod;
 	q->buf->consumer_index = cons;
 
 	/* update private index copies */
@@ -152,8 +151,7 @@ int rxe_queue_resize(struct rxe_queue *q, unsigned int *num_elem_p,
 	struct rxe_queue *new_q;
 	unsigned int num_elem = *num_elem_p;
 	int err;
-	unsigned long producer_flags;
-	unsigned long consumer_flags;
+	unsigned long flags = 0, flags1;
 
 	new_q = rxe_queue_init(q->rxe, &num_elem, elem_size, q->type);
 	if (!new_q)
@@ -167,17 +165,17 @@ int rxe_queue_resize(struct rxe_queue *q, unsigned int *num_elem_p,
 		goto err1;
 	}
 
-	spin_lock_irqsave(consumer_lock, consumer_flags);
+	spin_lock_irqsave(consumer_lock, flags1);
 
 	if (producer_lock) {
-		spin_lock_irqsave(producer_lock, producer_flags);
+		spin_lock_irqsave(producer_lock, flags);
 		err = resize_finish(q, new_q, num_elem);
-		spin_unlock_irqrestore(producer_lock, producer_flags);
+		spin_unlock_irqrestore(producer_lock, flags);
 	} else {
 		err = resize_finish(q, new_q, num_elem);
 	}
 
-	spin_unlock_irqrestore(consumer_lock, consumer_flags);
+	spin_unlock_irqrestore(consumer_lock, flags1);
 
 	rxe_queue_cleanup(new_q);	/* new/old dep on err */
 	if (err)

@@ -7,7 +7,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/jiffies.h>
@@ -367,7 +366,7 @@ static struct sensor_device_attribute sch5636_fan_attr[] = {
 	SENSOR_ATTR_RO(fan8_alarm, fan_alarm, 7),
 };
 
-static void sch5636_remove(struct platform_device *pdev)
+static int sch5636_remove(struct platform_device *pdev)
 {
 	struct sch5636_data *data = platform_get_drvdata(pdev);
 	int i;
@@ -385,6 +384,8 @@ static void sch5636_remove(struct platform_device *pdev)
 	for (i = 0; i < SCH5636_NO_FANS * 3; i++)
 		device_remove_file(&pdev->dev,
 				   &sch5636_fan_attr[i].dev_attr);
+
+	return 0;
 }
 
 static int sch5636_probe(struct platform_device *pdev)
@@ -416,7 +417,8 @@ static int sch5636_probe(struct platform_device *pdev)
 	id[i] = '\0';
 
 	if (strcmp(id, "THS")) {
-		pr_err("Unknown Fujitsu id: %3pE (%3ph)\n", id, id);
+		pr_err("Unknown Fujitsu id: %02x%02x%02x\n",
+		       id[0], id[1], id[2]);
 		err = -ENODEV;
 		goto error;
 	}
@@ -499,21 +501,12 @@ error:
 	return err;
 }
 
-static const struct platform_device_id sch5636_device_id[] = {
-	{
-		.name = "sch5636",
-	},
-	{ }
-};
-MODULE_DEVICE_TABLE(platform, sch5636_device_id);
-
 static struct platform_driver sch5636_driver = {
 	.driver = {
 		.name	= DRVNAME,
 	},
 	.probe		= sch5636_probe,
-	.remove_new	= sch5636_remove,
-	.id_table	= sch5636_device_id,
+	.remove		= sch5636_remove,
 };
 
 module_platform_driver(sch5636_driver);

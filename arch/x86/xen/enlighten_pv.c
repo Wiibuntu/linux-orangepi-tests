@@ -23,7 +23,6 @@
 #include <linux/start_kernel.h>
 #include <linux/sched.h>
 #include <linux/kprobes.h>
-#include <linux/kstrtox.h>
 #include <linux/memblock.h>
 #include <linux/export.h>
 #include <linux/mm.h>
@@ -31,9 +30,7 @@
 #include <linux/pci.h>
 #include <linux/gfp.h>
 #include <linux/edd.h>
-#include <linux/reboot.h>
-#include <linux/virtio_anchor.h>
-#include <linux/stackprotector.h>
+#include <linux/objtool.h>
 
 #include <xen/xen.h>
 #include <xen/events.h>
@@ -66,9 +63,9 @@
 #include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
 #include <asm/reboot.h>
+#include <asm/stackprotector.h>
 #include <asm/hypervisor.h>
 #include <asm/mach_traps.h>
-#include <asm/mtrr.h>
 #include <asm/mwait.h>
 #include <asm/pci_x86.h>
 #include <asm/cpu.h>
@@ -79,12 +76,16 @@
 #ifdef CONFIG_ACPI
 #include <linux/acpi.h>
 #include <asm/acpi.h>
-#include <acpi/proc_cap_intel.h>
+#include <acpi/pdc_intel.h>
 #include <acpi/processor.h>
 #include <xen/interface/platform.h>
 #endif
 
 #include "xen-ops.h"
+#include "mmu.h"
+#include "smp.h"
+#include "multicalls.h"
+#include "pmu.h"
 
 #include "../kernel/cpu/cpu.h" /* get_cpu_cap() */
 
@@ -97,17 +98,6 @@ struct tls_descs {
 	struct desc_struct desc[3];
 };
 
-DEFINE_PER_CPU(enum xen_lazy_mode, xen_lazy_mode) = XEN_LAZY_NONE;
-DEFINE_PER_CPU(unsigned int, xen_lazy_nesting);
-
-enum xen_lazy_mode xen_get_lazy_mode(void)
-{
-	if (in_interrupt())
-		return XEN_LAZY_NONE;
-
-	return this_cpu_read(xen_lazy_mode);
-}
-
 /*
  * Updating the 3 TLS descriptors in the GDT on every task switch is
  * surprisingly expensive so we avoid updating them if they haven't
@@ -117,70 +107,8 @@ enum xen_lazy_mode xen_get_lazy_mode(void)
  */
 static DEFINE_PER_CPU(struct tls_descs, shadow_tls_desc);
 
-static __read_mostly bool xen_msr_safe = IS_ENABLED(CONFIG_XEN_PV_MSR_SAFE);
-
-static int __init parse_xen_msr_safe(char *str)
-{
-	if (str)
-		return kstrtobool(str, &xen_msr_safe);
-	return -EINVAL;
-}
-early_param("xen_msr_safe", parse_xen_msr_safe);
-
-/* Get MTRR settings from Xen and put them into mtrr_state. */
-static void __init xen_set_mtrr_data(void)
-{
-#ifdef CONFIG_MTRR
-	struct xen_platform_op op = {
-		.cmd = XENPF_read_memtype,
-		.interface_version = XENPF_INTERFACE_VERSION,
-	};
-	unsigned int reg;
-	unsigned long mask;
-	uint32_t eax, width;
-	static struct mtrr_var_range var[MTRR_MAX_VAR_RANGES] __initdata;
-
-	/* Get physical address width (only 64-bit cpus supported). */
-	width = 36;
-	eax = cpuid_eax(0x80000000);
-	if ((eax >> 16) == 0x8000 && eax >= 0x80000008) {
-		eax = cpuid_eax(0x80000008);
-		width = eax & 0xff;
-	}
-
-	for (reg = 0; reg < MTRR_MAX_VAR_RANGES; reg++) {
-		op.u.read_memtype.reg = reg;
-		if (HYPERVISOR_platform_op(&op))
-			break;
-
-		/*
-		 * Only called in dom0, which has all RAM PFNs mapped at
-		 * RAM MFNs, and all PCI space etc. is identity mapped.
-		 * This means we can treat MFN == PFN regarding MTRR settings.
-		 */
-		var[reg].base_lo = op.u.read_memtype.type;
-		var[reg].base_lo |= op.u.read_memtype.mfn << PAGE_SHIFT;
-		var[reg].base_hi = op.u.read_memtype.mfn >> (32 - PAGE_SHIFT);
-		mask = ~((op.u.read_memtype.nr_mfns << PAGE_SHIFT) - 1);
-		mask &= (1UL << width) - 1;
-		if (mask)
-			mask |= MTRR_PHYSMASK_V;
-		var[reg].mask_lo = mask;
-		var[reg].mask_hi = mask >> 32;
-	}
-
-	/* Only overwrite MTRR state if any MTRR could be got from Xen. */
-	if (reg)
-		mtrr_overwrite_state(var, reg, MTRR_TYPE_UNCACHABLE);
-#endif
-}
-
 static void __init xen_pv_init_platform(void)
 {
-	/* PV guests can't operate virtio devices without grants. */
-	if (IS_ENABLED(CONFIG_XEN_VIRTIO))
-		virtio_set_mem_acc_cb(xen_virtio_restricted_mem_acc);
-
 	populate_extra_pte(fix_to_virt(FIX_PARAVIRT_BOOTMAP));
 
 	set_fixmap(FIX_PARAVIRT_BOOTMAP, xen_start_info->shared_info);
@@ -191,14 +119,6 @@ static void __init xen_pv_init_platform(void)
 
 	/* pvclock is in shared info area */
 	xen_init_time_ops();
-
-	if (xen_initial_domain())
-		xen_set_mtrr_data();
-	else
-		mtrr_overwrite_state(NULL, 0, MTRR_TYPE_WRBACK);
-
-	/* Adjust nr_cpu_ids before "enumeration" happens */
-	xen_smp_count_cpus();
 }
 
 static void __init xen_pv_guest_late_init(void)
@@ -215,21 +135,13 @@ static __read_mostly unsigned int cpuid_leaf5_edx_val;
 static void xen_cpuid(unsigned int *ax, unsigned int *bx,
 		      unsigned int *cx, unsigned int *dx)
 {
-	unsigned int maskebx = ~0;
-	unsigned int or_ebx = 0;
+	unsigned maskebx = ~0;
 
 	/*
 	 * Mask out inconvenient features, to try and disable as many
 	 * unsupported kernel subsystems as possible.
 	 */
 	switch (*ax) {
-	case 0x1:
-		/* Replace initial APIC ID in bits 24-31 of EBX. */
-		/* See xen_pv_smp_config() for related topology preparations. */
-		maskebx = 0x00ffffff;
-		or_ebx = smp_processor_id() << 24;
-		break;
-
 	case CPUID_MWAIT_LEAF:
 		/* Synthesize the values.. */
 		*ax = 0;
@@ -252,8 +164,8 @@ static void xen_cpuid(unsigned int *ax, unsigned int *bx,
 		: "0" (*ax), "2" (*cx));
 
 	*bx &= maskebx;
-	*bx |= or_ebx;
 }
+STACK_FRAME_NON_STANDARD(xen_cpuid); /* XEN_EMULATE_PREFIX */
 
 static bool __init xen_check_mwait(void)
 {
@@ -307,17 +219,17 @@ static bool __init xen_check_mwait(void)
 
 	native_cpuid(&ax, &bx, &cx, &dx);
 
-	/* Ask the Hypervisor whether to clear ACPI_PROC_CAP_C_C2C3_FFH. If so,
+	/* Ask the Hypervisor whether to clear ACPI_PDC_C_C2C3_FFH. If so,
 	 * don't expose MWAIT_LEAF and let ACPI pick the IOPORT version of C3.
 	 */
 	buf[0] = ACPI_PDC_REVISION_ID;
 	buf[1] = 1;
-	buf[2] = (ACPI_PROC_CAP_C_CAPABILITY_SMP | ACPI_PROC_CAP_EST_CAPABILITY_SWSMP);
+	buf[2] = (ACPI_PDC_C_CAPABILITY_SMP | ACPI_PDC_EST_CAPABILITY_SWSMP);
 
 	set_xen_guest_handle(op.u.set_pminfo.pdc, buf);
 
 	if ((HYPERVISOR_platform_op(&op) == 0) &&
-	    (buf[2] & (ACPI_PROC_CAP_C_C1_FFH | ACPI_PROC_CAP_C_C2C3_FFH))) {
+	    (buf[2] & (ACPI_PDC_C_C1_FFH | ACPI_PDC_C_C2C3_FFH))) {
 		cpuid_leaf5_ecx_val = cx;
 		cpuid_leaf5_edx_val = dx;
 	}
@@ -349,7 +261,6 @@ static void __init xen_init_capabilities(void)
 	setup_clear_cpu_cap(X86_FEATURE_ACC);
 	setup_clear_cpu_cap(X86_FEATURE_X2APIC);
 	setup_clear_cpu_cap(X86_FEATURE_SME);
-	setup_clear_cpu_cap(X86_FEATURE_LKGS);
 
 	/*
 	 * Xen PV would need some work to support PCID: CR3 handling as well
@@ -381,25 +292,10 @@ static noinstr unsigned long xen_get_debugreg(int reg)
 	return HYPERVISOR_get_debugreg(reg);
 }
 
-static void xen_start_context_switch(struct task_struct *prev)
-{
-	BUG_ON(preemptible());
-
-	if (this_cpu_read(xen_lazy_mode) == XEN_LAZY_MMU) {
-		arch_leave_lazy_mmu_mode();
-		set_ti_thread_flag(task_thread_info(prev), TIF_LAZY_MMU_UPDATES);
-	}
-	enter_lazy(XEN_LAZY_CPU);
-}
-
 static void xen_end_context_switch(struct task_struct *next)
 {
-	BUG_ON(preemptible());
-
 	xen_mc_flush();
-	leave_lazy(XEN_LAZY_CPU);
-	if (test_and_clear_ti_thread_flag(task_thread_info(next), TIF_LAZY_MMU_UPDATES))
-		arch_enter_lazy_mmu_mode();
+	paravirt_end_context_switch(next);
 }
 
 static unsigned long xen_store_tr(void)
@@ -506,7 +402,7 @@ static void xen_set_ldt(const void *addr, unsigned entries)
 
 	MULTI_mmuext_op(mcs.mc, op, 1, NULL, DOMID_SELF);
 
-	xen_mc_issue(XEN_LAZY_CPU);
+	xen_mc_issue(PARAVIRT_LAZY_CPU);
 }
 
 static void xen_load_gdt(const struct desc_ptr *dtr)
@@ -557,7 +453,7 @@ static void __init xen_load_gdt_boot(const struct desc_ptr *dtr)
 	BUG_ON(size > PAGE_SIZE);
 	BUG_ON(va & ~PAGE_MASK);
 
-	pfn = virt_to_pfn((void *)va);
+	pfn = virt_to_pfn(va);
 	mfn = pfn_to_mfn(pfn);
 
 	pte = pfn_pte(pfn, PAGE_KERNEL_RO);
@@ -602,7 +498,7 @@ static void xen_load_tls(struct thread_struct *t, unsigned int cpu)
 	 * exception between the new %fs descriptor being loaded and
 	 * %fs being effectively cleared at __switch_to().
 	 */
-	if (xen_get_lazy_mode() == XEN_LAZY_CPU)
+	if (paravirt_get_lazy_mode() == PARAVIRT_LAZY_CPU)
 		loadsegment(fs, 0);
 
 	xen_mc_batch();
@@ -611,7 +507,7 @@ static void xen_load_tls(struct thread_struct *t, unsigned int cpu)
 	load_TLS_descriptor(t, cpu, 1);
 	load_TLS_descriptor(t, cpu, 2);
 
-	xen_mc_issue(XEN_LAZY_CPU);
+	xen_mc_issue(PARAVIRT_LAZY_CPU);
 }
 
 static void xen_load_gs_index(unsigned int idx)
@@ -712,7 +608,7 @@ static struct trap_array_entry trap_array[] = {
 	TRAP_ENTRY(exc_int3,				false ),
 	TRAP_ENTRY(exc_overflow,			false ),
 #ifdef CONFIG_IA32_EMULATION
-	TRAP_ENTRY(int80_emulation,			false ),
+	{ entry_INT80_compat,          xen_entry_INT80_compat,          false },
 #endif
 	TRAP_ENTRY(exc_page_fault,			false ),
 	TRAP_ENTRY(exc_divide_error,			false ),
@@ -728,9 +624,6 @@ static struct trap_array_entry trap_array[] = {
 	TRAP_ENTRY(exc_coprocessor_error,		false ),
 	TRAP_ENTRY(exc_alignment_check,			false ),
 	TRAP_ENTRY(exc_simd_coprocessor_error,		false ),
-#ifdef CONFIG_X86_CET
-	TRAP_ENTRY(exc_control_protection,		false ),
-#endif
 };
 
 static bool __ref get_trap_addr(void **addr, unsigned int ist)
@@ -865,7 +758,6 @@ static void xen_load_idt(const struct desc_ptr *desc)
 {
 	static DEFINE_SPINLOCK(lock);
 	static struct trap_info traps[257];
-	static const struct trap_info zero = { };
 	unsigned out;
 
 	trace_xen_cpu_load_idt(desc);
@@ -875,7 +767,7 @@ static void xen_load_idt(const struct desc_ptr *desc)
 	memcpy(this_cpu_ptr(&idt_desc), desc, sizeof(idt_desc));
 
 	out = xen_convert_trap_info(desc, traps, false);
-	traps[out] = zero;
+	memset(&traps[out], 0, sizeof(traps[0]));
 
 	xen_mc_flush();
 	if (HYPERVISOR_set_trap_table(traps))
@@ -943,7 +835,7 @@ static void xen_load_sp0(unsigned long sp0)
 
 	mcs = xen_mc_entry(0);
 	MULTI_stack_switch(mcs.mc, __KERNEL_DS, sp0);
-	xen_mc_issue(XEN_LAZY_CPU);
+	xen_mc_issue(PARAVIRT_LAZY_CPU);
 	this_cpu_write(cpu_tss_rw.x86_tss.sp0, sp0);
 }
 
@@ -1007,7 +899,7 @@ static void xen_write_cr0(unsigned long cr0)
 
 	MULTI_fpu_taskswitch(mcs.mc, (cr0 & X86_CR0_TS) != 0);
 
-	xen_mc_issue(XEN_LAZY_CPU);
+	xen_mc_issue(PARAVIRT_LAZY_CPU);
 }
 
 static void xen_write_cr4(unsigned long cr4)
@@ -1017,63 +909,39 @@ static void xen_write_cr4(unsigned long cr4)
 	native_write_cr4(cr4);
 }
 
-static u64 xen_do_read_msr(unsigned int msr, int *err)
+static u64 xen_read_msr_safe(unsigned int msr, int *err)
 {
-	u64 val = 0;	/* Avoid uninitialized value for safe variant. */
+	u64 val;
 
 	if (pmu_msr_read(msr, &val, err))
 		return val;
 
-	if (err)
-		val = native_read_msr_safe(msr, err);
-	else
-		val = native_read_msr(msr);
-
+	val = native_read_msr_safe(msr, err);
 	switch (msr) {
 	case MSR_IA32_APICBASE:
 		val &= ~X2APIC_ENABLE;
-		if (smp_processor_id() == 0)
-			val |= MSR_IA32_APICBASE_BSP;
-		else
-			val &= ~MSR_IA32_APICBASE_BSP;
 		break;
 	}
 	return val;
 }
 
-static void set_seg(unsigned int which, unsigned int low, unsigned int high,
-		    int *err)
+static int xen_write_msr_safe(unsigned int msr, unsigned low, unsigned high)
 {
-	u64 base = ((u64)high << 32) | low;
+	int ret;
+	unsigned int which;
+	u64 base;
 
-	if (HYPERVISOR_set_segment_base(which, base) == 0)
-		return;
+	ret = 0;
 
-	if (err)
-		*err = -EIO;
-	else
-		WARN(1, "Xen set_segment_base(%u, %llx) failed\n", which, base);
-}
-
-/*
- * Support write_msr_safe() and write_msr() semantics.
- * With err == NULL write_msr() semantics are selected.
- * Supplying an err pointer requires err to be pre-initialized with 0.
- */
-static void xen_do_write_msr(unsigned int msr, unsigned int low,
-			     unsigned int high, int *err)
-{
 	switch (msr) {
-	case MSR_FS_BASE:
-		set_seg(SEGBASE_FS, low, high, err);
-		break;
+	case MSR_FS_BASE:		which = SEGBASE_FS; goto set;
+	case MSR_KERNEL_GS_BASE:	which = SEGBASE_GS_USER; goto set;
+	case MSR_GS_BASE:		which = SEGBASE_GS_KERNEL; goto set;
 
-	case MSR_KERNEL_GS_BASE:
-		set_seg(SEGBASE_GS_USER, low, high, err);
-		break;
-
-	case MSR_GS_BASE:
-		set_seg(SEGBASE_GS_KERNEL, low, high, err);
+	set:
+		base = ((u64)high << 32) | low;
+		if (HYPERVISOR_set_segment_base(which, base) != 0)
+			ret = -EIO;
 		break;
 
 	case MSR_STAR:
@@ -1089,42 +957,31 @@ static void xen_do_write_msr(unsigned int msr, unsigned int low,
 		break;
 
 	default:
-		if (!pmu_msr_write(msr, low, high, err)) {
-			if (err)
-				*err = native_write_msr_safe(msr, low, high);
-			else
-				native_write_msr(msr, low, high);
-		}
+		if (!pmu_msr_write(msr, low, high, &ret))
+			ret = native_write_msr_safe(msr, low, high);
 	}
-}
 
-static u64 xen_read_msr_safe(unsigned int msr, int *err)
-{
-	return xen_do_read_msr(msr, err);
-}
-
-static int xen_write_msr_safe(unsigned int msr, unsigned int low,
-			      unsigned int high)
-{
-	int err = 0;
-
-	xen_do_write_msr(msr, low, high, &err);
-
-	return err;
+	return ret;
 }
 
 static u64 xen_read_msr(unsigned int msr)
 {
+	/*
+	 * This will silently swallow a #GP from RDMSR.  It may be worth
+	 * changing that.
+	 */
 	int err;
 
-	return xen_do_read_msr(msr, xen_msr_safe ? &err : NULL);
+	return xen_read_msr_safe(msr, &err);
 }
 
 static void xen_write_msr(unsigned int msr, unsigned low, unsigned high)
 {
-	int err;
-
-	xen_do_write_msr(msr, low, high, xen_msr_safe ? &err : NULL);
+	/*
+	 * This will silently swallow a #GP from WRMSR.  It may be worth
+	 * changing that.
+	 */
+	xen_write_msr_safe(msr, low, high);
 }
 
 /* This is called once we have the cpu_possible_mask */
@@ -1161,7 +1018,7 @@ static const typeof(pv_ops) xen_cpu_ops __initconst = {
 
 		.write_cr4 = xen_write_cr4,
 
-		.wbinvd = pv_native_wbinvd,
+		.wbinvd = native_wbinvd,
 
 		.read_msr = xen_read_msr,
 		.write_msr = xen_write_msr,
@@ -1194,7 +1051,7 @@ static const typeof(pv_ops) xen_cpu_ops __initconst = {
 #endif
 		.io_delay = xen_io_delay,
 
-		.start_context_switch = xen_start_context_switch,
+		.start_context_switch = paravirt_start_context_switch,
 		.end_context_switch = xen_end_context_switch,
 	},
 };
@@ -1211,7 +1068,8 @@ static void xen_machine_halt(void)
 
 static void xen_machine_power_off(void)
 {
-	do_kernel_power_off();
+	if (pm_power_off)
+		pm_power_off();
 	xen_reboot(SHUTDOWN_poweroff);
 }
 
@@ -1303,7 +1161,7 @@ static void __init xen_setup_gdt(int cpu)
 	pv_ops.cpu.write_gdt_entry = xen_write_gdt_entry_boot;
 	pv_ops.cpu.load_gdt = xen_load_gdt_boot;
 
-	switch_gdt_and_percpu_base(cpu);
+	switch_to_new_gdt(cpu);
 
 	pv_ops.cpu.write_gdt_entry = xen_write_gdt_entry;
 	pv_ops.cpu.load_gdt = xen_load_gdt;
@@ -1319,25 +1177,15 @@ static void __init xen_domu_set_legacy_features(void)
 	x86_platform.legacy.rtc = 0;
 }
 
-extern void early_xen_iret_patch(void);
-
 /* First C function to be called on Xen boot */
-asmlinkage __visible void __init xen_start_kernel(struct start_info *si)
+asmlinkage __visible void __init xen_start_kernel(void)
 {
 	struct physdev_set_iopl set_iopl;
 	unsigned long initrd_start = 0;
 	int rc;
 
-	if (!si)
+	if (!xen_start_info)
 		return;
-
-	clear_bss();
-
-	xen_start_info = si;
-
-	__text_gen_insn(&early_xen_iret_patch,
-			JMP32_INSN_OPCODE, &early_xen_iret_patch, &xen_iret,
-			JMP32_INSN_SIZE);
 
 	xen_domain_type = XEN_PV_DOMAIN;
 	xen_start_flags = xen_start_info->flags;
@@ -1347,6 +1195,7 @@ asmlinkage __visible void __init xen_start_kernel(struct start_info *si)
 	/* Install Xen paravirt ops */
 	pv_info = xen_info;
 	pv_ops.cpu = xen_cpu_ops.cpu;
+	paravirt_iret = xen_iret;
 	xen_init_irq_ops();
 
 	/*
@@ -1359,12 +1208,10 @@ asmlinkage __visible void __init xen_start_kernel(struct start_info *si)
 	xen_vcpu_info_reset(0);
 
 	x86_platform.get_nmi_reason = xen_get_nmi_reason;
-	x86_platform.realmode_reserve = x86_init_noop;
-	x86_platform.realmode_init = x86_init_noop;
 
 	x86_init.resources.memory_setup = xen_memory_setup;
 	x86_init.irqs.intr_mode_select	= x86_init_noop;
-	x86_init.irqs.intr_mode_init	= x86_64_probe_apic;
+	x86_init.irqs.intr_mode_init	= x86_init_noop;
 	x86_init.oem.arch_setup = xen_arch_setup;
 	x86_init.oem.banner = xen_banner;
 	x86_init.hyper.init_platform = xen_pv_init_platform;
@@ -1404,10 +1251,12 @@ asmlinkage __visible void __init xen_start_kernel(struct start_info *si)
 
 	xen_init_capabilities();
 
+#ifdef CONFIG_X86_LOCAL_APIC
 	/*
 	 * set up the basic apic ops.
 	 */
 	xen_init_apic();
+#endif
 
 	machine_ops = xen_machine_ops;
 
@@ -1480,8 +1329,7 @@ asmlinkage __visible void __init xen_start_kernel(struct start_info *si)
 
 		x86_platform.set_legacy_features =
 				xen_dom0_set_legacy_features;
-		xen_init_vga(info, xen_start_info->console.dom0.info_size,
-			     &boot_params.screen_info);
+		xen_init_vga(info, xen_start_info->console.dom0.info_size);
 		xen_start_info->console.domU.mfn = 0;
 		xen_start_info->console.domU.evtchn = 0;
 

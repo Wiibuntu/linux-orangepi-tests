@@ -10,10 +10,7 @@ struct mlx5_lag_definer {
 	struct mlx5_flow_definer *definer;
 	struct mlx5_flow_table *ft;
 	struct mlx5_flow_group *fg;
-	/* Each port has ldev->buckets number of rules and they are arrange in
-	 * [port * buckets .. port * buckets + buckets) locations
-	 */
-	struct mlx5_flow_handle *rules[MLX5_MAX_PORTS * MLX5_LAG_MAX_HASH_BUCKETS];
+	struct mlx5_flow_handle *rules[MLX5_MAX_PORTS];
 };
 
 struct mlx5_lag_ttc {
@@ -30,20 +27,22 @@ struct mlx5_lag_port_sel {
 
 #ifdef CONFIG_MLX5_ESWITCH
 
-int mlx5_lag_port_sel_modify(struct mlx5_lag *ldev, u8 *ports);
+int mlx5_lag_port_sel_modify(struct mlx5_lag *ldev, u8 port1, u8 port2);
 void mlx5_lag_port_sel_destroy(struct mlx5_lag *ldev);
 int mlx5_lag_port_sel_create(struct mlx5_lag *ldev,
-			     enum netdev_lag_hash hash_type, u8 *ports);
+			     enum netdev_lag_hash hash_type, u8 port1,
+			     u8 port2);
 
 #else /* CONFIG_MLX5_ESWITCH */
 static inline int mlx5_lag_port_sel_create(struct mlx5_lag *ldev,
 					   enum netdev_lag_hash hash_type,
-					   u8 *ports)
+					   u8 port1, u8 port2)
 {
 	return 0;
 }
 
-static inline int mlx5_lag_port_sel_modify(struct mlx5_lag *ldev, u8 *ports)
+static inline int mlx5_lag_port_sel_modify(struct mlx5_lag *ldev, u8 port1,
+					   u8 port2)
 {
 	return 0;
 }

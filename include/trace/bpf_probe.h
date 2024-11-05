@@ -4,15 +4,28 @@
 
 #ifdef CONFIG_BPF_EVENTS
 
-#include "stages/stage6_event_callback.h"
+#undef __entry
+#define __entry entry
+
+#undef __get_dynamic_array
+#define __get_dynamic_array(field)	\
+		((void *)__entry + (__entry->__data_loc_##field & 0xffff))
+
+#undef __get_dynamic_array_len
+#define __get_dynamic_array_len(field)	\
+		((__entry->__data_loc_##field >> 16) & 0xffff)
+
+#undef __get_str
+#define __get_str(field) ((char *)__get_dynamic_array(field))
+
+#undef __get_bitmask
+#define __get_bitmask(field) (char *)__get_dynamic_array(field)
 
 #undef __perf_count
 #define __perf_count(c)	(c)
 
 #undef __perf_task
 #define __perf_task(t)	(t)
-
-#include <linux/args.h>
 
 /* cast any integer, pointer, or small struct to u64 */
 #define UINTTYPE(size) \
@@ -46,7 +59,8 @@
 static notrace void							\
 __bpf_trace_##call(void *__data, proto)					\
 {									\
-	CONCATENATE(bpf_trace_run, COUNT_ARGS(args))(__data, CAST_TO_U64(args));	\
+	struct bpf_prog *prog = __data;					\
+	CONCATENATE(bpf_trace_run, COUNT_ARGS(args))(prog, CAST_TO_U64(args));	\
 }
 
 #undef DECLARE_EVENT_CLASS

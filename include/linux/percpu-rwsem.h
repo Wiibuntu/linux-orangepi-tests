@@ -121,14 +121,8 @@ static inline void percpu_up_read(struct percpu_rw_semaphore *sem)
 	preempt_enable();
 }
 
-extern bool percpu_is_read_locked(struct percpu_rw_semaphore *);
 extern void percpu_down_write(struct percpu_rw_semaphore *);
 extern void percpu_up_write(struct percpu_rw_semaphore *);
-
-static inline bool percpu_is_write_locked(struct percpu_rw_semaphore *sem)
-{
-	return atomic_read(&sem->block);
-}
 
 extern int __percpu_init_rwsem(struct percpu_rw_semaphore *,
 				const char *, struct lock_class_key *);
@@ -145,7 +139,7 @@ extern void percpu_free_rwsem(struct percpu_rw_semaphore *);
 #define percpu_rwsem_assert_held(sem)	lockdep_assert_held(sem)
 
 static inline void percpu_rwsem_release(struct percpu_rw_semaphore *sem,
-					unsigned long ip)
+					bool read, unsigned long ip)
 {
 	lock_release(&sem->dep_map, ip);
 }

@@ -12,15 +12,13 @@
 
 static __always_inline bool arch_static_branch(struct static_key *key, bool branch)
 {
-	asm goto("1:\n\t"
+	asm_volatile_goto("1:\n\t"
 		 "nop\n\t"
 		 ".pushsection __jump_table,  \"aw\"\n\t"
-		 ".align %1\n\t"
 		 ".word 1b - ., %l[l_yes] - .\n\t"
 		 __stringify(ASM_ULONG_INSN) " %c0 - .\n\t"
 		 ".popsection\n\t"
-		 : : "i" (&((char *)key)[branch]), "i" (sizeof(long))
-		 : : l_yes);
+		 : :  "i" (&((char *)key)[branch]) :  : l_yes);
 
 	return false;
 l_yes:
@@ -29,15 +27,13 @@ l_yes:
 
 static __always_inline bool arch_static_branch_jump(struct static_key *key, bool branch)
 {
-	asm goto("1:\n\t"
+	asm_volatile_goto("1:\n\t"
 		 "b,n %l[l_yes]\n\t"
 		 ".pushsection __jump_table,  \"aw\"\n\t"
-		 ".align %1\n\t"
 		 ".word 1b - ., %l[l_yes] - .\n\t"
 		 __stringify(ASM_ULONG_INSN) " %c0 - .\n\t"
 		 ".popsection\n\t"
-		 : : "i" (&((char *)key)[branch]), "i" (sizeof(long))
-		 : : l_yes);
+		 : :  "i" (&((char *)key)[branch]) :  : l_yes);
 
 	return false;
 l_yes:

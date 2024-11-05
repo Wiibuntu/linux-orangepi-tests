@@ -1044,7 +1044,10 @@ static int hptiop_queuecommand_lck(struct scsi_cmnd *scp)
 	req->channel = scp->device->channel;
 	req->target = scp->device->id;
 	req->lun = scp->device->lun;
-	req->header.size = cpu_to_le32(struct_size(req, sg_list, sg_count));
+	req->header.size = cpu_to_le32(
+				sizeof(struct hpt_iop_request_scsi_command)
+				 - sizeof(struct hpt_iopsg)
+				 + sg_count * sizeof(struct hpt_iopsg));
 
 	memcpy(req->cdb, scp->cmnd, sizeof(req->cdb));
 	hba->ops->post_req(hba, _req);
@@ -1151,15 +1154,15 @@ static struct attribute *hptiop_host_attrs[] = {
 
 ATTRIBUTE_GROUPS(hptiop_host);
 
-static int hptiop_device_configure(struct scsi_device *sdev,
-		struct queue_limits *lim)
+static int hptiop_slave_config(struct scsi_device *sdev)
 {
 	if (sdev->type == TYPE_TAPE)
-		lim->max_hw_sectors = 8192;
+		blk_queue_max_hw_sectors(sdev->request_queue, 8192);
+
 	return 0;
 }
 
-static const struct scsi_host_template driver_template = {
+static struct scsi_host_template driver_template = {
 	.module                     = THIS_MODULE,
 	.name                       = driver_name,
 	.queuecommand               = hptiop_queuecommand,
@@ -1168,10 +1171,9 @@ static const struct scsi_host_template driver_template = {
 	.emulated                   = 0,
 	.proc_name                  = driver_name,
 	.shost_groups		    = hptiop_host_groups,
-	.device_configure	    = hptiop_device_configure,
+	.slave_configure            = hptiop_slave_config,
 	.this_id                    = -1,
 	.change_queue_depth         = hptiop_adjust_disk_queue_depth,
-	.cmd_size		    = sizeof(struct hpt_cmd_priv),
 };
 
 static int hptiop_internal_memalloc_itl(struct hptiop_hba *hba)
@@ -1394,8 +1396,8 @@ static int hptiop_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	host->cmd_per_lun = le32_to_cpu(iop_config.max_requests);
 	host->max_cmd_len = 16;
 
-	req_size = struct_size_t(struct hpt_iop_request_scsi_command,
-				 sg_list, hba->max_sg_descriptors);
+	req_size = sizeof(struct hpt_iop_request_scsi_command)
+		+ sizeof(struct hpt_iopsg) * (hba->max_sg_descriptors - 1);
 	if ((req_size & 0x1f) != 0)
 		req_size = (req_size + 0x1f) & ~0x1f;
 

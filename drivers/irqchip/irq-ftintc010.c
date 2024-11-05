@@ -11,6 +11,7 @@
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <linux/irqchip.h>
+#include <linux/irqchip/versatile-fpga.h>
 #include <linux/irqdomain.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -125,7 +126,7 @@ static struct irq_chip ft010_irq_chip = {
 /* Local static for the IRQ entry call */
 static struct ft010_irq_data firq;
 
-static void __exception_irq_entry ft010_irqchip_handle_irq(struct pt_regs *regs)
+asmlinkage void __exception_irq_entry ft010_irqchip_handle_irq(struct pt_regs *regs)
 {
 	struct ft010_irq_data *f = &firq;
 	int irq;
@@ -162,7 +163,7 @@ static const struct irq_domain_ops ft010_irqdomain_ops = {
 	.xlate = irq_domain_xlate_onetwocell,
 };
 
-static int __init ft010_of_init_irq(struct device_node *node,
+int __init ft010_of_init_irq(struct device_node *node,
 			      struct device_node *parent)
 {
 	struct ft010_irq_data *f = &firq;

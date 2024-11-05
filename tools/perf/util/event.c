@@ -33,7 +33,7 @@
 #include "bpf-event.h"
 #include "print_binary.h"
 #include "tool.h"
-#include "util.h"
+#include "../perf.h"
 
 static const char *perf_event__names[] = {
 	[0]					= "TOTAL",
@@ -76,7 +76,6 @@ static const char *perf_event__names[] = {
 	[PERF_RECORD_TIME_CONV]			= "TIME_CONV",
 	[PERF_RECORD_HEADER_FEATURE]		= "FEATURE",
 	[PERF_RECORD_COMPRESSED]		= "COMPRESSED",
-	[PERF_RECORD_FINISHED_INIT]		= "FINISHED_INIT",
 };
 
 const char *perf_event__name(unsigned int id)
@@ -93,8 +92,8 @@ struct process_symbol_args {
 	u64	   start;
 };
 
-static int find_func_symbol_cb(void *arg, const char *name, char type,
-			       u64 start)
+static int find_symbol_cb(void *arg, const char *name, char type,
+			  u64 start)
 {
 	struct process_symbol_args *args = arg;
 
@@ -110,36 +109,12 @@ static int find_func_symbol_cb(void *arg, const char *name, char type,
 	return 1;
 }
 
-static int find_any_symbol_cb(void *arg, const char *name,
-			      char type __maybe_unused, u64 start)
-{
-	struct process_symbol_args *args = arg;
-
-	if (strcmp(name, args->name))
-		return 0;
-
-	args->start = start;
-	return 1;
-}
-
 int kallsyms__get_function_start(const char *kallsyms_filename,
 				 const char *symbol_name, u64 *addr)
 {
 	struct process_symbol_args args = { .name = symbol_name, };
 
-	if (kallsyms__parse(kallsyms_filename, &args, find_func_symbol_cb) <= 0)
-		return -1;
-
-	*addr = args.start;
-	return 0;
-}
-
-int kallsyms__get_symbol_start(const char *kallsyms_filename,
-			       const char *symbol_name, u64 *addr)
-{
-	struct process_symbol_args args = { .name = symbol_name, };
-
-	if (kallsyms__parse(kallsyms_filename, &args, find_any_symbol_cb) <= 0)
+	if (kallsyms__parse(kallsyms_filename, &args, find_symbol_cb) <= 0)
 		return -1;
 
 	*addr = args.start;
@@ -159,10 +134,9 @@ void perf_event__read_stat_config(struct perf_stat_config *config,
 			config->__val = event->data[i].val;	\
 			break;
 
-		CASE(AGGR_MODE,  aggr_mode)
-		CASE(SCALE,      scale)
-		CASE(INTERVAL,   interval)
-		CASE(AGGR_LEVEL, aggr_level)
+		CASE(AGGR_MODE, aggr_mode)
+		CASE(SCALE,     scale)
+		CASE(INTERVAL,  interval)
 #undef CASE
 		default:
 			pr_warning("unknown stat config term %" PRI_lu64 "\n",
@@ -216,7 +190,7 @@ size_t perf_event__fprintf_cgroup(union perf_event *event, FILE *fp)
 		       event->cgroup.id, event->cgroup.path);
 }
 
-int perf_event__process_comm(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_comm(struct perf_tool *tool __maybe_unused,
 			     union perf_event *event,
 			     struct perf_sample *sample,
 			     struct machine *machine)
@@ -224,7 +198,7 @@ int perf_event__process_comm(const struct perf_tool *tool __maybe_unused,
 	return machine__process_comm_event(machine, event, sample);
 }
 
-int perf_event__process_namespaces(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_namespaces(struct perf_tool *tool __maybe_unused,
 				   union perf_event *event,
 				   struct perf_sample *sample,
 				   struct machine *machine)
@@ -232,7 +206,7 @@ int perf_event__process_namespaces(const struct perf_tool *tool __maybe_unused,
 	return machine__process_namespaces_event(machine, event, sample);
 }
 
-int perf_event__process_cgroup(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_cgroup(struct perf_tool *tool __maybe_unused,
 			       union perf_event *event,
 			       struct perf_sample *sample,
 			       struct machine *machine)
@@ -240,7 +214,7 @@ int perf_event__process_cgroup(const struct perf_tool *tool __maybe_unused,
 	return machine__process_cgroup_event(machine, event, sample);
 }
 
-int perf_event__process_lost(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_lost(struct perf_tool *tool __maybe_unused,
 			     union perf_event *event,
 			     struct perf_sample *sample,
 			     struct machine *machine)
@@ -248,7 +222,7 @@ int perf_event__process_lost(const struct perf_tool *tool __maybe_unused,
 	return machine__process_lost_event(machine, event, sample);
 }
 
-int perf_event__process_aux(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_aux(struct perf_tool *tool __maybe_unused,
 			    union perf_event *event,
 			    struct perf_sample *sample __maybe_unused,
 			    struct machine *machine)
@@ -256,7 +230,7 @@ int perf_event__process_aux(const struct perf_tool *tool __maybe_unused,
 	return machine__process_aux_event(machine, event);
 }
 
-int perf_event__process_itrace_start(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_itrace_start(struct perf_tool *tool __maybe_unused,
 				     union perf_event *event,
 				     struct perf_sample *sample __maybe_unused,
 				     struct machine *machine)
@@ -264,7 +238,7 @@ int perf_event__process_itrace_start(const struct perf_tool *tool __maybe_unused
 	return machine__process_itrace_start_event(machine, event);
 }
 
-int perf_event__process_aux_output_hw_id(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_aux_output_hw_id(struct perf_tool *tool __maybe_unused,
 					 union perf_event *event,
 					 struct perf_sample *sample __maybe_unused,
 					 struct machine *machine)
@@ -272,7 +246,7 @@ int perf_event__process_aux_output_hw_id(const struct perf_tool *tool __maybe_un
 	return machine__process_aux_output_hw_id_event(machine, event);
 }
 
-int perf_event__process_lost_samples(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_lost_samples(struct perf_tool *tool __maybe_unused,
 				     union perf_event *event,
 				     struct perf_sample *sample,
 				     struct machine *machine)
@@ -280,7 +254,7 @@ int perf_event__process_lost_samples(const struct perf_tool *tool __maybe_unused
 	return machine__process_lost_samples_event(machine, event, sample);
 }
 
-int perf_event__process_switch(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_switch(struct perf_tool *tool __maybe_unused,
 			       union perf_event *event,
 			       struct perf_sample *sample __maybe_unused,
 			       struct machine *machine)
@@ -288,7 +262,7 @@ int perf_event__process_switch(const struct perf_tool *tool __maybe_unused,
 	return machine__process_switch_event(machine, event);
 }
 
-int perf_event__process_ksymbol(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_ksymbol(struct perf_tool *tool __maybe_unused,
 				union perf_event *event,
 				struct perf_sample *sample __maybe_unused,
 				struct machine *machine)
@@ -296,7 +270,7 @@ int perf_event__process_ksymbol(const struct perf_tool *tool __maybe_unused,
 	return machine__process_ksymbol(machine, event, sample);
 }
 
-int perf_event__process_bpf(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_bpf(struct perf_tool *tool __maybe_unused,
 			    union perf_event *event,
 			    struct perf_sample *sample,
 			    struct machine *machine)
@@ -304,7 +278,7 @@ int perf_event__process_bpf(const struct perf_tool *tool __maybe_unused,
 	return machine__process_bpf(machine, event, sample);
 }
 
-int perf_event__process_text_poke(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_text_poke(struct perf_tool *tool __maybe_unused,
 				  union perf_event *event,
 				  struct perf_sample *sample,
 				  struct machine *machine)
@@ -387,7 +361,7 @@ size_t perf_event__fprintf_cpu_map(union perf_event *event, FILE *fp)
 	return ret;
 }
 
-int perf_event__process_mmap(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_mmap(struct perf_tool *tool __maybe_unused,
 			     union perf_event *event,
 			     struct perf_sample *sample,
 			     struct machine *machine)
@@ -395,7 +369,7 @@ int perf_event__process_mmap(const struct perf_tool *tool __maybe_unused,
 	return machine__process_mmap_event(machine, event, sample);
 }
 
-int perf_event__process_mmap2(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_mmap2(struct perf_tool *tool __maybe_unused,
 			     union perf_event *event,
 			     struct perf_sample *sample,
 			     struct machine *machine)
@@ -410,7 +384,7 @@ size_t perf_event__fprintf_task(union perf_event *event, FILE *fp)
 		       event->fork.ppid, event->fork.ptid);
 }
 
-int perf_event__process_fork(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_fork(struct perf_tool *tool __maybe_unused,
 			     union perf_event *event,
 			     struct perf_sample *sample,
 			     struct machine *machine)
@@ -418,32 +392,12 @@ int perf_event__process_fork(const struct perf_tool *tool __maybe_unused,
 	return machine__process_fork_event(machine, event, sample);
 }
 
-int perf_event__process_exit(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_exit(struct perf_tool *tool __maybe_unused,
 			     union perf_event *event,
 			     struct perf_sample *sample,
 			     struct machine *machine)
 {
 	return machine__process_exit_event(machine, event, sample);
-}
-
-int perf_event__exit_del_thread(const struct perf_tool *tool __maybe_unused,
-				union perf_event *event,
-				struct perf_sample *sample __maybe_unused,
-				struct machine *machine)
-{
-	struct thread *thread = machine__findnew_thread(machine,
-							event->fork.pid,
-							event->fork.tid);
-
-	dump_printf("(%d:%d):(%d:%d)\n", event->fork.pid, event->fork.tid,
-		    event->fork.ppid, event->fork.ptid);
-
-	if (thread) {
-		machine__remove_thread(machine, thread);
-		thread__put(thread);
-	}
-
-	return 0;
 }
 
 size_t perf_event__fprintf_aux(union perf_event *event, FILE *fp)
@@ -530,15 +484,13 @@ size_t perf_event__fprintf_text_poke(union perf_event *event, struct machine *ma
 	if (machine) {
 		struct addr_location al;
 
-		addr_location__init(&al);
-		al.map = maps__find(machine__kernel_maps(machine), tp->addr);
+		al.map = maps__find(&machine->kmaps, tp->addr);
 		if (al.map && map__load(al.map) >= 0) {
-			al.addr = map__map_ip(al.map, tp->addr);
+			al.addr = al.map->map_ip(al.map, tp->addr);
 			al.sym = map__find_symbol(al.map, al.addr);
 			if (al.sym)
 				ret += symbol__fprintf_symname_offs(al.sym, &al, fp);
 		}
-		addr_location__exit(&al);
 	}
 	ret += fprintf(fp, " old len %u new len %u\n", tp->old_len, tp->new_len);
 	old = true;
@@ -607,7 +559,7 @@ size_t perf_event__fprintf(union perf_event *event, struct machine *machine, FIL
 	return ret;
 }
 
-int perf_event__process(const struct perf_tool *tool __maybe_unused,
+int perf_event__process(struct perf_tool *tool __maybe_unused,
 			union perf_event *event,
 			struct perf_sample *sample,
 			struct machine *machine)
@@ -618,36 +570,36 @@ int perf_event__process(const struct perf_tool *tool __maybe_unused,
 struct map *thread__find_map(struct thread *thread, u8 cpumode, u64 addr,
 			     struct addr_location *al)
 {
-	struct maps *maps = thread__maps(thread);
-	struct machine *machine = maps__machine(maps);
+	struct maps *maps = thread->maps;
+	struct machine *machine = maps->machine;
 	bool load_map = false;
 
-	maps__zput(al->maps);
-	map__zput(al->map);
-	thread__zput(al->thread);
-	al->thread = thread__get(thread);
-
+	al->maps = maps;
+	al->thread = thread;
 	al->addr = addr;
 	al->cpumode = cpumode;
 	al->filtered = 0;
 
-	if (machine == NULL)
+	if (machine == NULL) {
+		al->map = NULL;
 		return NULL;
+	}
 
 	if (cpumode == PERF_RECORD_MISC_KERNEL && perf_host) {
 		al->level = 'k';
-		maps = machine__kernel_maps(machine);
-		load_map = !symbol_conf.lazy_load_kernel_maps;
+		al->maps = maps = &machine->kmaps;
+		load_map = true;
 	} else if (cpumode == PERF_RECORD_MISC_USER && perf_host) {
 		al->level = '.';
 	} else if (cpumode == PERF_RECORD_MISC_GUEST_KERNEL && perf_guest) {
 		al->level = 'g';
-		maps = machine__kernel_maps(machine);
-		load_map = !symbol_conf.lazy_load_kernel_maps;
+		al->maps = maps = &machine->kmaps;
+		load_map = true;
 	} else if (cpumode == PERF_RECORD_MISC_GUEST_USER && perf_guest) {
 		al->level = 'u';
 	} else {
 		al->level = 'H';
+		al->map = NULL;
 
 		if ((cpumode == PERF_RECORD_MISC_GUEST_USER ||
 			cpumode == PERF_RECORD_MISC_GUEST_KERNEL) &&
@@ -660,7 +612,7 @@ struct map *thread__find_map(struct thread *thread, u8 cpumode, u64 addr,
 
 		return NULL;
 	}
-	al->maps = maps__get(maps);
+
 	al->map = maps__find(maps, al->addr);
 	if (al->map != NULL) {
 		/*
@@ -669,7 +621,7 @@ struct map *thread__find_map(struct thread *thread, u8 cpumode, u64 addr,
 		 */
 		if (load_map)
 			map__load(al->map);
-		al->addr = map__map_ip(al->map, al->addr);
+		al->addr = al->map->map_ip(al->map, al->addr);
 	}
 
 	return al->map;
@@ -684,7 +636,7 @@ struct map *thread__find_map_fb(struct thread *thread, u8 cpumode, u64 addr,
 				struct addr_location *al)
 {
 	struct map *map = thread__find_map(thread, cpumode, addr, al);
-	struct machine *machine = maps__machine(thread__maps(thread));
+	struct machine *machine = thread->maps->machine;
 	u8 addr_cpumode = machine__addr_cpumode(machine, cpumode, addr);
 
 	if (map || addr_cpumode == cpumode)
@@ -731,29 +683,20 @@ static bool check_address_range(struct intlist *addr_list, int addr_range,
 int machine__resolve(struct machine *machine, struct addr_location *al,
 		     struct perf_sample *sample)
 {
-	struct thread *thread;
-	struct dso *dso;
+	struct thread *thread = machine__findnew_thread(machine, sample->pid,
+							sample->tid);
 
-	if (symbol_conf.guest_code && !machine__is_host(machine))
-		thread = machine__findnew_guest_code(machine, sample->pid);
-	else
-		thread = machine__findnew_thread(machine, sample->pid, sample->tid);
 	if (thread == NULL)
 		return -1;
 
-	dump_printf(" ... thread: %s:%d\n", thread__comm_str(thread), thread__tid(thread));
+	dump_printf(" ... thread: %s:%d\n", thread__comm_str(thread), thread->tid);
 	thread__find_map(thread, sample->cpumode, sample->ip, al);
-	dso = al->map ? map__dso(al->map) : NULL;
 	dump_printf(" ...... dso: %s\n",
-		dso
-		? dso__long_name(dso)
-		: (al->level == 'H' ? "[hypervisor]" : "<not found>"));
+		    al->map ? al->map->dso->long_name :
+			al->level == 'H' ? "[hypervisor]" : "<not found>");
 
 	if (thread__is_filtered(thread))
 		al->filtered |= (1 << HIST_FILTER__THREAD);
-
-	thread__put(thread);
-	thread = NULL;
 
 	al->sym = NULL;
 	al->cpu = sample->cpu;
@@ -768,12 +711,14 @@ int machine__resolve(struct machine *machine, struct addr_location *al,
 	}
 
 	if (al->map) {
+		struct dso *dso = al->map->dso;
+
 		if (symbol_conf.dso_list &&
 		    (!dso || !(strlist__has_entry(symbol_conf.dso_list,
-						  dso__short_name(dso)) ||
-			       (dso__short_name(dso) != dso__long_name(dso) &&
+						  dso->short_name) ||
+			       (dso->short_name != dso->long_name &&
 				strlist__has_entry(symbol_conf.dso_list,
-						   dso__long_name(dso)))))) {
+						   dso->long_name))))) {
 			al->filtered |= (1 << HIST_FILTER__DSO);
 		}
 
@@ -793,12 +738,12 @@ int machine__resolve(struct machine *machine, struct addr_location *al,
 		}
 		if (!ret && al->sym) {
 			snprintf(al_addr_str, sz, "0x%"PRIx64,
-				 map__unmap_ip(al->map, al->sym->start));
+				al->map->unmap_ip(al->map, al->sym->start));
 			ret = strlist__has_entry(symbol_conf.sym_list,
 						al_addr_str);
 		}
 		if (!ret && symbol_conf.addr_list && al->map) {
-			unsigned long addr = map__unmap_ip(al->map, al->addr);
+			unsigned long addr = al->map->unmap_ip(al->map, al->addr);
 
 			ret = intlist__has_entry(symbol_conf.addr_list, addr);
 			if (!ret && symbol_conf.addr_range) {
@@ -813,6 +758,17 @@ int machine__resolve(struct machine *machine, struct addr_location *al,
 	}
 
 	return 0;
+}
+
+/*
+ * The preprocess_sample method will return with reference counts for the
+ * in it, when done using (and perhaps getting ref counts if needing to
+ * keep a pointer to one of those entries) it must be paired with
+ * addr_location__put(), so that the refcounts can be decremented.
+ */
+void addr_location__put(struct addr_location *al)
+{
+	thread__zput(al->thread);
 }
 
 bool is_bts_event(struct perf_event_attr *attr)

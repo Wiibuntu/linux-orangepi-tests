@@ -9,7 +9,6 @@
 #include <linux/kernel.h>
 #include <linux/taskstats_kern.h>
 #include <linux/tsacct_kern.h>
-#include <linux/acct.h>
 #include <linux/delayacct.h>
 #include <linux/cpumask.h>
 #include <linux/percpu.h>
@@ -114,14 +113,13 @@ static void send_cpu_listeners(struct sk_buff *skb,
 	struct listener *s, *tmp;
 	struct sk_buff *skb_next, *skb_cur = skb;
 	void *reply = genlmsg_data(genlhdr);
-	int delcount = 0;
+	int rc, delcount = 0;
 
 	genlmsg_end(skb, reply);
 
+	rc = 0;
 	down_read(&listeners->sem);
 	list_for_each_entry(s, &listeners->list, list) {
-		int rc;
-
 		skb_next = NULL;
 		if (!list_is_last(&s->list, &listeners->list)) {
 			skb_next = skb_clone(skb_cur, GFP_KERNEL);
@@ -154,23 +152,6 @@ static void send_cpu_listeners(struct sk_buff *skb,
 	up_write(&listeners->sem);
 }
 
-static void exe_add_tsk(struct taskstats *stats, struct task_struct *tsk)
-{
-	/* No idea if I'm allowed to access that here, now. */
-	struct file *exe_file = get_task_exe_file(tsk);
-
-	if (exe_file) {
-		/* Following cp_new_stat64() in stat.c . */
-		stats->ac_exe_dev =
-			huge_encode_dev(exe_file->f_inode->i_sb->s_dev);
-		stats->ac_exe_inode = exe_file->f_inode->i_ino;
-		fput(exe_file);
-	} else {
-		stats->ac_exe_dev = 0;
-		stats->ac_exe_inode = 0;
-	}
-}
-
 static void fill_stats(struct user_namespace *user_ns,
 		       struct pid_namespace *pid_ns,
 		       struct task_struct *tsk, struct taskstats *stats)
@@ -193,9 +174,6 @@ static void fill_stats(struct user_namespace *user_ns,
 
 	/* fill in extended acct fields */
 	xacct_add_tsk(stats, tsk);
-
-	/* add executable info */
-	exe_add_tsk(stats, tsk);
 }
 
 static int fill_stats_for_pid(pid_t pid, struct taskstats *stats)
@@ -233,8 +211,9 @@ static int fill_stats_for_tgid(pid_t tgid, struct taskstats *stats)
 	else
 		memset(stats, 0, sizeof(*stats));
 
+	tsk = first;
 	start_time = ktime_get_ns();
-	for_each_thread(first, tsk) {
+	do {
 		if (tsk->exit_state)
 			continue;
 		/*
@@ -257,7 +236,7 @@ static int fill_stats_for_tgid(pid_t tgid, struct taskstats *stats)
 
 		stats->nvcsw += tsk->nvcsw;
 		stats->nivcsw += tsk->nivcsw;
-	}
+	} while_each_thread(first, tsk);
 
 	unlock_task_sighand(first, &flags);
 	rc = 0;
@@ -419,7 +398,7 @@ static int cgroupstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
 
 	fd = nla_get_u32(info->attrs[CGROUPSTATS_CMD_ATTR_FD]);
 	f = fdget(fd);
-	if (!fd_file(f))
+	if (!f.file)
 		return 0;
 
 	size = nla_total_size(sizeof(struct cgroupstats));
@@ -440,7 +419,7 @@ static int cgroupstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
 	stats = nla_data(na);
 	memset(stats, 0, sizeof(*stats));
 
-	rc = cgroupstats_build(stats, fd_file(f)->f_path.dentry);
+	rc = cgroupstats_build(stats, f.file->f_path.dentry);
 	if (rc < 0) {
 		nlmsg_free(rep_skb);
 		goto err;
@@ -640,8 +619,6 @@ void taskstats_exit(struct task_struct *tsk, int group_dead)
 		goto err;
 
 	fill_stats(&init_user_ns, &init_pid_ns, tsk, stats);
-	if (group_dead)
-		stats->ac_flag |= AGROUP;
 
 	/*
 	 * Doesn't matter if tsk is the leader or the last group member leaving
@@ -687,8 +664,6 @@ static struct genl_family family __ro_after_init = {
 	.module		= THIS_MODULE,
 	.ops		= taskstats_ops,
 	.n_ops		= ARRAY_SIZE(taskstats_ops),
-	.resv_start_op	= CGROUPSTATS_CMD_GET + 1,
-	.netnsok	= true,
 };
 
 /* Needed early in initialization */

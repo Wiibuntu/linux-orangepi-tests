@@ -11,12 +11,10 @@
 #include <linux/devcoredump.h>
 #include <linux/list.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/types.h>
-#include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <media/videobuf2-v4l2.h>
 #include <media/v4l2-mem2mem.h>
@@ -68,7 +66,6 @@ static void venus_event_notify(struct venus_core *core, u32 event)
 
 	mutex_lock(&core->lock);
 	set_bit(0, &core->sys_error);
-	set_bit(0, &core->dump_core);
 	list_for_each_entry(inst, &core->instances, list)
 		inst->ops->event_notify(inst, EVT_SESSION_ERROR, NULL);
 	mutex_unlock(&core->lock);
@@ -111,16 +108,12 @@ static void venus_sys_error_handler(struct work_struct *work)
 
 	venus_shutdown(core);
 
-	if (test_bit(0, &core->dump_core)) {
-		venus_coredump(core);
-		clear_bit(0, &core->dump_core);
-	}
+	venus_coredump(core);
 
 	pm_runtime_put_sync(core->dev);
 
 	for (i = 0; i < max_attempts; i++) {
-		if (!core->pmdomains ||
-		    !pm_runtime_active(core->pmdomains->pd_devs[0]))
+		if (!core->pmdomains[0] || !pm_runtime_active(core->pmdomains[0]))
 			break;
 		usleep_range(1000, 1500);
 	}
@@ -253,7 +246,7 @@ err:
 
 static void venus_assign_register_offsets(struct venus_core *core)
 {
-	if (IS_IRIS2(core) || IS_IRIS2_1(core)) {
+	if (IS_V6(core)) {
 		core->vbif_base = core->base + VBIF_BASE;
 		core->cpu_base = core->base + CPU_BASE_V6;
 		core->cpu_cs_base = core->base + CPU_CS_BASE_V6;
@@ -270,19 +263,6 @@ static void venus_assign_register_offsets(struct venus_core *core)
 		core->wrapper_tz_base = NULL;
 		core->aon_base = NULL;
 	}
-}
-
-static irqreturn_t venus_isr_thread(int irq, void *dev_id)
-{
-	struct venus_core *core = dev_id;
-	irqreturn_t ret;
-
-	ret = hfi_isr_thread(irq, dev_id);
-
-	if (ret == IRQ_HANDLED && venus_fault_inject_ssr())
-		hfi_core_trigger_ssr(core, HFI_TEST_SSR_SW_ERR_FATAL);
-
-	return ret;
 }
 
 static int venus_probe(struct platform_device *pdev)
@@ -340,7 +320,7 @@ static int venus_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&core->work, venus_sys_error_handler);
 	init_waitqueue_head(&core->sys_err_done);
 
-	ret = devm_request_threaded_irq(dev, core->irq, hfi_isr, venus_isr_thread,
+	ret = devm_request_threaded_irq(dev, core->irq, hfi_isr, hfi_isr_thread,
 					IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
 					"venus", core);
 	if (ret)
@@ -423,14 +403,13 @@ err_core_put:
 	return ret;
 }
 
-static void venus_remove(struct platform_device *pdev)
+static int venus_remove(struct platform_device *pdev)
 {
 	struct venus_core *core = platform_get_drvdata(pdev);
 	const struct venus_pm_ops *pm_ops = core->pm_ops;
 	struct device *dev = core->dev;
 	int ret;
 
-	cancel_delayed_work_sync(&core->work);
 	ret = pm_runtime_get_sync(dev);
 	WARN_ON(ret < 0);
 
@@ -455,6 +434,8 @@ static void venus_remove(struct platform_device *pdev)
 	mutex_destroy(&core->pm_lock);
 	mutex_destroy(&core->lock);
 	venus_dbgfs_deinit(core);
+
+	return ret;
 }
 
 static void venus_core_shutdown(struct platform_device *pdev)
@@ -556,7 +537,7 @@ static const struct venus_resources msm8916_res = {
 	.vmem_size = 0,
 	.vmem_addr = 0,
 	.dma_mask = 0xddc00000 - 1,
-	.fwname = "qcom/venus-1.8/venus.mbn",
+	.fwname = "qcom/venus-1.8/venus.mdt",
 };
 
 static const struct freq_tbl msm8996_freq_table[] = {
@@ -589,45 +570,7 @@ static const struct venus_resources msm8996_res = {
 	.vmem_size = 0,
 	.vmem_addr = 0,
 	.dma_mask = 0xddc00000 - 1,
-	.fwname = "qcom/venus-4.2/venus.mbn",
-};
-
-static const struct freq_tbl msm8998_freq_table[] = {
-	{ 1944000, 465000000 },	/* 4k UHD @ 60 (decode only) */
-	{  972000, 465000000 },	/* 4k UHD @ 30 */
-	{  489600, 360000000 },	/* 1080p @ 60 */
-	{  244800, 186000000 },	/* 1080p @ 30 */
-	{  108000, 100000000 },	/* 720p @ 30 */
-};
-
-static const struct reg_val msm8998_reg_preset[] = {
-	{ 0x80124, 0x00000003 },
-	{ 0x80550, 0x01111111 },
-	{ 0x80560, 0x01111111 },
-	{ 0x80568, 0x01111111 },
-	{ 0x80570, 0x01111111 },
-	{ 0x80580, 0x01111111 },
-	{ 0x80588, 0x01111111 },
-	{ 0xe2010, 0x00000000 },
-};
-
-static const struct venus_resources msm8998_res = {
-	.freq_tbl = msm8998_freq_table,
-	.freq_tbl_size = ARRAY_SIZE(msm8998_freq_table),
-	.reg_tbl = msm8998_reg_preset,
-	.reg_tbl_size = ARRAY_SIZE(msm8998_reg_preset),
-	.clks = { "core", "iface", "bus", "mbus" },
-	.clks_num = 4,
-	.vcodec0_clks = { "core" },
-	.vcodec1_clks = { "core" },
-	.vcodec_clks_num = 1,
-	.max_load = 2563200,
-	.hfi_version = HFI_VERSION_3XX,
-	.vmem_id = VIDC_RESOURCE_NONE,
-	.vmem_size = 0,
-	.vmem_addr = 0,
-	.dma_mask = 0xddc00000 - 1,
-	.fwname = "qcom/venus-4.4/venus.mbn",
+	.fwname = "qcom/venus-4.2/venus.mdt",
 };
 
 static const struct freq_tbl sdm660_freq_table[] = {
@@ -730,12 +673,11 @@ static const struct venus_resources sdm845_res = {
 	.vcodec_clks_num = 2,
 	.max_load = 3110400,	/* 4096x2160@90 */
 	.hfi_version = HFI_VERSION_4XX,
-	.vpu_version = VPU_VERSION_AR50,
 	.vmem_id = VIDC_RESOURCE_NONE,
 	.vmem_size = 0,
 	.vmem_addr = 0,
 	.dma_mask = 0xe0000000 - 1,
-	.fwname = "qcom/venus-5.2/venus.mbn",
+	.fwname = "qcom/venus-5.2/venus.mdt",
 };
 
 static const struct venus_resources sdm845_res_v2 = {
@@ -750,13 +692,12 @@ static const struct venus_resources sdm845_res_v2 = {
 	.vcodec0_clks = { "vcodec0_core", "vcodec0_bus" },
 	.vcodec1_clks = { "vcodec1_core", "vcodec1_bus" },
 	.vcodec_clks_num = 2,
-	.vcodec_pmdomains = (const char *[]) { "venus", "vcodec0", "vcodec1" },
+	.vcodec_pmdomains = { "venus", "vcodec0", "vcodec1" },
 	.vcodec_pmdomains_num = 3,
 	.opp_pmdomain = (const char *[]) { "cx", NULL },
 	.vcodec_num = 2,
 	.max_load = 3110400,	/* 4096x2160@90 */
 	.hfi_version = HFI_VERSION_4XX,
-	.vpu_version = VPU_VERSION_AR50,
 	.vmem_id = VIDC_RESOURCE_NONE,
 	.vmem_size = 0,
 	.vmem_addr = 0,
@@ -765,7 +706,7 @@ static const struct venus_resources sdm845_res_v2 = {
 	.cp_size = 0x70800000,
 	.cp_nonpixel_start = 0x1000000,
 	.cp_nonpixel_size = 0x24800000,
-	.fwname = "qcom/venus-5.2/venus.mbn",
+	.fwname = "qcom/venus-5.2/venus.mdt",
 };
 
 static const struct freq_tbl sc7180_freq_table[] = {
@@ -799,21 +740,16 @@ static const struct venus_resources sc7180_res = {
 	.clks_num = 3,
 	.vcodec0_clks = { "vcodec0_core", "vcodec0_bus" },
 	.vcodec_clks_num = 2,
-	.vcodec_pmdomains = (const char *[]) { "venus", "vcodec0" },
+	.vcodec_pmdomains = { "venus", "vcodec0" },
 	.vcodec_pmdomains_num = 2,
 	.opp_pmdomain = (const char *[]) { "cx", NULL },
 	.vcodec_num = 1,
 	.hfi_version = HFI_VERSION_4XX,
-	.vpu_version = VPU_VERSION_AR50,
 	.vmem_id = VIDC_RESOURCE_NONE,
 	.vmem_size = 0,
 	.vmem_addr = 0,
 	.dma_mask = 0xe0000000 - 1,
-	.cp_start = 0,
-	.cp_size = 0x70800000,
-	.cp_nonpixel_start = 0x1000000,
-	.cp_nonpixel_size = 0x24800000,
-	.fwname = "qcom/venus-5.4/venus.mbn",
+	.fwname = "qcom/venus-5.4/venus.mdt",
 };
 
 static const struct freq_tbl sm8250_freq_table[] = {
@@ -856,19 +792,18 @@ static const struct venus_resources sm8250_res = {
 	.resets_num = 2,
 	.vcodec0_clks = { "vcodec0_core" },
 	.vcodec_clks_num = 1,
-	.vcodec_pmdomains = (const char *[]) { "venus", "vcodec0" },
+	.vcodec_pmdomains = { "venus", "vcodec0" },
 	.vcodec_pmdomains_num = 2,
 	.opp_pmdomain = (const char *[]) { "mx", NULL },
 	.vcodec_num = 1,
 	.max_load = 7833600,
 	.hfi_version = HFI_VERSION_6XX,
-	.vpu_version = VPU_VERSION_IRIS2,
 	.num_vpp_pipes = 4,
 	.vmem_id = VIDC_RESOURCE_NONE,
 	.vmem_size = 0,
 	.vmem_addr = 0,
 	.dma_mask = 0xe0000000 - 1,
-	.fwname = "qcom/vpu-1.0/venus.mbn",
+	.fwname = "qcom/vpu-1.0/venus.mdt",
 };
 
 static const struct freq_tbl sc7280_freq_table[] = {
@@ -897,10 +832,6 @@ static const struct reg_val sm7280_reg_preset[] = {
 	{ 0xb0088, 0 },
 };
 
-static const struct hfi_ubwc_config sc7280_ubwc_config = {
-	0, 0, {1, 1, 1, 0, 0, 0}, 8, 32, 14, 0, 0, {0, 0}
-};
-
 static const struct venus_resources sc7280_res = {
 	.freq_tbl = sc7280_freq_table,
 	.freq_tbl_size = ARRAY_SIZE(sc7280_freq_table),
@@ -910,33 +841,26 @@ static const struct venus_resources sc7280_res = {
 	.bw_tbl_enc_size = ARRAY_SIZE(sc7280_bw_table_enc),
 	.bw_tbl_dec = sc7280_bw_table_dec,
 	.bw_tbl_dec_size = ARRAY_SIZE(sc7280_bw_table_dec),
-	.ubwc_conf = &sc7280_ubwc_config,
 	.clks = {"core", "bus", "iface"},
 	.clks_num = 3,
 	.vcodec0_clks = {"vcodec_core", "vcodec_bus"},
 	.vcodec_clks_num = 2,
-	.vcodec_pmdomains = (const char *[]) { "venus", "vcodec0" },
+	.vcodec_pmdomains = { "venus", "vcodec0" },
 	.vcodec_pmdomains_num = 2,
 	.opp_pmdomain = (const char *[]) { "cx", NULL },
 	.vcodec_num = 1,
 	.hfi_version = HFI_VERSION_6XX,
-	.vpu_version = VPU_VERSION_IRIS2_1,
 	.num_vpp_pipes = 1,
 	.vmem_id = VIDC_RESOURCE_NONE,
 	.vmem_size = 0,
 	.vmem_addr = 0,
 	.dma_mask = 0xe0000000 - 1,
-	.cp_start = 0,
-	.cp_size = 0x25800000,
-	.cp_nonpixel_start = 0x1000000,
-	.cp_nonpixel_size = 0x24800000,
 	.fwname = "qcom/vpu-2.0/venus.mbn",
 };
 
 static const struct of_device_id venus_dt_match[] = {
 	{ .compatible = "qcom,msm8916-venus", .data = &msm8916_res, },
 	{ .compatible = "qcom,msm8996-venus", .data = &msm8996_res, },
-	{ .compatible = "qcom,msm8998-venus", .data = &msm8998_res, },
 	{ .compatible = "qcom,sdm660-venus", .data = &sdm660_res, },
 	{ .compatible = "qcom,sdm845-venus", .data = &sdm845_res, },
 	{ .compatible = "qcom,sdm845-venus-v2", .data = &sdm845_res_v2, },
@@ -949,7 +873,7 @@ MODULE_DEVICE_TABLE(of, venus_dt_match);
 
 static struct platform_driver qcom_venus_driver = {
 	.probe = venus_probe,
-	.remove_new = venus_remove,
+	.remove = venus_remove,
 	.driver = {
 		.name = "qcom-venus",
 		.of_match_table = venus_dt_match,

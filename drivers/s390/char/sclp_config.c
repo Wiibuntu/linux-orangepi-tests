@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  *    Copyright IBM Corp. 2007
+ *    Author(s): Heiko Carstens <heiko.carstens@de.ibm.com>
  */
 
 #define KMSG_COMPONENT "sclp_config"
@@ -60,7 +61,7 @@ static void sclp_cpu_capability_notify(struct work_struct *work)
 static void __ref sclp_cpu_change_notify(struct work_struct *work)
 {
 	lock_device_hotplug();
-	smp_rescan_cpus(false);
+	smp_rescan_cpus();
 	unlock_device_hotplug();
 }
 

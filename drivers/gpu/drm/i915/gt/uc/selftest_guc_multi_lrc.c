@@ -3,7 +3,6 @@
  * Copyright �� 2019 Intel Corporation
  */
 
-#include "gt/intel_gt_print.h"
 #include "selftests/igt_spinner.h"
 #include "selftests/igt_reset.h"
 #include "selftests/intel_scheduler_helpers.h"
@@ -116,30 +115,30 @@ static int __intel_guc_multi_lrc_basic(struct intel_gt *gt, unsigned int class)
 
 	parent = multi_lrc_create_parent(gt, class, 0);
 	if (IS_ERR(parent)) {
-		gt_err(gt, "Failed creating contexts: %pe\n", parent);
+		pr_err("Failed creating contexts: %ld", PTR_ERR(parent));
 		return PTR_ERR(parent);
 	} else if (!parent) {
-		gt_dbg(gt, "Not enough engines in class: %d\n", class);
+		pr_debug("Not enough engines in class: %d", class);
 		return 0;
 	}
 
 	rq = multi_lrc_nop_request(parent);
 	if (IS_ERR(rq)) {
 		ret = PTR_ERR(rq);
-		gt_err(gt, "Failed creating requests: %pe\n", rq);
+		pr_err("Failed creating requests: %d", ret);
 		goto out;
 	}
 
 	ret = intel_selftest_wait_for_rq(rq);
 	if (ret)
-		gt_err(gt, "Failed waiting on request: %pe\n", ERR_PTR(ret));
+		pr_err("Failed waiting on request: %d", ret);
 
 	i915_request_put(rq);
 
 	if (ret >= 0) {
 		ret = intel_gt_wait_for_idle(gt, HZ * 5);
 		if (ret < 0)
-			gt_err(gt, "GT failed to idle: %pe\n", ERR_PTR(ret));
+			pr_err("GT failed to idle: %d\n", ret);
 	}
 
 out:
@@ -155,10 +154,6 @@ static int intel_guc_multi_lrc_basic(void *arg)
 	int ret;
 
 	for (class = 0; class < MAX_ENGINE_CLASS + 1; ++class) {
-		/* We don't support breadcrumb handshake on these classes */
-		if (class == COMPUTE_CLASS || class == RENDER_CLASS)
-			continue;
-
 		ret = __intel_guc_multi_lrc_basic(gt, class);
 		if (ret)
 			return ret;
@@ -172,7 +167,7 @@ int intel_guc_multi_lrc_live_selftests(struct drm_i915_private *i915)
 	static const struct i915_subtest tests[] = {
 		SUBTEST(intel_guc_multi_lrc_basic),
 	};
-	struct intel_gt *gt = to_gt(i915);
+	struct intel_gt *gt = &i915->gt;
 
 	if (intel_gt_is_wedged(gt))
 		return 0;

@@ -3,20 +3,18 @@
  * Copyright (C) 2020 Sean Anderson <seanga2@gmail.com>
  * Copyright (c) 2020 Western Digital Corporation or its affiliates.
  */
-#include <linux/bitfield.h>
-#include <linux/clk.h>
 #include <linux/io.h>
+#include <linux/of_device.h>
+#include <linux/clk.h>
 #include <linux/mfd/syscon.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/bitfield.h>
 #include <linux/regmap.h>
-#include <linux/seq_file.h>
 #include <linux/slab.h>
-
-#include <linux/pinctrl/pinconf-generic.h>
-#include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
+#include <linux/pinctrl/pinconf.h>
+#include <linux/pinctrl/pinconf-generic.h>
 
 #include <dt-bindings/pinctrl/k210-fpioa.h>
 
@@ -763,6 +761,8 @@ static int k210_pinctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
 					  unsigned int *reserved_maps,
 					  unsigned int *num_maps)
 {
+	struct property *prop;
+	const __be32 *p;
 	int ret, pinmux_groups;
 	u32 pinmux_group;
 	unsigned long *configs = NULL;
@@ -795,7 +795,7 @@ static int k210_pinctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
 	if (ret < 0)
 		goto exit;
 
-	of_property_for_each_u32(np, "pinmux", pinmux_group) {
+	of_property_for_each_u32(np, "pinmux", prop, p, pinmux_group) {
 		const char *group_name, *func_name;
 		u32 pin = FIELD_GET(K210_PG_PIN, pinmux_group);
 		u32 func = FIELD_GET(K210_PG_FUNC, pinmux_group);
@@ -847,6 +847,7 @@ static int k210_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 				       unsigned int *num_maps)
 {
 	unsigned int reserved_maps;
+	struct device_node *np;
 	int ret;
 
 	reserved_maps = 0;
@@ -858,7 +859,7 @@ static int k210_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 	if (ret < 0)
 		goto err;
 
-	for_each_available_child_of_node_scoped(np_config, np) {
+	for_each_available_child_of_node(np_config, np) {
 		ret = k210_pinctrl_dt_subnode_to_map(pctldev, np, map,
 						     &reserved_maps, num_maps);
 		if (ret < 0)
@@ -925,6 +926,7 @@ static int k210_fpioa_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
 	struct k210_fpioa_data *pdata;
+	int ret;
 
 	dev_info(dev, "K210 FPIOA pin controller\n");
 
@@ -939,28 +941,46 @@ static int k210_fpioa_probe(struct platform_device *pdev)
 	if (IS_ERR(pdata->fpioa))
 		return PTR_ERR(pdata->fpioa);
 
-	pdata->clk = devm_clk_get_enabled(dev, "ref");
+	pdata->clk = devm_clk_get(dev, "ref");
 	if (IS_ERR(pdata->clk))
 		return PTR_ERR(pdata->clk);
 
-	pdata->pclk = devm_clk_get_optional_enabled(dev, "pclk");
-	if (IS_ERR(pdata->pclk))
-		return PTR_ERR(pdata->pclk);
+	ret = clk_prepare_enable(pdata->clk);
+	if (ret)
+		return ret;
+
+	pdata->pclk = devm_clk_get_optional(dev, "pclk");
+	if (!IS_ERR(pdata->pclk)) {
+		ret = clk_prepare_enable(pdata->pclk);
+		if (ret)
+			goto disable_clk;
+	}
 
 	pdata->sysctl_map =
 		syscon_regmap_lookup_by_phandle_args(np,
 						"canaan,k210-sysctl-power",
 						1, &pdata->power_offset);
-	if (IS_ERR(pdata->sysctl_map))
-		return PTR_ERR(pdata->sysctl_map);
+	if (IS_ERR(pdata->sysctl_map)) {
+		ret = PTR_ERR(pdata->sysctl_map);
+		goto disable_pclk;
+	}
 
 	k210_fpioa_init_ties(pdata);
 
 	pdata->pctl = pinctrl_register(&k210_pinctrl_desc, dev, (void *)pdata);
-	if (IS_ERR(pdata->pctl))
-		return PTR_ERR(pdata->pctl);
+	if (IS_ERR(pdata->pctl)) {
+		ret = PTR_ERR(pdata->pctl);
+		goto disable_pclk;
+	}
 
 	return 0;
+
+disable_pclk:
+	clk_disable_unprepare(pdata->pclk);
+disable_clk:
+	clk_disable_unprepare(pdata->clk);
+
+	return ret;
 }
 
 static const struct of_device_id k210_fpioa_dt_ids[] = {

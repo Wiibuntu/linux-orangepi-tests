@@ -292,17 +292,18 @@ out:
 }
 
 static int pn_socket_accept(struct socket *sock, struct socket *newsock,
-			    struct proto_accept_arg *arg)
+			    int flags, bool kern)
 {
 	struct sock *sk = sock->sk;
 	struct sock *newsk;
+	int err;
 
 	if (unlikely(sk->sk_state != TCP_LISTEN))
 		return -EINVAL;
 
-	newsk = sk->sk_prot->accept(sk, arg);
+	newsk = sk->sk_prot->accept(sk, flags, &err, kern);
 	if (!newsk)
-		return arg->err;
+		return err;
 
 	lock_sock(newsk);
 	sock_graft(newsk, newsock);
@@ -386,7 +387,7 @@ static int pn_socket_ioctl(struct socket *sock, unsigned int cmd,
 		return put_user(handle, (__u16 __user *)arg);
 	}
 
-	return sk_ioctl(sk, cmd, (void __user *)arg);
+	return sk->sk_prot->ioctl(sk, cmd, arg);
 }
 
 static int pn_socket_listen(struct socket *sock, int backlog)
@@ -440,6 +441,7 @@ const struct proto_ops phonet_dgram_ops = {
 	.sendmsg	= pn_socket_sendmsg,
 	.recvmsg	= sock_common_recvmsg,
 	.mmap		= sock_no_mmap,
+	.sendpage	= sock_no_sendpage,
 };
 
 const struct proto_ops phonet_stream_ops = {
@@ -460,6 +462,7 @@ const struct proto_ops phonet_stream_ops = {
 	.sendmsg	= pn_socket_sendmsg,
 	.recvmsg	= sock_common_recvmsg,
 	.mmap		= sock_no_mmap,
+	.sendpage	= sock_no_sendpage,
 };
 EXPORT_SYMBOL(phonet_stream_ops);
 

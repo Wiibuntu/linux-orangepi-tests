@@ -146,11 +146,6 @@ board.manufacture
 
 An identifier of the company or the facility which produced the part.
 
-board.part_number
------------------
-
-Part number of the board and its components.
-
 fw
 --
 
@@ -202,11 +197,6 @@ fw.bundle_id
 ------------
 
 Unique identifier of the entire firmware bundle.
-
-fw.bootloader
--------------
-
-Version of the bootloader.
 
 Future work
 ===========

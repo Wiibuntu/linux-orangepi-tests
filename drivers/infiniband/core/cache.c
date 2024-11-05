@@ -33,7 +33,7 @@
  * SOFTWARE.
  */
 
-#include <linux/if_vlan.h>
+#include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
@@ -46,7 +46,7 @@
 
 struct ib_pkey_cache {
 	int             table_len;
-	u16             table[] __counted_by(table_len);
+	u16             table[];
 };
 
 struct ib_update_work {
@@ -400,15 +400,15 @@ static void del_gid(struct ib_device *ib_dev, u32 port,
 		table->data_vec[ix] = NULL;
 	write_unlock_irq(&table->rwlock);
 
-	if (rdma_cap_roce_gid_table(ib_dev, port))
-		ib_dev->ops.del_gid(&entry->attr, &entry->context);
-
 	ndev_storage = entry->ndev_storage;
 	if (ndev_storage) {
 		entry->ndev_storage = NULL;
 		rcu_assign_pointer(entry->attr.ndev, NULL);
 		call_rcu(&ndev_storage->rcu_head, put_gid_ndev);
 	}
+
+	if (rdma_cap_roce_gid_table(ib_dev, port))
+		ib_dev->ops.del_gid(&entry->attr, &entry->context);
 
 	put_gid_entry_locked(entry);
 }
@@ -794,6 +794,7 @@ err_free_table:
 static void release_gid_table(struct ib_device *device,
 			      struct ib_gid_table *table)
 {
+	bool leak = false;
 	int i;
 
 	if (!table)
@@ -802,12 +803,15 @@ static void release_gid_table(struct ib_device *device,
 	for (i = 0; i < table->sz; i++) {
 		if (is_gid_entry_free(table->data_vec[i]))
 			continue;
-
-		WARN_ONCE(true,
-			  "GID entry ref leak for dev %s index %d ref=%u\n",
-			  dev_name(&device->dev), i,
-			  kref_read(&table->data_vec[i]->kref));
+		if (kref_read(&table->data_vec[i]->kref) > 1) {
+			dev_err(&device->dev,
+				"GID entry ref leak for index %d ref=%u\n", i,
+				kref_read(&table->data_vec[i]->kref));
+			leak = true;
+		}
 	}
+	if (leak)
+		return;
 
 	mutex_destroy(&table->lock);
 	kfree(table->data_vec);
@@ -951,7 +955,7 @@ int rdma_query_gid(struct ib_device *device, u32 port_num,
 {
 	struct ib_gid_table *table;
 	unsigned long flags;
-	int res;
+	int res = -EINVAL;
 
 	if (!rdma_is_port_valid(device, port_num))
 		return -EINVAL;
@@ -959,15 +963,9 @@ int rdma_query_gid(struct ib_device *device, u32 port_num,
 	table = rdma_gid_table(device, port_num);
 	read_lock_irqsave(&table->rwlock, flags);
 
-	if (index < 0 || index >= table->sz) {
-		res = -EINVAL;
+	if (index < 0 || index >= table->sz ||
+	    !is_gid_entry_valid(table->data_vec[index]))
 		goto done;
-	}
-
-	if (!is_gid_entry_valid(table->data_vec[index])) {
-		res = -ENOENT;
-		goto done;
-	}
 
 	memcpy(gid, &table->data_vec[index]->attr.gid, sizeof(*gid));
 	res = 0;
@@ -1418,7 +1416,7 @@ int rdma_read_gid_l2_fields(const struct ib_gid_attr *attr,
 			*vlan_id = vlan_dev_vlan_id(ndev);
 		} else {
 			/* If the netdev is upper device and if it's lower
-			 * device is vlan device, consider vlan id of
+			 * device is vlan device, consider vlan id of the
 			 * the lower vlan device for this gid entry.
 			 */
 			netdev_walk_all_lower_dev_rcu(attr->ndev,
@@ -1453,17 +1451,6 @@ static int config_non_roce_gid_cache(struct ib_device *device,
 				 i);
 			goto err;
 		}
-
-		if (rdma_protocol_iwarp(device, port)) {
-			struct net_device *ndev;
-
-			ndev = ib_device_get_netdev(device, port);
-			if (!ndev)
-				continue;
-			RCU_INIT_POINTER(gid_attr.ndev, ndev);
-			dev_put(ndev);
-		}
-
 		gid_attr.index = i;
 		tprops->subnet_prefix =
 			be64_to_cpu(gid_attr.gid.global.subnet_prefix);
@@ -1640,10 +1627,8 @@ int ib_cache_setup_one(struct ib_device *device)
 
 	rdma_for_each_port (device, p) {
 		err = ib_cache_update(device, p, true, true, true);
-		if (err) {
-			gid_table_cleanup_one(device);
+		if (err)
 			return err;
-		}
 	}
 
 	return 0;

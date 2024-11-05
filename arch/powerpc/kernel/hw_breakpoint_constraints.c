@@ -80,7 +80,7 @@ static bool check_dawrx_constraints(struct pt_regs *regs, int type,
  * Return true if the event is valid wrt dawr configuration,
  * including extraneous exception. Otherwise return false.
  */
-bool wp_check_constraints(struct pt_regs *regs, ppc_inst_t instr,
+bool wp_check_constraints(struct pt_regs *regs, struct ppc_inst instr,
 			  unsigned long ea, int type, int size,
 			  struct arch_hw_breakpoint *info)
 {
@@ -127,17 +127,12 @@ bool wp_check_constraints(struct pt_regs *regs, ppc_inst_t instr,
 	return false;
 }
 
-void wp_get_instr_detail(struct pt_regs *regs, ppc_inst_t *instr,
+void wp_get_instr_detail(struct pt_regs *regs, struct ppc_inst *instr,
 			 int *type, int *size, unsigned long *ea)
 {
 	struct instruction_op op;
-	int err;
 
-	pagefault_disable();
-	err = __get_user_instr(*instr, (void __user *)regs->nip);
-	pagefault_enable();
-
-	if (err)
+	if (__get_user_instr(*instr, (void __user *)regs->nip))
 		return;
 
 	analyse_instr(&op, regs, *instr);

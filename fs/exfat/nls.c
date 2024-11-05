@@ -6,7 +6,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/buffer_head.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "exfat_raw.h"
 #include "exfat_fs.h"
@@ -509,7 +509,7 @@ static int exfat_utf8_to_utf16(struct super_block *sb,
 	}
 
 	if (unilen > MAX_NAME_LENGTH) {
-		exfat_debug(sb, "failed to %s (estr:ENAMETOOLONG) nls len : %d, unilen : %d > %d",
+		exfat_err(sb, "failed to %s (estr:ENAMETOOLONG) nls len : %d, unilen : %d > %d",
 			  __func__, len, unilen, MAX_NAME_LENGTH);
 		return -ENAMETOOLONG;
 	}
@@ -655,6 +655,7 @@ static int exfat_load_upcase_table(struct super_block *sb,
 	unsigned int sect_size = sb->s_blocksize;
 	unsigned int i, index = 0;
 	u32 chksum = 0;
+	int ret;
 	unsigned char skip = false;
 	unsigned short *upcase_table;
 
@@ -670,9 +671,10 @@ static int exfat_load_upcase_table(struct super_block *sb,
 
 		bh = sb_bread(sb, sector);
 		if (!bh) {
-			exfat_err(sb, "failed to read sector(0x%llx)",
+			exfat_err(sb, "failed to read sector(0x%llx)\n",
 				  (unsigned long long)sector);
-			return -EIO;
+			ret = -EIO;
+			goto free_table;
 		}
 		sector++;
 		for (i = 0; i < sect_size && index <= 0xFFFF; i += 2) {
@@ -699,12 +701,15 @@ static int exfat_load_upcase_table(struct super_block *sb,
 
 	exfat_err(sb, "failed to load upcase table (idx : 0x%08x, chksum : 0x%08x, utbl_chksum : 0x%08x)",
 		  index, chksum, utbl_checksum);
-	return -EINVAL;
+	ret = -EINVAL;
+free_table:
+	exfat_free_upcase_table(sbi);
+	return ret;
 }
 
 static int exfat_load_default_upcase_table(struct super_block *sb)
 {
-	int i;
+	int i, ret = -EIO;
 	struct exfat_sb_info *sbi = EXFAT_SB(sb);
 	unsigned char skip = false;
 	unsigned short uni = 0, *upcase_table;
@@ -735,7 +740,8 @@ static int exfat_load_default_upcase_table(struct super_block *sb)
 		return 0;
 
 	/* FATAL error: default upcase table has error */
-	return -EIO;
+	exfat_free_upcase_table(sbi);
+	return ret;
 }
 
 int exfat_create_upcase_table(struct super_block *sb)
@@ -755,7 +761,7 @@ int exfat_create_upcase_table(struct super_block *sb)
 
 	while (clu.dir != EXFAT_EOF_CLUSTER) {
 		for (i = 0; i < sbi->dentries_per_clu; i++) {
-			ep = exfat_get_dentry(sb, &clu, i, &bh);
+			ep = exfat_get_dentry(sb, &clu, i, &bh, NULL);
 			if (!ep)
 				return -EIO;
 
@@ -779,11 +785,8 @@ int exfat_create_upcase_table(struct super_block *sb)
 				le32_to_cpu(ep->dentry.upcase.checksum));
 
 			brelse(bh);
-			if (ret && ret != -EIO) {
-				/* free memory from exfat_load_upcase_table call */
-				exfat_free_upcase_table(sbi);
+			if (ret && ret != -EIO)
 				goto load_default;
-			}
 
 			/* load successfully */
 			return ret;

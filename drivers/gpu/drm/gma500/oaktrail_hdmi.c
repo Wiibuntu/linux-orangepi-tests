@@ -27,9 +27,6 @@
 #include <linux/delay.h>
 
 #include <drm/drm.h>
-#include <drm/drm_crtc_helper.h>
-#include <drm/drm_edid.h>
-#include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_simple_kms_helper.h>
 
 #include "psb_drv.h"
@@ -657,6 +654,7 @@ void oaktrail_hdmi_init(struct drm_device *dev,
 	connector->display_info.subpixel_order = SubPixelHorizontalRGB;
 	connector->interlace_allowed = false;
 	connector->doublescan_allowed = false;
+	drm_connector_register(connector);
 	dev_info(dev->dev, "HDMI initialised.\n");
 
 	return;

@@ -63,22 +63,25 @@ int __init
 snd_seq_oss_create_client(void)
 {
 	int rc;
-	struct snd_seq_port_info *port __free(kfree) = NULL;
+	struct snd_seq_port_info *port;
 	struct snd_seq_port_callback port_callback;
 
-	port = kzalloc(sizeof(*port), GFP_KERNEL);
-	if (!port)
-		return -ENOMEM;
+	port = kmalloc(sizeof(*port), GFP_KERNEL);
+	if (!port) {
+		rc = -ENOMEM;
+		goto __error;
+	}
 
 	/* create ALSA client */
 	rc = snd_seq_create_kernel_client(NULL, SNDRV_SEQ_CLIENT_OSS,
 					  "OSS sequencer");
 	if (rc < 0)
-		return rc;
+		goto __error;
 
 	system_client = rc;
 
-	/* create announcement receiver port */
+	/* create annoucement receiver port */
+	memset(port, 0, sizeof(*port));
 	strcpy(port->name, "Receiver");
 	port->addr.client = system_client;
 	port->capability = SNDRV_SEQ_PORT_CAP_WRITE; /* receive only */
@@ -102,11 +105,14 @@ snd_seq_oss_create_client(void)
 		subs.dest.port = system_port;
 		call_ctl(SNDRV_SEQ_IOCTL_SUBSCRIBE_PORT, &subs);
 	}
+	rc = 0;
 
 	/* look up midi devices */
 	schedule_work(&async_lookup_work);
 
-	return 0;
+ __error:
+	kfree(port);
+	return rc;
 }
 
 
@@ -450,9 +456,9 @@ snd_seq_oss_reset(struct seq_oss_devinfo *dp)
  * misc. functions for proc interface
  */
 char *
-enabled_str(bool b)
+enabled_str(int bool)
 {
-	return b ? "enabled" : "disabled";
+	return bool ? "enabled" : "disabled";
 }
 
 static const char *

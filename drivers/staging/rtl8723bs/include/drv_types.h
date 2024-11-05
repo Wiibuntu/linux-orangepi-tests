@@ -42,6 +42,7 @@
 #include <rtw_mlme.h>
 #include <mlme_osdep.h>
 #include <rtw_io.h>
+#include <rtw_ioctl.h>
 #include <rtw_ioctl_set.h>
 #include <osdep_intf.h>
 #include <rtw_eeprom.h>
@@ -50,6 +51,7 @@
 #include <rtw_mlme_ext.h>
 #include <rtw_ap.h>
 #include <rtw_version.h>
+#include <rtw_odm.h>
 
 #include "ioctl_cfg80211.h"
 
@@ -305,11 +307,7 @@ struct sdio_data intf_data;
 };
 
 #define dvobj_to_pwrctl(dvobj) (&(dvobj->pwrctl_priv))
-
-static inline struct dvobj_priv *pwrctl_to_dvobj(struct pwrctrl_priv *pwrctl_priv)
-{
-	return container_of(pwrctl_priv, struct dvobj_priv, pwrctl_priv);
-}
+#define pwrctl_to_dvobj(pwrctl) container_of(pwrctl, struct dvobj_priv, pwrctl_priv)
 
 static inline struct device *dvobj_to_dev(struct dvobj_priv *dvobj)
 {
@@ -452,7 +450,14 @@ struct adapter {
 #define DF_RX_BIT		BIT1
 #define DF_IO_BIT		BIT2
 
+/* define RTW_DISABLE_FUNC(padapter, func) (atomic_add(&adapter_to_dvobj(padapter)->disable_func, (func))) */
 /* define RTW_ENABLE_FUNC(padapter, func) (atomic_sub(&adapter_to_dvobj(padapter)->disable_func, (func))) */
+static inline void RTW_DISABLE_FUNC(struct adapter *padapter, int func_bit)
+{
+	int	df = atomic_read(&adapter_to_dvobj(padapter)->disable_func);
+	df |= func_bit;
+	atomic_set(&adapter_to_dvobj(padapter)->disable_func, df);
+}
 
 static inline void RTW_ENABLE_FUNC(struct adapter *padapter, int func_bit)
 {
@@ -483,10 +488,13 @@ static inline u8 *myid(struct eeprom_priv *peepriv)
 }
 
 /*  HCI Related header file */
+#include <sdio_osintf.h>
 #include <sdio_ops.h>
 #include <sdio_hal.h>
 
 #include <rtw_btcoex.h>
+
+int rtw_change_ifname(struct adapter *padapter, const char *ifname);
 
 extern char *rtw_initmac;
 extern int rtw_mc2u_disable;

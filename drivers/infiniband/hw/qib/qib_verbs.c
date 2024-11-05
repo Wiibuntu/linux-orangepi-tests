@@ -425,7 +425,7 @@ static inline u32 clear_upper_bytes(u32 data, u32 n, u32 off)
 }
 #endif
 
-static void qib_copy_io(u32 __iomem *piobuf, struct rvt_sge_state *ss,
+static void copy_io(u32 __iomem *piobuf, struct rvt_sge_state *ss,
 		    u32 length, unsigned flush_wc)
 {
 	u32 extra = 0;
@@ -975,7 +975,7 @@ static int qib_verbs_send_pio(struct rvt_qp *qp, struct ib_header *ibhdr,
 			qib_pio_copy(piobuf, addr, dwords);
 		goto done;
 	}
-	qib_copy_io(piobuf, ss, len, flush_wc);
+	copy_io(piobuf, ss, len, flush_wc);
 done:
 	if (dd->flags & QIB_USE_SPCL_TRIG) {
 		u32 spcl_off = (pbufn >= dd->piobcnt2k) ? 2047 : 1023;
@@ -1551,7 +1551,7 @@ int qib_register_ib_device(struct qib_devdata *dd)
 	ibdev->dev.parent = &dd->pcidev->dev;
 
 	snprintf(ibdev->node_desc, sizeof(ibdev->node_desc),
-		 "Intel Infiniband HCA %.42s", init_utsname()->nodename);
+		 "Intel Infiniband HCA %s", init_utsname()->nodename);
 
 	/*
 	 * Fill in rvt info object.

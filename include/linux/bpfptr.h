@@ -49,9 +49,7 @@ static inline void bpfptr_add(bpfptr_t *bpfptr, size_t val)
 static inline int copy_from_bpfptr_offset(void *dst, bpfptr_t src,
 					  size_t offset, size_t size)
 {
-	if (!bpfptr_is_kernel(src))
-		return copy_from_user(dst, src.user + offset, size);
-	return copy_from_kernel_nofault(dst, src.kernel + offset, size);
+	return copy_from_sockptr_offset(dst, (sockptr_t) src, offset, size);
 }
 
 static inline int copy_from_bpfptr(void *dst, bpfptr_t src, size_t size)
@@ -65,9 +63,9 @@ static inline int copy_to_bpfptr_offset(bpfptr_t dst, size_t offset,
 	return copy_to_sockptr_offset((sockptr_t) dst, offset, src, size);
 }
 
-static inline void *kvmemdup_bpfptr_noprof(bpfptr_t src, size_t len)
+static inline void *kvmemdup_bpfptr(bpfptr_t src, size_t len)
 {
-	void *p = kvmalloc_noprof(len, GFP_USER | __GFP_NOWARN);
+	void *p = kvmalloc(len, GFP_USER | __GFP_NOWARN);
 
 	if (!p)
 		return ERR_PTR(-ENOMEM);
@@ -77,13 +75,10 @@ static inline void *kvmemdup_bpfptr_noprof(bpfptr_t src, size_t len)
 	}
 	return p;
 }
-#define kvmemdup_bpfptr(...)	alloc_hooks(kvmemdup_bpfptr_noprof(__VA_ARGS__))
 
 static inline long strncpy_from_bpfptr(char *dst, bpfptr_t src, size_t count)
 {
-	if (bpfptr_is_kernel(src))
-		return strncpy_from_kernel_nofault(dst, src.kernel, count);
-	return strncpy_from_user(dst, src.user, count);
+	return strncpy_from_sockptr(dst, (sockptr_t) src, count);
 }
 
 #endif /* _LINUX_BPFPTR_H */

@@ -107,7 +107,7 @@ force_update_wptr_for_self_int(struct amdgpu_device *adev,
 {
 	u32 ih_cntl, ih_rb_cntl;
 
-	if (amdgpu_ip_version(adev, OSSSYS_HWIP, 0) < IP_VERSION(5, 0, 3))
+	if (adev->ip_versions[OSSSYS_HWIP][0] < IP_VERSION(5, 0, 3))
 		return;
 
 	ih_cntl = RREG32_SOC15(OSSSYS, 0, mmIH_CNTL2);
@@ -330,7 +330,7 @@ static int navi10_ih_irq_init(struct amdgpu_device *adev)
 
 	if (unlikely(adev->firmware.load_type == AMDGPU_FW_LOAD_DIRECT)) {
 		if (ih[0]->use_bus_addr) {
-			switch (amdgpu_ip_version(adev, OSSSYS_HWIP, 0)) {
+			switch (adev->ip_versions[OSSSYS_HWIP][0]) {
 			case IP_VERSION(5, 0, 3):
 			case IP_VERSION(5, 2, 0):
 			case IP_VERSION(5, 2, 1):
@@ -409,11 +409,9 @@ static u32 navi10_ih_get_wptr(struct amdgpu_device *adev,
 	u32 wptr, tmp;
 	struct amdgpu_ih_regs *ih_regs;
 
-	if (ih == &adev->irq.ih || ih == &adev->irq.ih_soft) {
+	if (ih == &adev->irq.ih) {
 		/* Only ring0 supports writeback. On other rings fall back
 		 * to register-based code with overflow checking below.
-		 * ih_soft ring doesn't have any backing hardware registers,
-		 * update wptr and return.
 		 */
 		wptr = le32_to_cpu(*ih->wptr_cpu);
 
@@ -441,12 +439,6 @@ static u32 navi10_ih_get_wptr(struct amdgpu_device *adev,
 
 	tmp = RREG32_NO_KIQ(ih_regs->ih_rb_cntl);
 	tmp = REG_SET_FIELD(tmp, IH_RB_CNTL, WPTR_OVERFLOW_CLEAR, 1);
-	WREG32_NO_KIQ(ih_regs->ih_rb_cntl, tmp);
-
-	/* Unset the CLEAR_OVERFLOW bit immediately so new overflows
-	 * can be detected.
-	 */
-	tmp = REG_SET_FIELD(tmp, IH_RB_CNTL, WPTR_OVERFLOW_CLEAR, 0);
 	WREG32_NO_KIQ(ih_regs->ih_rb_cntl, tmp);
 out:
 	return (wptr & ih->ptr_mask);
@@ -490,9 +482,6 @@ static void navi10_ih_set_rptr(struct amdgpu_device *adev,
 			       struct amdgpu_ih_ring *ih)
 {
 	struct amdgpu_ih_regs *ih_regs;
-
-	if (ih == &adev->irq.ih_soft)
-		return;
 
 	if (ih->use_doorbell) {
 		/* XXX check if swapping is necessary on BE */
@@ -571,7 +560,7 @@ static int navi10_ih_sw_init(void *handle)
 		use_bus_addr = false;
 	else
 		use_bus_addr = true;
-	r = amdgpu_ih_ring_init(adev, &adev->irq.ih, IH_RING_SIZE, use_bus_addr);
+	r = amdgpu_ih_ring_init(adev, &adev->irq.ih, 256 * 1024, use_bus_addr);
 	if (r)
 		return r;
 
@@ -584,7 +573,7 @@ static int navi10_ih_sw_init(void *handle)
 	/* initialize ih control registers offset */
 	navi10_ih_init_register_offset(adev);
 
-	r = amdgpu_ih_ring_init(adev, &adev->irq.ih_soft, IH_SW_RING_SIZE, true);
+	r = amdgpu_ih_ring_init(adev, &adev->irq.ih_soft, PAGE_SIZE, true);
 	if (r)
 		return r;
 
@@ -604,9 +593,14 @@ static int navi10_ih_sw_fini(void *handle)
 
 static int navi10_ih_hw_init(void *handle)
 {
+	int r;
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
-	return navi10_ih_irq_init(adev);
+	r = navi10_ih_irq_init(adev);
+	if (r)
+		return r;
+
+	return 0;
 }
 
 static int navi10_ih_hw_fini(void *handle)
@@ -671,6 +665,8 @@ static void navi10_ih_update_clockgating_state(struct amdgpu_device *adev,
 		if (def != data)
 			WREG32_SOC15(OSSSYS, 0, mmIH_CLK_CTRL, data);
 	}
+
+	return;
 }
 
 static int navi10_ih_set_clockgating_state(void *handle,
@@ -689,12 +685,14 @@ static int navi10_ih_set_powergating_state(void *handle,
 	return 0;
 }
 
-static void navi10_ih_get_clockgating_state(void *handle, u64 *flags)
+static void navi10_ih_get_clockgating_state(void *handle, u32 *flags)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	if (!RREG32_SOC15(OSSSYS, 0, mmIH_CLK_CTRL))
 		*flags |= AMD_CG_SUPPORT_IH_CG;
+
+	return;
 }
 
 static const struct amd_ip_funcs navi10_ih_ip_funcs = {
@@ -713,14 +711,11 @@ static const struct amd_ip_funcs navi10_ih_ip_funcs = {
 	.set_clockgating_state = navi10_ih_set_clockgating_state,
 	.set_powergating_state = navi10_ih_set_powergating_state,
 	.get_clockgating_state = navi10_ih_get_clockgating_state,
-	.dump_ip_state = NULL,
-	.print_ip_state = NULL,
 };
 
 static const struct amdgpu_ih_funcs navi10_ih_funcs = {
 	.get_wptr = navi10_ih_get_wptr,
 	.decode_iv = amdgpu_ih_decode_iv_helper,
-	.decode_iv_ts = amdgpu_ih_decode_iv_ts_helper,
 	.set_rptr = navi10_ih_set_rptr
 };
 
@@ -730,7 +725,8 @@ static void navi10_ih_set_interrupt_funcs(struct amdgpu_device *adev)
 		adev->irq.ih_funcs = &navi10_ih_funcs;
 }
 
-const struct amdgpu_ip_block_version navi10_ih_ip_block = {
+const struct amdgpu_ip_block_version navi10_ih_ip_block =
+{
 	.type = AMD_IP_BLOCK_TYPE_IH,
 	.major = 5,
 	.minor = 0,

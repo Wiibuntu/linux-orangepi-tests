@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// SPDX-License-Identifier: (GPL-2.0+ or MIT)
 /*
  * Copyright (C) 2021 Arm Ltd.
  */
@@ -6,7 +6,6 @@
 /dts-v1/;
 
 #include "sun50i-h616.dtsi"
-#include "sun50i-h616-cpu-opp.dtsi"
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
@@ -16,6 +15,7 @@
 	compatible = "hechuang,x96-mate", "allwinner,sun50i-h616";
 
 	aliases {
+		ethernet0 = &emac1;
 		serial0 = &uart0;
 	};
 
@@ -33,10 +33,6 @@
 	};
 };
 
-&cpu0 {
-	cpu-supply = <&reg_dcdca>;
-};
-
 &ehci0 {
 	status = "okay";
 };
@@ -45,13 +41,31 @@
 	status = "okay";
 };
 
+&emac1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&rmii_pins>;
+	phy-mode = "rmii";
+	phy-handle = <&rmii_phy>;
+	phy-supply = <&reg_aldo1>;
+	allwinner,rx-delay-ps = <3100>;
+	allwinner,tx-delay-ps = <700>;
+	status = "okay";
+};
+
 &ir {
 	status = "okay";
 };
 
+&mdio1 {
+	rmii_phy: ethernet-phy@1 {
+		compatible = "ethernet-phy-ieee802.3-c22";
+		reg = <1>;
+	};
+};
+
 &mmc0 {
 	vmmc-supply = <&reg_dcdce>;
-	cd-gpios = <&pio 5 6 GPIO_ACTIVE_LOW>;	/* PF6 */
+	broken-cd;
 	bus-width = <4>;
 	status = "okay";
 };
@@ -62,7 +76,6 @@
 	bus-width = <8>;
 	non-removable;
 	cap-mmc-hw-reset;
-	mmc-ddr-1_8v;
 	mmc-hs200-1_8v;
 	status = "okay";
 };
@@ -159,14 +172,14 @@
 			reg_dcdca: dcdca {
 				regulator-always-on;
 				regulator-min-microvolt = <810000>;
-				regulator-max-microvolt = <1100000>;
+				regulator-max-microvolt = <1080000>;
 				regulator-name = "vdd-cpu";
 			};
 
 			reg_dcdcc: dcdcc {
 				regulator-always-on;
 				regulator-min-microvolt = <810000>;
-				regulator-max-microvolt = <990000>;
+				regulator-max-microvolt = <1080000>;
 				regulator-name = "vdd-gpu-sys";
 			};
 
@@ -178,7 +191,7 @@
 			};
 
 			reg_dcdce: dcdce {
-				regulator-always-on;
+				regulator-boot-on;
 				regulator-min-microvolt = <3300000>;
 				regulator-max-microvolt = <3300000>;
 				regulator-name = "vcc-eth-mmc";

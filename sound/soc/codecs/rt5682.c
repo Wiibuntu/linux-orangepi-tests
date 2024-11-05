@@ -15,7 +15,8 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <linux/acpi.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <linux/mutex.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -34,8 +35,6 @@ const char *rt5682_supply_names[RT5682_NUM_SUPPLIES] = {
 	"AVDD",
 	"MICVDD",
 	"VBAT",
-	"DBVDD",
-	"LDO1-IN",
 };
 EXPORT_SYMBOL_GPL(rt5682_supply_names);
 
@@ -1016,9 +1015,6 @@ static int rt5682_set_jack_detect(struct snd_soc_component *component,
 
 	rt5682->hs_jack = hs_jack;
 
-	if (rt5682->is_sdw && !rt5682->first_hw_init)
-		return 0;
-
 	if (!hs_jack) {
 		regmap_update_bits(rt5682->regmap, RT5682_IRQ_CTRL_2,
 			RT5682_JD1_EN_MASK, RT5682_JD1_DIS);
@@ -1096,21 +1092,12 @@ void rt5682_jack_detect_handler(struct work_struct *work)
 	struct snd_soc_dapm_context *dapm;
 	int val, btn_type;
 
-	if (!rt5682->component ||
-	    !snd_soc_card_is_instantiated(rt5682->component->card)) {
+	if (!rt5682->component || !rt5682->component->card ||
+	    !rt5682->component->card->instantiated) {
 		/* card not yet ready, try later */
 		mod_delayed_work(system_power_efficient_wq,
 				 &rt5682->jack_detect_work, msecs_to_jiffies(15));
 		return;
-	}
-
-	if (rt5682->is_sdw) {
-		if (pm_runtime_status_suspended(rt5682->slave->dev.parent)) {
-			dev_dbg(&rt5682->slave->dev,
-				"%s: parent device is pm_runtime_status_suspended, skipping jack detection\n",
-				__func__);
-			return;
-		}
 	}
 
 	dapm = snd_soc_component_get_dapm(rt5682->component);
@@ -2835,11 +2822,14 @@ static int rt5682_bclk_set_rate(struct clk_hw *hw, unsigned long rate,
 
 	for_each_component_dais(component, dai)
 		if (dai->id == RT5682_AIF1)
-			return rt5682_set_bclk1_ratio(dai, factor);
+			break;
+	if (!dai) {
+		dev_err(rt5682->i2c_dev, "dai %d not found in component\n",
+			RT5682_AIF1);
+		return -ENODEV;
+	}
 
-	dev_err(rt5682->i2c_dev, "dai %d not found in component\n",
-		RT5682_AIF1);
-	return -ENODEV;
+	return rt5682_set_bclk1_ratio(dai, factor);
 }
 
 static const struct clk_ops rt5682_dai_clk_ops[RT5682_DAI_NUM_CLKS] = {
@@ -2866,6 +2856,7 @@ int rt5682_register_dai_clks(struct rt5682_priv *rt5682)
 
 	for (i = 0; i < RT5682_DAI_NUM_CLKS; ++i) {
 		struct clk_init_data init = { };
+		struct clk_parent_data parent_data;
 		const struct clk_hw *parent;
 
 		dai_clk_hw = &rt5682->dai_clks_hw[i];
@@ -2874,8 +2865,10 @@ int rt5682_register_dai_clks(struct rt5682_priv *rt5682)
 		case RT5682_DAI_WCLK_IDX:
 			/* Make MCLK the parent of WCLK */
 			if (rt5682->mclk) {
-				parent = __clk_get_hw(rt5682->mclk);
-				init.parent_hws = &parent;
+				parent_data = (struct clk_parent_data){
+					.fw_name = "mclk",
+				};
+				init.parent_data = &parent_data;
 				init.num_parents = 1;
 			}
 			break;
@@ -2903,10 +2896,8 @@ int rt5682_register_dai_clks(struct rt5682_priv *rt5682)
 		}
 
 		if (dev->of_node) {
-			ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get,
+			devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get,
 						    dai_clk_hw);
-			if (ret)
-				return ret;
 		} else {
 			ret = devm_clk_hw_register_clkdev(dev, dai_clk_hw,
 							  init.name,
@@ -2962,9 +2953,6 @@ static int rt5682_suspend(struct snd_soc_component *component)
 
 	if (rt5682->is_sdw)
 		return 0;
-
-	if (rt5682->irq)
-		disable_irq(rt5682->irq);
 
 	cancel_delayed_work_sync(&rt5682->jack_detect_work);
 	cancel_delayed_work_sync(&rt5682->jd_check_work);
@@ -3034,9 +3022,6 @@ static int rt5682_resume(struct snd_soc_component *component)
 	mod_delayed_work(system_power_efficient_wq,
 		&rt5682->jack_detect_work, msecs_to_jiffies(0));
 
-	if (rt5682->irq)
-		enable_irq(rt5682->irq);
-
 	return 0;
 }
 #else
@@ -3076,6 +3061,7 @@ const struct snd_soc_component_driver rt5682_soc_component_dev = {
 	.set_jack = rt5682_set_jack_detect,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
 EXPORT_SYMBOL_GPL(rt5682_soc_component_dev);
 
@@ -3095,6 +3081,9 @@ int rt5682_parse_dt(struct rt5682_priv *rt5682, struct device *dev)
 	device_property_read_u32(dev, "realtek,dmic-delay-ms",
 		&rt5682->pdata.dmic_delay);
 
+	rt5682->pdata.ldo1_en = of_get_named_gpio(dev->of_node,
+		"realtek,ldo1-en-gpios", 0);
+
 	if (device_property_read_string_array(dev, "clock-output-names",
 					      rt5682->pdata.dai_clk_names,
 					      RT5682_DAI_NUM_CLKS) < 0)
@@ -3108,20 +3097,6 @@ int rt5682_parse_dt(struct rt5682_priv *rt5682, struct device *dev)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rt5682_parse_dt);
-
-int rt5682_get_ldo1(struct rt5682_priv *rt5682, struct device *dev)
-{
-	rt5682->ldo1_en = devm_gpiod_get_optional(dev,
-						  "realtek,ldo1-en",
-						  GPIOD_OUT_HIGH);
-	if (IS_ERR(rt5682->ldo1_en)) {
-		dev_err(dev, "Fail gpio request ldo1_en\n");
-		return PTR_ERR(rt5682->ldo1_en);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(rt5682_get_ldo1);
 
 void rt5682_calibrate(struct rt5682_priv *rt5682)
 {

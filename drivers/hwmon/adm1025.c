@@ -470,7 +470,7 @@ static int adm1025_detect(struct i2c_client *client,
 	else
 		return -ENODEV;
 
-	strscpy(info->type, name, I2C_NAME_SIZE);
+	strlcpy(info->type, name, I2C_NAME_SIZE);
 
 	return 0;
 }
@@ -559,7 +559,7 @@ static struct i2c_driver adm1025_driver = {
 	.driver = {
 		.name	= "adm1025",
 	},
-	.probe		= adm1025_probe,
+	.probe_new	= adm1025_probe,
 	.id_table	= adm1025_id,
 	.detect		= adm1025_detect,
 	.address_list	= normal_i2c,

@@ -1,8 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 
-source lib.sh
-
+NS=ns
 IP4=172.16.0.1/24
 TGT4=172.16.0.2
 IP6=2001:db8:1::1/64
@@ -11,15 +10,13 @@ MARK=1000
 
 cleanup()
 {
-    cleanup_ns $NS
+    ip netns del $NS
 }
 
 trap cleanup EXIT
 
 # Namespaces
-setup_ns NS
-
-ip netns exec $NS sysctl -w net.ipv4.ping_group_range='0 2147483647' > /dev/null
+ip netns add $NS
 
 # Connectivity
 ip -netns $NS link add type dummy
@@ -44,29 +41,15 @@ check_result() {
     fi
 }
 
-for ovr in setsock cmsg both; do
-    for i in 4 6; do
-	[ $i == 4 ] && TGT=$TGT4 || TGT=$TGT6
+ip netns exec $NS ./cmsg_so_mark $TGT4 1234 $((MARK + 1))
+check_result $? 0 "IPv4 pass"
+ip netns exec $NS ./cmsg_so_mark $TGT6 1234 $((MARK + 1))
+check_result $? 0 "IPv6 pass"
 
-	for p in u i r; do
-	    [ $p == "u" ] && prot=UDP
-	    [ $p == "i" ] && prot=ICMP
-	    [ $p == "r" ] && prot=RAW
-
-	    [ $ovr == "setsock" ] && m="-M"
-	    [ $ovr == "cmsg" ]    && m="-m"
-	    [ $ovr == "both" ]    && m="-M $MARK -m"
-
-	    ip netns exec $NS ./cmsg_sender -$i -p $p $m $((MARK + 1)) $TGT 1234
-	    check_result $? 0 "$prot $ovr - pass"
-
-	    [ $ovr == "diff" ] && m="-M $((MARK + 1)) -m"
-
-	    ip netns exec $NS ./cmsg_sender -$i -p $p $m $MARK -s $TGT 1234
-	    check_result $? 1 "$prot $ovr - rejection"
-	done
-    done
-done
+ip netns exec $NS ./cmsg_so_mark $TGT4 1234 $MARK
+check_result $? 1 "IPv4 rejection"
+ip netns exec $NS ./cmsg_so_mark $TGT6 1234 $MARK
+check_result $? 1 "IPv6 rejection"
 
 # Summary
 if [ $BAD -ne 0 ]; then

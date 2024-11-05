@@ -158,16 +158,17 @@ struct mpls_route { /* next hop label forwarding entry */
 };
 
 #define for_nexthops(rt) {						\
-	int nhsel; const struct mpls_nh *nh;				\
-	for (nhsel = 0, nh = (rt)->rt_nh;				\
+	int nhsel; struct mpls_nh *nh;  u8 *__nh;			\
+	for (nhsel = 0, nh = (rt)->rt_nh, __nh = (u8 *)((rt)->rt_nh);	\
 	     nhsel < (rt)->rt_nhn;					\
-	     nh = (void *)nh + (rt)->rt_nh_size, nhsel++)
+	     __nh += rt->rt_nh_size, nh = (struct mpls_nh *)__nh, nhsel++)
 
 #define change_nexthops(rt) {						\
-	int nhsel; struct mpls_nh *nh;					\
-	for (nhsel = 0, nh = (rt)->rt_nh;				\
+	int nhsel; struct mpls_nh *nh; u8 *__nh;			\
+	for (nhsel = 0, nh = (struct mpls_nh *)((rt)->rt_nh),		\
+			__nh = (u8 *)((rt)->rt_nh);			\
 	     nhsel < (rt)->rt_nhn;					\
-	     nh = (void *)nh + (rt)->rt_nh_size, nhsel++)
+	     __nh += rt->rt_nh_size, nh = (struct mpls_nh *)__nh, nhsel++)
 
 #define endfor_nexthops(rt) }
 

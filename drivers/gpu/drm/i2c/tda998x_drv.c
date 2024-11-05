@@ -7,7 +7,6 @@
 #include <linux/component.h>
 #include <linux/gpio/consumer.h>
 #include <linux/hdmi.h>
-#include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/platform_data/tda9950.h>
 #include <linux/irq.h>
@@ -1096,11 +1095,11 @@ static int tda998x_audio_hw_params(struct device *dev, void *data,
 
 	if (!spdif &&
 	    (daifmt->bit_clk_inv || daifmt->frame_clk_inv ||
-	     daifmt->bit_clk_provider || daifmt->frame_clk_provider)) {
+	     daifmt->bit_clk_master || daifmt->frame_clk_master)) {
 		dev_err(dev, "%s: Bad flags %d %d %d %d\n", __func__,
 			daifmt->bit_clk_inv, daifmt->frame_clk_inv,
-			daifmt->bit_clk_provider,
-			daifmt->frame_clk_provider);
+			daifmt->bit_clk_master,
+			daifmt->frame_clk_master);
 		return -EINVAL;
 	}
 
@@ -1174,8 +1173,6 @@ static int tda998x_audio_codec_init(struct tda998x_priv *priv,
 	struct hdmi_codec_pdata codec_data = {
 		.ops = &audio_codec_ops,
 		.max_i2s_channels = 2,
-		.no_i2s_capture = 1,
-		.no_spdif_capture = 1,
 	};
 
 	if (priv->audio_port_enable[AUDIO_ROUTE_I2S])
@@ -1283,7 +1280,7 @@ static int read_edid_block(void *data, u8 *buf, unsigned int blk, size_t length)
 static int tda998x_connector_get_modes(struct drm_connector *connector)
 {
 	struct tda998x_priv *priv = conn_to_tda998x_priv(connector);
-	const struct drm_edid *drm_edid;
+	struct edid *edid;
 	int n;
 
 	/*
@@ -1297,26 +1294,25 @@ static int tda998x_connector_get_modes(struct drm_connector *connector)
 	if (priv->rev == TDA19988)
 		reg_clear(priv, REG_TX4, TX4_PD_RAM);
 
-	drm_edid = drm_edid_read_custom(connector, read_edid_block, priv);
+	edid = drm_do_get_edid(connector, read_edid_block, priv);
 
 	if (priv->rev == TDA19988)
 		reg_set(priv, REG_TX4, TX4_PD_RAM);
 
-	drm_edid_connector_update(connector, drm_edid);
-	cec_notifier_set_phys_addr(priv->cec_notify,
-				   connector->display_info.source_physical_address);
-
-	if (!drm_edid) {
+	if (!edid) {
 		dev_warn(&priv->hdmi->dev, "failed to read EDID\n");
 		return 0;
 	}
 
+	drm_connector_update_edid_property(connector, edid);
+	cec_notifier_set_phys_addr_from_edid(priv->cec_notify, edid);
+
 	mutex_lock(&priv->audio_mutex);
-	n = drm_edid_connector_add_modes(connector);
-	priv->sink_has_audio = connector->display_info.has_audio;
+	n = drm_add_edid_modes(connector, edid);
+	priv->sink_has_audio = drm_detect_monitor_audio(edid);
 	mutex_unlock(&priv->audio_mutex);
 
-	drm_edid_free(drm_edid);
+	kfree(edid);
 
 	return n;
 }
@@ -1952,7 +1948,7 @@ static int tda998x_create(struct device *dev)
 	 * offset.
 	 */
 	memset(&cec_info, 0, sizeof(cec_info));
-	strscpy(cec_info.type, "tda9950", sizeof(cec_info.type));
+	strlcpy(cec_info.type, "tda9950", sizeof(cec_info.type));
 	cec_info.addr = priv->cec_addr;
 	cec_info.platform_data = &priv->cec_glue;
 	cec_info.irq = client->irq;
@@ -2060,7 +2056,7 @@ static const struct component_ops tda998x_ops = {
 };
 
 static int
-tda998x_probe(struct i2c_client *client)
+tda998x_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	int ret;
 
@@ -2079,10 +2075,11 @@ tda998x_probe(struct i2c_client *client)
 	return ret;
 }
 
-static void tda998x_remove(struct i2c_client *client)
+static int tda998x_remove(struct i2c_client *client)
 {
 	component_del(&client->dev, &tda998x_ops);
 	tda998x_destroy(&client->dev);
+	return 0;
 }
 
 #ifdef CONFIG_OF

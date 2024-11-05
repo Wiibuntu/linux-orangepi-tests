@@ -81,7 +81,7 @@ int cdnsp_find_next_ext_cap(void __iomem *base, u32 start, int id)
 		offset = HCC_EXT_CAPS(val) << 2;
 		if (!offset)
 			return 0;
-	}
+	};
 
 	do {
 		val = readl(base + offset);
@@ -378,7 +378,7 @@ int cdnsp_ep_enqueue(struct cdnsp_ep *pep, struct cdnsp_request *preq)
 		ret = cdnsp_queue_bulk_tx(pdev, preq);
 		break;
 	case USB_ENDPOINT_XFER_ISOC:
-		ret = cdnsp_queue_isoc_tx(pdev, preq);
+		ret = cdnsp_queue_isoc_tx_prepare(pdev, preq);
 	}
 
 	if (ret)
@@ -600,11 +600,11 @@ int cdnsp_halt_endpoint(struct cdnsp_device *pdev,
 
 	trace_cdnsp_ep_halt(value ? "Set" : "Clear");
 
-	ret = cdnsp_cmd_stop_ep(pdev, pep);
-	if (ret)
-		return ret;
-
 	if (value) {
+		ret = cdnsp_cmd_stop_ep(pdev, pep);
+		if (ret)
+			return ret;
+
 		if (GET_EP_CTX_STATE(pep->out_ctx) == EP_STATE_STOPPED) {
 			cdnsp_queue_halt_endpoint(pdev, pep->idx);
 			cdnsp_ring_cmd_db(pdev);
@@ -613,6 +613,10 @@ int cdnsp_halt_endpoint(struct cdnsp_device *pdev,
 
 		pep->ep_state |= EP_HALTED;
 	} else {
+		/*
+		 * In device mode driver can call reset endpoint command
+		 * from any endpoint state.
+		 */
 		cdnsp_queue_reset_ep(pdev, pep->idx);
 		cdnsp_ring_cmd_db(pdev);
 		ret = cdnsp_wait_for_cmd_compl(pdev);
@@ -1024,8 +1028,10 @@ static int cdnsp_gadget_ep_disable(struct usb_ep *ep)
 	pep->ep_state |= EP_DIS_IN_RROGRESS;
 
 	/* Endpoint was unconfigured by Reset Device command. */
-	if (!(pep->ep_state & EP_UNCONFIGURED))
+	if (!(pep->ep_state & EP_UNCONFIGURED)) {
 		cdnsp_cmd_stop_ep(pdev, pep);
+		cdnsp_cmd_flush_ep(pdev, pep);
+	}
 
 	/* Remove all queued USB requests. */
 	while (!list_empty(&pep->pending_list)) {
@@ -1122,9 +1128,6 @@ static int cdnsp_gadget_ep_dequeue(struct usb_ep *ep,
 	struct cdnsp_device *pdev = pep->pdev;
 	unsigned long flags;
 	int ret;
-
-	if (request->status != -EINPROGRESS)
-		return 0;
 
 	if (!pep->endpoint.desc) {
 		dev_err(pdev->dev,
@@ -1240,9 +1243,12 @@ static int cdnsp_run(struct cdnsp_device *pdev,
 		     enum usb_device_speed speed)
 {
 	u32 fs_speed = 0;
+	u64 temp_64;
 	u32 temp;
 	int ret;
 
+	temp_64 = cdnsp_read_64(&pdev->ir_set->erst_dequeue);
+	temp_64 &= ~ERST_PTR_MASK;
 	temp = readl(&pdev->ir_set->irq_control);
 	temp &= ~IMOD_INTERVAL_MASK;
 	temp |= ((IMOD_DEFAULT_INTERVAL / 250) & IMOD_INTERVAL_MASK);
@@ -1421,6 +1427,8 @@ static void cdnsp_consume_all_events(struct cdnsp_device *pdev)
 static void cdnsp_stop(struct cdnsp_device *pdev)
 {
 	u32 temp;
+
+	cdnsp_cmd_flush_ep(pdev, &pdev->eps[0]);
 
 	/* Remove internally queued request for ep0. */
 	if (!list_empty(&pdev->eps[0].pending_list)) {

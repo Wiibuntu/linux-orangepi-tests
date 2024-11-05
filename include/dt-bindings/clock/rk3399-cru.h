@@ -125,6 +125,7 @@
 #define SCLK_DDRC			168
 #define SCLK_TESTCLKOUT1		169
 #define SCLK_TESTCLKOUT2		170
+#define SCLK_CIF_OUT_SRC		171
 
 #define DCLK_VOP0			180
 #define DCLK_VOP1			181
@@ -335,6 +336,8 @@
 #define HCLK_SDIO_NOC			495
 #define HCLK_SDIOAUDIO_NOC		496
 
+#define CLK_NR_CLKS			(HCLK_SDIOAUDIO_NOC + 1)
+
 /* pmu-clocks indices */
 
 #define PLL_PPLL			1
@@ -375,6 +378,8 @@
 #define DCLK_CM0S_PMU			48
 #define PCLK_INTR_ARB_PMU		49
 #define HCLK_NOC_PMU			50
+
+#define CLKPMU_NR_CLKS			(HCLK_NOC_PMU + 1)
 
 /* soft-reset indices */
 
@@ -543,8 +548,8 @@
 #define SRST_H_PERILP0			171
 #define SRST_H_PERILP0_NOC		172
 #define SRST_ROM			173
-#define SRST_CRYPTO0_S			174
-#define SRST_CRYPTO0_M			175
+#define SRST_CRYPTO_S			174
+#define SRST_CRYPTO_M			175
 
 /* cru_softrst_con11 */
 #define SRST_P_DCF			176
@@ -552,7 +557,7 @@
 #define SRST_CM0S			178
 #define SRST_CM0S_DBG			179
 #define SRST_CM0S_PO			180
-#define SRST_CRYPTO0			181
+#define SRST_CRYPTO			181
 #define SRST_P_PERILP1_SGRF		182
 #define SRST_P_PERILP1_GRF		183
 #define SRST_CRYPTO1_S			184

@@ -26,8 +26,8 @@
 #include <linux/writeback.h>
 #include <linux/compaction.h>
 #include <linux/mm_inline.h>
+#include <linux/page_ext.h>
 #include <linux/page_owner.h>
-#include <linux/sched/isolation.h>
 
 #include "internal.h"
 
@@ -74,7 +74,7 @@ static void invalid_numa_statistics(void)
 
 static DEFINE_MUTEX(vm_numa_stat_lock);
 
-int sysctl_vm_numa_stat_handler(const struct ctl_table *table, int write,
+int sysctl_vm_numa_stat_handler(struct ctl_table *table, int write,
 		void *buffer, size_t *length, loff_t *ppos)
 {
 	int ret, oldval;
@@ -354,7 +354,8 @@ void __mod_zone_page_state(struct zone *zone, enum zone_stat_item item,
 	 * CPU migrations and preemption potentially corrupts a counter so
 	 * disable preemption.
 	 */
-	preempt_disable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_disable();
 
 	x = delta + __this_cpu_read(*p);
 
@@ -366,7 +367,8 @@ void __mod_zone_page_state(struct zone *zone, enum zone_stat_item item,
 	}
 	__this_cpu_write(*p, x);
 
-	preempt_enable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_enable();
 }
 EXPORT_SYMBOL(__mod_zone_page_state);
 
@@ -390,7 +392,8 @@ void __mod_node_page_state(struct pglist_data *pgdat, enum node_stat_item item,
 	}
 
 	/* See __mod_node_page_state */
-	preempt_disable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_disable();
 
 	x = delta + __this_cpu_read(*p);
 
@@ -402,7 +405,8 @@ void __mod_node_page_state(struct pglist_data *pgdat, enum node_stat_item item,
 	}
 	__this_cpu_write(*p, x);
 
-	preempt_enable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_enable();
 }
 EXPORT_SYMBOL(__mod_node_page_state);
 
@@ -436,7 +440,8 @@ void __inc_zone_state(struct zone *zone, enum zone_stat_item item)
 	s8 v, t;
 
 	/* See __mod_node_page_state */
-	preempt_disable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_disable();
 
 	v = __this_cpu_inc_return(*p);
 	t = __this_cpu_read(pcp->stat_threshold);
@@ -447,7 +452,8 @@ void __inc_zone_state(struct zone *zone, enum zone_stat_item item)
 		__this_cpu_write(*p, -overstep);
 	}
 
-	preempt_enable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_enable();
 }
 
 void __inc_node_state(struct pglist_data *pgdat, enum node_stat_item item)
@@ -459,7 +465,8 @@ void __inc_node_state(struct pglist_data *pgdat, enum node_stat_item item)
 	VM_WARN_ON_ONCE(vmstat_item_in_bytes(item));
 
 	/* See __mod_node_page_state */
-	preempt_disable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_disable();
 
 	v = __this_cpu_inc_return(*p);
 	t = __this_cpu_read(pcp->stat_threshold);
@@ -470,7 +477,8 @@ void __inc_node_state(struct pglist_data *pgdat, enum node_stat_item item)
 		__this_cpu_write(*p, -overstep);
 	}
 
-	preempt_enable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_enable();
 }
 
 void __inc_zone_page_state(struct page *page, enum zone_stat_item item)
@@ -492,7 +500,8 @@ void __dec_zone_state(struct zone *zone, enum zone_stat_item item)
 	s8 v, t;
 
 	/* See __mod_node_page_state */
-	preempt_disable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_disable();
 
 	v = __this_cpu_dec_return(*p);
 	t = __this_cpu_read(pcp->stat_threshold);
@@ -503,7 +512,8 @@ void __dec_zone_state(struct zone *zone, enum zone_stat_item item)
 		__this_cpu_write(*p, overstep);
 	}
 
-	preempt_enable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_enable();
 }
 
 void __dec_node_state(struct pglist_data *pgdat, enum node_stat_item item)
@@ -515,7 +525,8 @@ void __dec_node_state(struct pglist_data *pgdat, enum node_stat_item item)
 	VM_WARN_ON_ONCE(vmstat_item_in_bytes(item));
 
 	/* See __mod_node_page_state */
-	preempt_disable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_disable();
 
 	v = __this_cpu_dec_return(*p);
 	t = __this_cpu_read(pcp->stat_threshold);
@@ -526,7 +537,8 @@ void __dec_node_state(struct pglist_data *pgdat, enum node_stat_item item)
 		__this_cpu_write(*p, overstep);
 	}
 
-	preempt_enable_nested();
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_enable();
 }
 
 void __dec_zone_page_state(struct page *page, enum zone_stat_item item)
@@ -559,10 +571,8 @@ static inline void mod_zone_state(struct zone *zone,
 {
 	struct per_cpu_zonestat __percpu *pcp = zone->per_cpu_zonestats;
 	s8 __percpu *p = pcp->vm_stat_diff + item;
-	long n, t, z;
-	s8 o;
+	long o, n, t, z;
 
-	o = this_cpu_read(*p);
 	do {
 		z = 0;  /* overflow to zone counters */
 
@@ -578,7 +588,8 @@ static inline void mod_zone_state(struct zone *zone,
 		 */
 		t = this_cpu_read(pcp->stat_threshold);
 
-		n = delta + (long)o;
+		o = this_cpu_read(*p);
+		n = delta + o;
 
 		if (abs(n) > t) {
 			int os = overstep_mode * (t >> 1) ;
@@ -587,7 +598,7 @@ static inline void mod_zone_state(struct zone *zone,
 			z = n + os;
 			n = -os;
 		}
-	} while (!this_cpu_try_cmpxchg(*p, &o, n));
+	} while (this_cpu_cmpxchg(*p, o, n) != o);
 
 	if (z)
 		zone_page_state_add(z, zone, item);
@@ -617,8 +628,7 @@ static inline void mod_node_state(struct pglist_data *pgdat,
 {
 	struct per_cpu_nodestat __percpu *pcp = pgdat->per_cpu_nodestats;
 	s8 __percpu *p = pcp->vm_node_stat_diff + item;
-	long n, t, z;
-	s8 o;
+	long o, n, t, z;
 
 	if (vmstat_item_in_bytes(item)) {
 		/*
@@ -631,7 +641,6 @@ static inline void mod_node_state(struct pglist_data *pgdat,
 		delta >>= PAGE_SHIFT;
 	}
 
-	o = this_cpu_read(*p);
 	do {
 		z = 0;  /* overflow to node counters */
 
@@ -647,7 +656,8 @@ static inline void mod_node_state(struct pglist_data *pgdat,
 		 */
 		t = this_cpu_read(pcp->stat_threshold);
 
-		n = delta + (long)o;
+		o = this_cpu_read(*p);
+		n = delta + o;
 
 		if (abs(n) > t) {
 			int os = overstep_mode * (t >> 1) ;
@@ -656,7 +666,7 @@ static inline void mod_node_state(struct pglist_data *pgdat,
 			z = n + os;
 			n = -os;
 		}
-	} while (!this_cpu_try_cmpxchg(*p, &o, n));
+	} while (this_cpu_cmpxchg(*p, o, n) != o);
 
 	if (z)
 		node_page_state_add(z, pgdat, item);
@@ -816,7 +826,9 @@ static int refresh_cpu_vm_stats(bool do_pagesets)
 
 	for_each_populated_zone(zone) {
 		struct per_cpu_zonestat __percpu *pzstats = zone->per_cpu_zonestats;
+#ifdef CONFIG_NUMA
 		struct per_cpu_pages __percpu *pcp = zone->per_cpu_pageset;
+#endif
 
 		for (i = 0; i < NR_VM_ZONE_STAT_ITEMS; i++) {
 			int v;
@@ -832,12 +844,10 @@ static int refresh_cpu_vm_stats(bool do_pagesets)
 #endif
 			}
 		}
+#ifdef CONFIG_NUMA
 
 		if (do_pagesets) {
 			cond_resched();
-
-			changes += decay_pcp_high(zone, this_cpu_ptr(pcp));
-#ifdef CONFIG_NUMA
 			/*
 			 * Deal with draining the remote pageset of this
 			 * processor
@@ -857,17 +867,15 @@ static int refresh_cpu_vm_stats(bool do_pagesets)
 				continue;
 			}
 
-			if (__this_cpu_dec_return(pcp->expire)) {
-				changes++;
+			if (__this_cpu_dec_return(pcp->expire))
 				continue;
-			}
 
 			if (__this_cpu_read(pcp->count)) {
 				drain_zone_pages(zone, this_cpu_ptr(pcp));
 				changes++;
 			}
-#endif
 		}
+#endif
 	}
 
 	for_each_online_pgdat(pgdat) {
@@ -1033,24 +1041,6 @@ unsigned long node_page_state(struct pglist_data *pgdat,
 }
 #endif
 
-/*
- * Count number of pages "struct page" and "struct page_ext" consume.
- * nr_memmap_boot_pages: # of pages allocated by boot allocator
- * nr_memmap_pages: # of pages that were allocated by buddy allocator
- */
-static atomic_long_t nr_memmap_boot_pages = ATOMIC_LONG_INIT(0);
-static atomic_long_t nr_memmap_pages = ATOMIC_LONG_INIT(0);
-
-void memmap_boot_pages_add(long delta)
-{
-	atomic_long_add(delta, &nr_memmap_boot_pages);
-}
-
-void memmap_pages_add(long delta)
-{
-	atomic_long_add(delta, &nr_memmap_pages);
-}
-
 #ifdef CONFIG_COMPACTION
 
 struct contig_page_info {
@@ -1077,7 +1067,7 @@ static void fill_contig_page_info(struct zone *zone,
 	info->free_blocks_total = 0;
 	info->free_blocks_suitable = 0;
 
-	for (order = 0; order < NR_PAGE_ORDERS; order++) {
+	for (order = 0; order < MAX_ORDER; order++) {
 		unsigned long blocks;
 
 		/*
@@ -1110,7 +1100,7 @@ static int __fragmentation_index(unsigned int order, struct contig_page_info *in
 {
 	unsigned long requested = 1UL << order;
 
-	if (WARN_ON_ONCE(order > MAX_PAGE_ORDER))
+	if (WARN_ON_ONCE(order >= MAX_ORDER))
 		return 0;
 
 	if (!info->free_blocks_total)
@@ -1177,15 +1167,8 @@ int fragmentation_index(struct zone *zone, unsigned int order)
 #define TEXT_FOR_HIGHMEM(xx)
 #endif
 
-#ifdef CONFIG_ZONE_DEVICE
-#define TEXT_FOR_DEVICE(xx) xx "_device",
-#else
-#define TEXT_FOR_DEVICE(xx)
-#endif
-
 #define TEXTS_FOR_ZONES(xx) TEXT_FOR_DMA(xx) TEXT_FOR_DMA32(xx) xx "_normal", \
-					TEXT_FOR_HIGHMEM(xx) xx "_movable", \
-					TEXT_FOR_DEVICE(xx)
+					TEXT_FOR_HIGHMEM(xx) xx "_movable",
 
 const char * const vmstat_text[] = {
 	/* enum zone_stat_item counters */
@@ -1202,9 +1185,6 @@ const char * const vmstat_text[] = {
 	"nr_zspages",
 #endif
 	"nr_free_cma",
-#ifdef CONFIG_UNACCEPTED_MEMORY
-	"nr_unaccepted",
-#endif
 
 	/* enum numa_stat_item counters */
 #ifdef CONFIG_NUMA
@@ -1259,25 +1239,13 @@ const char * const vmstat_text[] = {
 	"nr_shadow_call_stack",
 #endif
 	"nr_page_table_pages",
-	"nr_sec_page_table_pages",
-#ifdef CONFIG_IOMMU_SUPPORT
-	"nr_iommu_pages",
-#endif
 #ifdef CONFIG_SWAP
 	"nr_swapcached",
 #endif
-#ifdef CONFIG_NUMA_BALANCING
-	"pgpromote_success",
-	"pgpromote_candidate",
-#endif
-	"pgdemote_kswapd",
-	"pgdemote_direct",
-	"pgdemote_khugepaged",
-	/* system-wide enum vm_stat_item counters */
+
+	/* enum writeback_stat_item counters */
 	"nr_dirty_threshold",
 	"nr_dirty_background_threshold",
-	"nr_memmap_pages",
-	"nr_memmap_boot_pages",
 
 #if defined(CONFIG_VM_EVENT_COUNTERS) || defined(CONFIG_MEMCG)
 	/* enum vm_event_item counters */
@@ -1303,10 +1271,10 @@ const char * const vmstat_text[] = {
 	"pgreuse",
 	"pgsteal_kswapd",
 	"pgsteal_direct",
-	"pgsteal_khugepaged",
+	"pgdemote_kswapd",
+	"pgdemote_direct",
 	"pgscan_kswapd",
 	"pgscan_direct",
-	"pgscan_khugepaged",
 	"pgscan_direct_throttle",
 	"pgscan_anon",
 	"pgscan_file",
@@ -1314,7 +1282,6 @@ const char * const vmstat_text[] = {
 	"pgsteal_file",
 
 #ifdef CONFIG_NUMA
-	"zone_reclaim_success",
 	"zone_reclaim_failed",
 #endif
 	"pginodesteal",
@@ -1385,11 +1352,7 @@ const char * const vmstat_text[] = {
 	"thp_split_page",
 	"thp_split_page_failed",
 	"thp_deferred_split_page",
-	"thp_underused_split_page",
 	"thp_split_pmd",
-	"thp_scan_exceed_none_pte",
-	"thp_scan_exceed_swap_pte",
-	"thp_scan_exceed_share_pte",
 #ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
 	"thp_split_pud",
 #endif
@@ -1412,54 +1375,17 @@ const char * const vmstat_text[] = {
 	"nr_tlb_local_flush_one",
 #endif /* CONFIG_DEBUG_TLBFLUSH */
 
+#ifdef CONFIG_DEBUG_VM_VMACACHE
+	"vmacache_find_calls",
+	"vmacache_find_hits",
+#endif
 #ifdef CONFIG_SWAP
 	"swap_ra",
 	"swap_ra_hit",
-#ifdef CONFIG_KSM
-	"ksm_swpin_copy",
-#endif
-#endif
-#ifdef CONFIG_KSM
-	"cow_ksm",
-#endif
-#ifdef CONFIG_ZSWAP
-	"zswpin",
-	"zswpout",
-	"zswpwb",
 #endif
 #ifdef CONFIG_X86
 	"direct_map_level2_splits",
 	"direct_map_level3_splits",
-#endif
-#ifdef CONFIG_PER_VMA_LOCK_STATS
-	"vma_lock_success",
-	"vma_lock_abort",
-	"vma_lock_retry",
-	"vma_lock_miss",
-#endif
-#ifdef CONFIG_DEBUG_STACK_USAGE
-	"kstack_1k",
-#if THREAD_SIZE > 1024
-	"kstack_2k",
-#endif
-#if THREAD_SIZE > 2048
-	"kstack_4k",
-#endif
-#if THREAD_SIZE > 4096
-	"kstack_8k",
-#endif
-#if THREAD_SIZE > 8192
-	"kstack_16k",
-#endif
-#if THREAD_SIZE > 16384
-	"kstack_32k",
-#endif
-#if THREAD_SIZE > 32768
-	"kstack_64k",
-#endif
-#if THREAD_SIZE > 65536
-	"kstack_rest",
-#endif
 #endif
 #endif /* CONFIG_VM_EVENT_COUNTERS || CONFIG_MEMCG */
 };
@@ -1524,7 +1450,7 @@ static void frag_show_print(struct seq_file *m, pg_data_t *pgdat,
 	int order;
 
 	seq_printf(m, "Node %d, zone %8s ", pgdat->node_id, zone->name);
-	for (order = 0; order < NR_PAGE_ORDERS; ++order)
+	for (order = 0; order < MAX_ORDER; ++order)
 		/*
 		 * Access to nr_free is lockless as nr_free is used only for
 		 * printing purposes. Use data_race to avoid KCSAN warning.
@@ -1553,7 +1479,7 @@ static void pagetypeinfo_showfree_print(struct seq_file *m,
 					pgdat->node_id,
 					zone->name,
 					migratetype_names[mtype]);
-		for (order = 0; order < NR_PAGE_ORDERS; ++order) {
+		for (order = 0; order < MAX_ORDER; ++order) {
 			unsigned long freecount = 0;
 			struct free_area *area;
 			struct list_head *curr;
@@ -1593,7 +1519,7 @@ static void pagetypeinfo_showfree(struct seq_file *m, void *arg)
 
 	/* Print header */
 	seq_printf(m, "%-43s ", "Free pages count per migrate type at order");
-	for (order = 0; order < NR_PAGE_ORDERS; ++order)
+	for (order = 0; order < MAX_ORDER; ++order)
 		seq_printf(m, "%6d ", order);
 	seq_putc(m, '\n');
 
@@ -1744,7 +1670,6 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 		   "\n        min      %lu"
 		   "\n        low      %lu"
 		   "\n        high     %lu"
-		   "\n        promo    %lu"
 		   "\n        spanned  %lu"
 		   "\n        present  %lu"
 		   "\n        managed  %lu"
@@ -1754,7 +1679,6 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 		   min_wmark_pages(zone),
 		   low_wmark_pages(zone),
 		   high_wmark_pages(zone),
-		   promo_wmark_pages(zone),
 		   zone->spanned_pages,
 		   zone->present_pages,
 		   zone_managed_pages(zone),
@@ -1836,7 +1760,7 @@ static const struct seq_operations zoneinfo_op = {
 #define NR_VMSTAT_ITEMS (NR_VM_ZONE_STAT_ITEMS + \
 			 NR_VM_NUMA_EVENT_ITEMS + \
 			 NR_VM_NODE_STAT_ITEMS + \
-			 NR_VM_STAT_ITEMS + \
+			 NR_VM_WRITEBACK_STAT_ITEMS + \
 			 (IS_ENABLED(CONFIG_VM_EVENT_COUNTERS) ? \
 			  NR_VM_EVENT_ITEMS : 0))
 
@@ -1873,9 +1797,7 @@ static void *vmstat_start(struct seq_file *m, loff_t *pos)
 
 	global_dirty_limits(v + NR_DIRTY_BG_THRESHOLD,
 			    v + NR_DIRTY_THRESHOLD);
-	v[NR_MEMMAP_PAGES] = atomic_long_read(&nr_memmap_pages);
-	v[NR_MEMMAP_BOOT_PAGES] = atomic_long_read(&nr_memmap_boot_pages);
-	v += NR_VM_STAT_ITEMS;
+	v += NR_VM_WRITEBACK_STAT_ITEMS;
 
 #ifdef CONFIG_VM_EVENT_COUNTERS
 	all_vm_events(v);
@@ -1936,7 +1858,7 @@ static void refresh_vm_stats(struct work_struct *work)
 	refresh_cpu_vm_stats(true);
 }
 
-int vmstat_refresh(const struct ctl_table *table, int write,
+int vmstat_refresh(struct ctl_table *table, int write,
 		   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	long val;
@@ -2082,20 +2004,6 @@ static void vmstat_shepherd(struct work_struct *w)
 	for_each_online_cpu(cpu) {
 		struct delayed_work *dw = &per_cpu(vmstat_work, cpu);
 
-		/*
-		 * In kernel users of vmstat counters either require the precise value and
-		 * they are using zone_page_state_snapshot interface or they can live with
-		 * an imprecision as the regular flushing can happen at arbitrary time and
-		 * cumulative error can grow (see calculate_normal_threshold).
-		 *
-		 * From that POV the regular flushing can be postponed for CPUs that have
-		 * been isolated from the kernel interference without critical
-		 * infrastructure ever noticing. Skip regular flushing from vmstat_shepherd
-		 * for all isolated CPUs to avoid interference with the isolated workload.
-		 */
-		if (cpu_is_isolated(cpu))
-			continue;
-
 		if (!delayed_work_pending(dw) && need_update(cpu))
 			queue_delayed_work_on(cpu, mm_percpu_wq, dw, 0);
 
@@ -2124,7 +2032,7 @@ static void __init init_cpu_node_state(void)
 	int node;
 
 	for_each_online_node(node) {
-		if (!cpumask_empty(cpumask_of_node(node)))
+		if (cpumask_weight(cpumask_of_node(node)) > 0)
 			node_set_state(node, N_CPU);
 	}
 }
@@ -2132,11 +2040,7 @@ static void __init init_cpu_node_state(void)
 static int vmstat_cpu_online(unsigned int cpu)
 {
 	refresh_zone_stat_thresholds();
-
-	if (!node_state(cpu_to_node(cpu), N_CPU)) {
-		node_set_state(cpu_to_node(cpu), N_CPU);
-	}
-
+	node_set_state(cpu_to_node(cpu), N_CPU);
 	return 0;
 }
 
@@ -2155,11 +2059,10 @@ static int vmstat_cpu_dead(unsigned int cpu)
 
 	refresh_zone_stat_thresholds();
 	node_cpus = cpumask_of_node(node);
-	if (!cpumask_empty(node_cpus))
+	if (cpumask_weight(node_cpus) > 0)
 		return 0;
 
 	node_clear_state(node, N_CPU);
-
 	return 0;
 }
 
@@ -2233,7 +2136,7 @@ static void unusable_show_print(struct seq_file *m,
 	seq_printf(m, "Node %d, zone %8s ",
 				pgdat->node_id,
 				zone->name);
-	for (order = 0; order < NR_PAGE_ORDERS; ++order) {
+	for (order = 0; order < MAX_ORDER; ++order) {
 		fill_contig_page_info(zone, order, &info);
 		index = unusable_free_index(order, &info);
 		seq_printf(m, "%d.%03d ", index / 1000, index % 1000);
@@ -2285,7 +2188,7 @@ static void extfrag_show_print(struct seq_file *m,
 	seq_printf(m, "Node %d, zone %8s ",
 				pgdat->node_id,
 				zone->name);
-	for (order = 0; order < NR_PAGE_ORDERS; ++order) {
+	for (order = 0; order < MAX_ORDER; ++order) {
 		fill_contig_page_info(zone, order, &info);
 		index = __fragmentation_index(order, &info);
 		seq_printf(m, "%2d.%03d ", index / 1000, index % 1000);
@@ -2331,5 +2234,4 @@ static int __init extfrag_debug_init(void)
 }
 
 module_init(extfrag_debug_init);
-
 #endif

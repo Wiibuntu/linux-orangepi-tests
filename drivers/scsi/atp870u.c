@@ -40,7 +40,7 @@
 
 #include "atp870u.h"
 
-static const struct scsi_host_template atp870u_template;
+static struct scsi_host_template atp870u_template;
 static void send_s870(struct atp_unit *dev,unsigned char c);
 static void atp_is(struct atp_unit *dev, unsigned char c, bool wide_chip,
 		   unsigned char lvdmode);
@@ -614,6 +614,7 @@ static irqreturn_t atp870u_intr_handle(int irq, void *dev_id)
 /**
  *	atp870u_queuecommand_lck -	Queue SCSI command
  *	@req_p: request block
+ *	@done: completion function
  *
  *	Queue a command to the ATP queue. Called with the host lock held.
  */
@@ -1724,11 +1725,9 @@ static void atp870u_remove (struct pci_dev *pdev)
 	atp870u_free_tables(pshost);
 	scsi_host_put(pshost);
 }
-
-MODULE_DESCRIPTION("ACARD SCSI host adapter driver");
 MODULE_LICENSE("GPL");
 
-static const struct scsi_host_template atp870u_template = {
+static struct scsi_host_template atp870u_template = {
      .module			= THIS_MODULE,
      .name			= "atp870u"		/* name */,
      .proc_name			= "atp870u",

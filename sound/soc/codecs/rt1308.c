@@ -11,8 +11,10 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
+#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
+#include <linux/of_gpio.h>
 #include <linux/acpi.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
@@ -763,6 +765,7 @@ static const struct snd_soc_component_driver soc_component_dev_rt1308 = {
 	.set_pll = rt1308_set_component_pll,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt1308_regmap = {
@@ -771,7 +774,7 @@ static const struct regmap_config rt1308_regmap = {
 	.max_register = RT1308_MAX_REG,
 	.volatile_reg = rt1308_volatile_register,
 	.readable_reg = rt1308_readable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = rt1308_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt1308_reg),
 	.use_single_read = true,
@@ -795,7 +798,7 @@ MODULE_DEVICE_TABLE(acpi, rt1308_acpi_match);
 #endif
 
 static const struct i2c_device_id rt1308_i2c_id[] = {
-	{ "rt1308" },
+	{ "rt1308", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1308_i2c_id);
@@ -811,7 +814,8 @@ static void rt1308_efuse(struct rt1308_priv *rt1308)
 	regmap_write(rt1308->regmap, RT1308_PVDD_OFFSET_CTL, 0x10000000);
 }
 
-static int rt1308_i2c_probe(struct i2c_client *i2c)
+static int rt1308_i2c_probe(struct i2c_client *i2c,
+		    const struct i2c_device_id *id)
 {
 	struct rt1308_priv *rt1308;
 	int ret;

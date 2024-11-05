@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/bus/ti-sysc.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Texas Instruments interconnect target module
+title: Texas Instruments interconnect target module binding
 
 maintainers:
   - Tony Lindgren <tony@atomide.com>
@@ -34,6 +34,7 @@ properties:
     oneOf:
       - items:
           - enum:
+              - ti,sysc-omap2
               - ti,sysc-omap2
               - ti,sysc-omap4
               - ti,sysc-omap4-simple
@@ -97,7 +98,7 @@ properties:
       - enum: [ ick, fck, sys_clk ]
       - items:
           - const: fck
-          - enum: [ ick, dbclk, osc, sys_clk, dss_clk, ahclkx ]
+          - enum: [ ick. dbclk, osc, sys_clk, dss_clk, ahclkx ]
       - items:
           - const: fck
           - const: phy-clk

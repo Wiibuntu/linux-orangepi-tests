@@ -586,6 +586,8 @@ static void ps3vram_submit_bio(struct bio *bio)
 
 	dev_dbg(&dev->core, "%s\n", __func__);
 
+	blk_queue_split(&bio);
+
 	spin_lock_irq(&priv->lock);
 	busy = !bio_list_empty(&priv->list);
 	bio_list_add(&priv->list, bio);
@@ -730,21 +732,23 @@ static int ps3vram_probe(struct ps3_system_bus_device *dev)
 
 	ps3vram_proc_init(dev);
 
-	gendisk = blk_alloc_disk(NULL, NUMA_NO_NODE);
-	if (IS_ERR(gendisk)) {
+	gendisk = blk_alloc_disk(NUMA_NO_NODE);
+	if (!gendisk) {
 		dev_err(&dev->core, "blk_alloc_disk failed\n");
-		error = PTR_ERR(gendisk);
+		error = -ENOMEM;
 		goto out_cache_cleanup;
 	}
 
 	priv->gendisk = gendisk;
 	gendisk->major = ps3vram_major;
 	gendisk->minors = 1;
-	gendisk->flags |= GENHD_FL_NO_PART;
 	gendisk->fops = &ps3vram_fops;
 	gendisk->private_data = dev;
-	strscpy(gendisk->disk_name, DEVICE_NAME, sizeof(gendisk->disk_name));
+	strlcpy(gendisk->disk_name, DEVICE_NAME, sizeof(gendisk->disk_name));
 	set_capacity(gendisk, priv->size >> 9);
+	blk_queue_max_segments(gendisk->queue, BLK_MAX_SEGMENTS);
+	blk_queue_max_segment_size(gendisk->queue, BLK_MAX_SEGMENT_SIZE);
+	blk_queue_max_hw_sectors(gendisk->queue, BLK_SAFE_MAX_SECTORS);
 
 	dev_info(&dev->core, "%s: Using %llu MiB of GPU memory\n",
 		 gendisk->disk_name, get_capacity(gendisk) >> 11);
@@ -756,7 +760,7 @@ static int ps3vram_probe(struct ps3_system_bus_device *dev)
 	return 0;
 
 out_cleanup_disk:
-	put_disk(gendisk);
+	blk_cleanup_disk(gendisk);
 out_cache_cleanup:
 	remove_proc_entry(DEVICE_NAME, NULL);
 	ps3vram_cache_cleanup(dev);
@@ -787,7 +791,7 @@ static void ps3vram_remove(struct ps3_system_bus_device *dev)
 	struct ps3vram_priv *priv = ps3_system_bus_get_drvdata(dev);
 
 	del_gendisk(priv->gendisk);
-	put_disk(priv->gendisk);
+	blk_cleanup_disk(priv->gendisk);
 	remove_proc_entry(DEVICE_NAME, NULL);
 	ps3vram_cache_cleanup(dev);
 	iounmap(priv->reports);

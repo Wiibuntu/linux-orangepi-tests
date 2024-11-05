@@ -29,8 +29,6 @@
 #include <linux/netfilter/nfnetlink_queue.h>
 #include <linux/netfilter/nf_conntrack_common.h>
 #include <linux/list.h>
-#include <linux/cgroup-defs.h>
-#include <net/gso.h>
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <net/netfilter/nf_queue.h>
@@ -169,9 +167,7 @@ instance_destroy_rcu(struct rcu_head *head)
 	struct nfqnl_instance *inst = container_of(head, struct nfqnl_instance,
 						   rcu);
 
-	rcu_read_lock();
 	nfqnl_flush(inst, NULL, 0);
-	rcu_read_unlock();
 	kfree(inst);
 	module_put(THIS_MODULE);
 }
@@ -227,174 +223,22 @@ find_dequeue_entry(struct nfqnl_instance *queue, unsigned int id)
 	return entry;
 }
 
-static unsigned int nf_iterate(struct sk_buff *skb,
-			       struct nf_hook_state *state,
-			       const struct nf_hook_entries *hooks,
-			       unsigned int *index)
-{
-	const struct nf_hook_entry *hook;
-	unsigned int verdict, i = *index;
-
-	while (i < hooks->num_hook_entries) {
-		hook = &hooks->hooks[i];
-repeat:
-		verdict = nf_hook_entry_hookfn(hook, skb, state);
-		if (verdict != NF_ACCEPT) {
-			*index = i;
-			if (verdict != NF_REPEAT)
-				return verdict;
-			goto repeat;
-		}
-		i++;
-	}
-
-	*index = i;
-	return NF_ACCEPT;
-}
-
-static struct nf_hook_entries *nf_hook_entries_head(const struct net *net, u8 pf, u8 hooknum)
-{
-	switch (pf) {
-#ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
-	case NFPROTO_BRIDGE:
-		return rcu_dereference(net->nf.hooks_bridge[hooknum]);
-#endif
-	case NFPROTO_IPV4:
-		return rcu_dereference(net->nf.hooks_ipv4[hooknum]);
-	case NFPROTO_IPV6:
-		return rcu_dereference(net->nf.hooks_ipv6[hooknum]);
-	default:
-		WARN_ON_ONCE(1);
-		return NULL;
-	}
-
-	return NULL;
-}
-
-static int nf_ip_reroute(struct sk_buff *skb, const struct nf_queue_entry *entry)
-{
-#ifdef CONFIG_INET
-	const struct ip_rt_info *rt_info = nf_queue_entry_reroute(entry);
-
-	if (entry->state.hook == NF_INET_LOCAL_OUT) {
-		const struct iphdr *iph = ip_hdr(skb);
-
-		if (!(iph->tos == rt_info->tos &&
-		      skb->mark == rt_info->mark &&
-		      iph->daddr == rt_info->daddr &&
-		      iph->saddr == rt_info->saddr))
-			return ip_route_me_harder(entry->state.net, entry->state.sk,
-						  skb, RTN_UNSPEC);
-	}
-#endif
-	return 0;
-}
-
-static int nf_reroute(struct sk_buff *skb, struct nf_queue_entry *entry)
-{
-	const struct nf_ipv6_ops *v6ops;
-	int ret = 0;
-
-	switch (entry->state.pf) {
-	case AF_INET:
-		ret = nf_ip_reroute(skb, entry);
-		break;
-	case AF_INET6:
-		v6ops = rcu_dereference(nf_ipv6_ops);
-		if (v6ops)
-			ret = v6ops->reroute(skb, entry);
-		break;
-	}
-	return ret;
-}
-
-/* caller must hold rcu read-side lock */
-static void nf_reinject(struct nf_queue_entry *entry, unsigned int verdict)
-{
-	const struct nf_hook_entry *hook_entry;
-	const struct nf_hook_entries *hooks;
-	struct sk_buff *skb = entry->skb;
-	const struct net *net;
-	unsigned int i;
-	int err;
-	u8 pf;
-
-	net = entry->state.net;
-	pf = entry->state.pf;
-
-	hooks = nf_hook_entries_head(net, pf, entry->state.hook);
-
-	i = entry->hook_index;
-	if (!hooks || i >= hooks->num_hook_entries) {
-		kfree_skb_reason(skb, SKB_DROP_REASON_NETFILTER_DROP);
-		nf_queue_entry_free(entry);
-		return;
-	}
-
-	hook_entry = &hooks->hooks[i];
-
-	/* Continue traversal iff userspace said ok... */
-	if (verdict == NF_REPEAT)
-		verdict = nf_hook_entry_hookfn(hook_entry, skb, &entry->state);
-
-	if (verdict == NF_ACCEPT) {
-		if (nf_reroute(skb, entry) < 0)
-			verdict = NF_DROP;
-	}
-
-	if (verdict == NF_ACCEPT) {
-next_hook:
-		++i;
-		verdict = nf_iterate(skb, &entry->state, hooks, &i);
-	}
-
-	switch (verdict & NF_VERDICT_MASK) {
-	case NF_ACCEPT:
-	case NF_STOP:
-		local_bh_disable();
-		entry->state.okfn(entry->state.net, entry->state.sk, skb);
-		local_bh_enable();
-		break;
-	case NF_QUEUE:
-		err = nf_queue(skb, &entry->state, i, verdict);
-		if (err == 1)
-			goto next_hook;
-		break;
-	case NF_STOLEN:
-		break;
-	default:
-		kfree_skb(skb);
-	}
-
-	nf_queue_entry_free(entry);
-}
-
 static void nfqnl_reinject(struct nf_queue_entry *entry, unsigned int verdict)
 {
-	const struct nf_ct_hook *ct_hook;
+	struct nf_ct_hook *ct_hook;
+	int err;
 
 	if (verdict == NF_ACCEPT ||
 	    verdict == NF_REPEAT ||
 	    verdict == NF_STOP) {
-		unsigned int ct_verdict = verdict;
-
 		rcu_read_lock();
 		ct_hook = rcu_dereference(nf_ct_hook);
-		if (ct_hook)
-			ct_verdict = ct_hook->update(entry->state.net, entry->skb);
-		rcu_read_unlock();
-
-		switch (ct_verdict & NF_VERDICT_MASK) {
-		case NF_ACCEPT:
-			/* follow userspace verdict, could be REPEAT */
-			break;
-		case NF_STOLEN:
-			nf_queue_entry_free(entry);
-			return;
-		default:
-			verdict = ct_verdict & NF_VERDICT_MASK;
-			break;
+		if (ct_hook) {
+			err = ct_hook->update(entry->state.net, entry->skb);
+			if (err < 0)
+				verdict = NF_DROP;
 		}
+		rcu_read_unlock();
 	}
 	nf_reinject(entry, verdict);
 }
@@ -455,19 +299,6 @@ static int nfqnl_put_sk_uidgid(struct sk_buff *skb, struct sock *sk)
 nla_put_failure:
 	read_unlock_bh(&sk->sk_callback_lock);
 	return -1;
-}
-
-static int nfqnl_put_sk_classid(struct sk_buff *skb, struct sock *sk)
-{
-#if IS_ENABLED(CONFIG_CGROUP_NET_CLASSID)
-	if (sk && sk_fullsock(sk)) {
-		u32 classid = sock_cgroup_classid(&sk->sk_cgrp_data);
-
-		if (classid && nla_put_be32(skb, NFQA_CGROUP_CLASSID, htonl(classid)))
-			return -1;
-	}
-#endif
-	return 0;
 }
 
 static u32 nfqnl_get_sk_secctx(struct sk_buff *skb, char **secdata)
@@ -540,14 +371,6 @@ nla_put_failure:
 	return -1;
 }
 
-static int nf_queue_checksum_help(struct sk_buff *entskb)
-{
-	if (skb_csum_is_sctp(entskb))
-		return skb_crc32c_csum_help(entskb);
-
-	return skb_checksum_help(entskb);
-}
-
 static struct sk_buff *
 nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 			   struct nf_queue_entry *entry,
@@ -565,11 +388,10 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 	struct net_device *outdev;
 	struct nf_conn *ct = NULL;
 	enum ip_conntrack_info ctinfo = 0;
-	const struct nfnl_ct_hook *nfnl_ct;
+	struct nfnl_ct_hook *nfnl_ct;
 	bool csum_verify;
 	char *secdata = NULL;
 	u32 seclen = 0;
-	ktime_t tstamp;
 
 	size = nlmsg_total_size(sizeof(struct nfgenmsg))
 		+ nla_total_size(sizeof(struct nfqnl_msg_packet_hdr))
@@ -580,16 +402,11 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 		+ nla_total_size(sizeof(u_int32_t))	/* ifindex */
 #endif
 		+ nla_total_size(sizeof(u_int32_t))	/* mark */
-		+ nla_total_size(sizeof(u_int32_t))	/* priority */
 		+ nla_total_size(sizeof(struct nfqnl_msg_packet_hw))
 		+ nla_total_size(sizeof(u_int32_t))	/* skbinfo */
-#if IS_ENABLED(CONFIG_CGROUP_NET_CLASSID)
-		+ nla_total_size(sizeof(u_int32_t))	/* classid */
-#endif
 		+ nla_total_size(sizeof(u_int32_t));	/* cap_len */
 
-	tstamp = skb_tstamp_cond(entskb, false);
-	if (tstamp)
+	if (entskb->tstamp)
 		size += nla_total_size(sizeof(struct nfqnl_msg_packet_timestamp));
 
 	size += nfqnl_get_bridge_size(entry);
@@ -610,7 +427,7 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 	case NFQNL_COPY_PACKET:
 		if (!(queue->flags & NFQA_CFG_F_GSO) &&
 		    entskb->ip_summed == CHECKSUM_PARTIAL &&
-		    nf_queue_checksum_help(entskb))
+		    skb_checksum_help(entskb))
 			return NULL;
 
 		data_len = READ_ONCE(queue->copy_range);
@@ -742,10 +559,6 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 	    nla_put_be32(skb, NFQA_MARK, htonl(entskb->mark)))
 		goto nla_put_failure;
 
-	if (entskb->priority &&
-	    nla_put_be32(skb, NFQA_PRIORITY, htonl(entskb->priority)))
-		goto nla_put_failure;
-
 	if (indev && entskb->dev &&
 	    skb_mac_header_was_set(entskb) &&
 	    skb_mac_header_len(entskb) != 0) {
@@ -764,9 +577,9 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 	if (nfqnl_put_bridge(entry, skb) < 0)
 		goto nla_put_failure;
 
-	if (entry->state.hook <= NF_INET_FORWARD && tstamp) {
+	if (entry->state.hook <= NF_INET_FORWARD && entskb->tstamp) {
 		struct nfqnl_msg_packet_timestamp ts;
-		struct timespec64 kts = ktime_to_timespec64(tstamp);
+		struct timespec64 kts = ktime_to_timespec64(entskb->tstamp);
 
 		ts.sec = cpu_to_be64(kts.tv_sec);
 		ts.usec = cpu_to_be64(kts.tv_nsec / NSEC_PER_USEC);
@@ -777,9 +590,6 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 
 	if ((queue->flags & NFQA_CFG_F_UID_GID) && entskb->sk &&
 	    nfqnl_put_sk_uidgid(skb, entskb->sk) < 0)
-		goto nla_put_failure;
-
-	if (nfqnl_put_sk_classid(skb, entskb->sk) < 0)
 		goto nla_put_failure;
 
 	if (seclen && nla_put(skb, NFQA_SECCTX, seclen, secdata))
@@ -828,41 +638,10 @@ static bool nf_ct_drop_unconfirmed(const struct nf_queue_entry *entry)
 {
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
 	static const unsigned long flags = IPS_CONFIRMED | IPS_DYING;
-	struct nf_conn *ct = (void *)skb_nfct(entry->skb);
-	unsigned long status;
-	unsigned int use;
+	const struct nf_conn *ct = (void *)skb_nfct(entry->skb);
 
-	if (!ct)
-		return false;
-
-	status = READ_ONCE(ct->status);
-	if ((status & flags) == IPS_DYING)
+	if (ct && ((ct->status & flags) == IPS_DYING))
 		return true;
-
-	if (status & IPS_CONFIRMED)
-		return false;
-
-	/* in some cases skb_clone() can occur after initial conntrack
-	 * pickup, but conntrack assumes exclusive skb->_nfct ownership for
-	 * unconfirmed entries.
-	 *
-	 * This happens for br_netfilter and with ip multicast routing.
-	 * We can't be solved with serialization here because one clone could
-	 * have been queued for local delivery.
-	 */
-	use = refcount_read(&ct->ct_general.use);
-	if (likely(use == 1))
-		return false;
-
-	/* Can't decrement further? Exclusive ownership. */
-	if (!refcount_dec_not_one(&ct->ct_general.use))
-		return false;
-
-	skb_set_nfct(entry->skb, 0);
-	/* No nf_ct_put(): we already decremented .use and it cannot
-	 * drop down to 0.
-	 */
-	return true;
 #endif
 	return false;
 }
@@ -1022,7 +801,7 @@ nfqnl_enqueue_packet(struct nf_queue_entry *entry, unsigned int queuenum)
 		break;
 	}
 
-	if (!skb_is_gso(skb) || ((queue->flags & NFQA_CFG_F_GSO) && !skb_is_gso_sctp(skb)))
+	if ((queue->flags & NFQA_CFG_F_GSO) || !skb_is_gso(skb))
 		return __nfqnl_enqueue_packet(net, queue, entry);
 
 	nf_bridge_adjust_skb_data(skb);
@@ -1057,16 +836,11 @@ nfqnl_enqueue_packet(struct nf_queue_entry *entry, unsigned int queuenum)
 }
 
 static int
-nfqnl_mangle(void *data, unsigned int data_len, struct nf_queue_entry *e, int diff)
+nfqnl_mangle(void *data, int data_len, struct nf_queue_entry *e, int diff)
 {
 	struct sk_buff *nskb;
 
 	if (diff < 0) {
-		unsigned int min_len = skb_transport_offset(e->skb);
-
-		if (data_len < min_len)
-			return -EINVAL;
-
 		if (pskb_trim(e->skb, data_len))
 			return -ENOMEM;
 	} else if (diff > 0) {
@@ -1246,13 +1020,11 @@ static const struct nla_policy nfqa_verdict_policy[NFQA_MAX+1] = {
 	[NFQA_CT]		= { .type = NLA_UNSPEC },
 	[NFQA_EXP]		= { .type = NLA_UNSPEC },
 	[NFQA_VLAN]		= { .type = NLA_NESTED },
-	[NFQA_PRIORITY]		= { .type = NLA_U32 },
 };
 
 static const struct nla_policy nfqa_verdict_batch_policy[NFQA_MAX+1] = {
 	[NFQA_VERDICT_HDR]	= { .len = sizeof(struct nfqnl_msg_verdict_hdr) },
 	[NFQA_MARK]		= { .type = NLA_U32 },
-	[NFQA_PRIORITY]		= { .type = NLA_U32 },
 };
 
 static struct nfqnl_instance *
@@ -1333,15 +1105,12 @@ static int nfqnl_recv_verdict_batch(struct sk_buff *skb,
 		if (nfqa[NFQA_MARK])
 			entry->skb->mark = ntohl(nla_get_be32(nfqa[NFQA_MARK]));
 
-		if (nfqa[NFQA_PRIORITY])
-			entry->skb->priority = ntohl(nla_get_be32(nfqa[NFQA_PRIORITY]));
-
 		nfqnl_reinject(entry, verdict);
 	}
 	return 0;
 }
 
-static struct nf_conn *nfqnl_ct_parse(const struct nfnl_ct_hook *nfnl_ct,
+static struct nf_conn *nfqnl_ct_parse(struct nfnl_ct_hook *nfnl_ct,
 				      const struct nlmsghdr *nlh,
 				      const struct nlattr * const nfqa[],
 				      struct nf_queue_entry *entry,
@@ -1408,11 +1177,11 @@ static int nfqnl_recv_verdict(struct sk_buff *skb, const struct nfnl_info *info,
 {
 	struct nfnl_queue_net *q = nfnl_queue_pernet(info->net);
 	u_int16_t queue_num = ntohs(info->nfmsg->res_id);
-	const struct nfnl_ct_hook *nfnl_ct;
 	struct nfqnl_msg_verdict_hdr *vhdr;
 	enum ip_conntrack_info ctinfo;
 	struct nfqnl_instance *queue;
 	struct nf_queue_entry *entry;
+	struct nfnl_ct_hook *nfnl_ct;
 	struct nf_conn *ct = NULL;
 	unsigned int verdict;
 	int err;
@@ -1461,9 +1230,6 @@ static int nfqnl_recv_verdict(struct sk_buff *skb, const struct nfnl_info *info,
 
 	if (nfqa[NFQA_MARK])
 		entry->skb->mark = ntohl(nla_get_be32(nfqa[NFQA_MARK]));
-
-	if (nfqa[NFQA_PRIORITY])
-		entry->skb->priority = ntohl(nla_get_be32(nfqa[NFQA_PRIORITY]));
 
 	nfqnl_reinject(entry, verdict);
 	return 0;
@@ -1768,9 +1534,15 @@ static void __net_exit nfnl_queue_net_exit(struct net *net)
 		WARN_ON_ONCE(!hlist_empty(&q->instance_table[i]));
 }
 
+static void nfnl_queue_net_exit_batch(struct list_head *net_exit_list)
+{
+	synchronize_rcu();
+}
+
 static struct pernet_operations nfnl_queue_net_ops = {
 	.init		= nfnl_queue_net_init,
 	.exit		= nfnl_queue_net_exit,
+	.exit_batch	= nfnl_queue_net_exit_batch,
 	.id		= &nfnl_queue_net_id,
 	.size		= sizeof(struct nfnl_queue_net),
 };
