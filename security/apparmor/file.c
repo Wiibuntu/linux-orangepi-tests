@@ -161,6 +161,7 @@ static int path_name(const char *op, struct aa_label *label,
 	return 0;
 }
 
+struct aa_perms default_perms = {};
 /**
  * aa_lookup_fperms - convert dfa compressed perms to internal perms
  * @dfa: dfa to lookup perms for   (NOT NULL)
@@ -171,7 +172,6 @@ static int path_name(const char *op, struct aa_label *label,
  *
  * Returns: a pointer to a file permission set
  */
-struct aa_perms default_perms = {};
 struct aa_perms *aa_lookup_fperms(struct aa_policydb *file_rules,
 				 aa_state_t state, struct path_cond *cond)
 {
@@ -459,7 +459,7 @@ static int __file_path_perm(const char *op, struct aa_label *label,
 {
 	struct aa_profile *profile;
 	struct aa_perms perms = {};
-	vfsuid_t vfsuid = i_uid_into_vfsuid(file_mnt_user_ns(file),
+	vfsuid_t vfsuid = i_uid_into_vfsuid(file_mnt_idmap(file),
 					    file_inode(file));
 	struct path_cond cond = {
 		.uid = vfsuid_into_kuid(vfsuid),

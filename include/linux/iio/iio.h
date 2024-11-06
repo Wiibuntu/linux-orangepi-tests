@@ -221,6 +221,9 @@ struct iio_event_spec {
  * @extend_name:	Allows labeling of channel attributes with an
  *			informative name. Note this has no effect codes etc,
  *			unlike modifiers.
+ *			This field is deprecated in favour of providing
+ *			iio_info->read_label() to override the label, which
+ *			unlike @extend_name does not affect sysfs filenames.
  * @datasheet_name:	A name used in in-kernel mapping of channels. It should
  *			correspond to the first name that the channel is referred
  *			to by in the datasheet (e.g. IND), or the nearest
@@ -380,6 +383,11 @@ s64 iio_get_time_ns(const struct iio_dev *indio_dev);
 	 | INDIO_HARDWARE_TRIGGERED)
 
 #define INDIO_MAX_RAW_ELEMENTS		4
+
+struct iio_val_int_plus_micro {
+	int integer;
+	int micro;
+};
 
 struct iio_trigger; /* forward declaration */
 
@@ -717,7 +725,7 @@ static inline void *iio_device_get_drvdata(const struct iio_dev *indio_dev)
  * must not share  cachelines with the rest of the structure, thus making
  * them safe for use with non-coherent DMA.
  */
-#define IIO_DMA_MINALIGN ARCH_KMALLOC_MINALIGN
+#define IIO_DMA_MINALIGN ARCH_DMA_MINALIGN
 struct iio_dev *iio_device_alloc(struct device *parent, int sizeof_priv);
 
 /* The information at the returned address is guaranteed to be cacheline aligned */
