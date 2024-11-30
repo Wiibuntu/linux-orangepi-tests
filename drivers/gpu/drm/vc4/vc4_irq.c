@@ -57,8 +57,6 @@
 			 V3D_INT_FLDONE | \
 			 V3D_INT_FRDONE)
 
-DECLARE_WAIT_QUEUE_HEAD(render_wait);
-
 static void
 vc4_overflow_mem_work(struct work_struct *work)
 {
@@ -78,7 +76,7 @@ vc4_overflow_mem_work(struct work_struct *work)
 
 	bin_bo_slot = vc4_v3d_get_bin_slot(vc4);
 	if (bin_bo_slot < 0) {
-		DRM_ERROR("Couldn't allocate binner overflow mem\n");
+		drm_err(&vc4->base, "Couldn't allocate binner overflow mem\n");
 		goto complete;
 	}
 

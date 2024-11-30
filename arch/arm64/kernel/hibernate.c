@@ -99,7 +99,6 @@ int pfn_is_nosave(unsigned long pfn)
 
 void notrace save_processor_state(void)
 {
-	WARN_ON(num_online_cpus() != 1);
 }
 
 void notrace restore_processor_state(void)
@@ -271,7 +270,7 @@ static int swsusp_mte_save_tags(void)
 			if (!page)
 				continue;
 
-			if (!test_bit(PG_mte_tagged, &page->flags))
+			if (!page_mte_tagged(page))
 				continue;
 
 			ret = save_tags(page, pfn);
@@ -408,7 +407,7 @@ int swsusp_arch_resume(void)
 					  void *, phys_addr_t, phys_addr_t);
 	struct trans_pgd_info trans_info = {
 		.trans_alloc_page	= hibernate_page_alloc,
-		.trans_alloc_arg	= (void *)GFP_ATOMIC,
+		.trans_alloc_arg	= (__force void *)GFP_ATOMIC,
 	};
 
 	/*

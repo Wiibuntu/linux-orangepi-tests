@@ -110,6 +110,15 @@ fbdev Helper Functions Reference
 .. kernel-doc:: drivers/gpu/drm/drm_fb_helper.c
    :doc: fbdev helpers
 
+.. kernel-doc:: drivers/gpu/drm/drm_fbdev_dma.c
+   :export:
+
+.. kernel-doc:: drivers/gpu/drm/drm_fbdev_shmem.c
+   :export:
+
+.. kernel-doc:: drivers/gpu/drm/drm_fbdev_ttm.c
+   :export:
+
 .. kernel-doc:: include/drm/drm_fb_helper.h
    :internal:
 
@@ -172,7 +181,7 @@ Bridge Operations
 Bridge Connector Helper
 -----------------------
 
-.. kernel-doc:: drivers/gpu/drm/drm_bridge_connector.c
+.. kernel-doc:: drivers/gpu/drm/display/drm_bridge_connector.c
    :doc: overview
 
 
@@ -185,10 +194,17 @@ Bridge Helper Reference
 .. kernel-doc:: drivers/gpu/drm/drm_bridge.c
    :export:
 
+MIPI-DSI bridge operation
+-------------------------
+
+.. kernel-doc:: drivers/gpu/drm/drm_bridge.c
+   :doc: dsi bridge operations
+
+
 Bridge Connector Helper Reference
 ---------------------------------
 
-.. kernel-doc:: drivers/gpu/drm/drm_bridge_connector.c
+.. kernel-doc:: drivers/gpu/drm/display/drm_bridge_connector.c
    :export:
 
 Panel-Bridge Helper Reference
@@ -353,6 +369,12 @@ EDID Helper Functions Reference
 .. kernel-doc:: drivers/gpu/drm/drm_edid.c
    :export:
 
+.. kernel-doc:: include/drm/drm_eld.h
+   :internal:
+
+.. kernel-doc:: drivers/gpu/drm/drm_eld.c
+   :export:
+
 SCDC Helper Functions Reference
 ===============================
 
@@ -368,7 +390,7 @@ SCDC Helper Functions Reference
 HDMI Infoframes Helper Reference
 ================================
 
-Strictly speaking this is not a DRM helper library but generally useable
+Strictly speaking this is not a DRM helper library but generally usable
 by any driver interfacing with HDMI outputs like v4l or alsa drivers.
 But it nicely fits into the overall topic of mode setting helper
 libraries and hence is also included here.

@@ -65,7 +65,7 @@ utile_width(int cpp)
 	case 8:
 		return 2;
 	default:
-		DRM_ERROR("unknown cpp: %d\n", cpp);
+		pr_err("unknown cpp: %d\n", cpp);
 		return 1;
 	}
 }
@@ -82,7 +82,7 @@ utile_height(int cpp)
 	case 8:
 		return 4;
 	default:
-		DRM_ERROR("unknown cpp: %d\n", cpp);
+		pr_err("unknown cpp: %d\n", cpp);
 		return 1;
 	}
 }
@@ -117,7 +117,7 @@ vc4_use_bo(struct vc4_exec_info *exec, uint32_t hindex)
 			  hindex, exec->bo_count);
 		return NULL;
 	}
-	obj = exec->bo[hindex];
+	obj = to_drm_gem_dma_obj(exec->bo[hindex]);
 	bo = to_vc4_bo(&obj->base);
 
 	if (bo->validated_shader) {
@@ -390,8 +390,8 @@ validate_tile_binning_config(VALIDATE_ARGS)
 	bin_slot = vc4_v3d_get_bin_slot(vc4);
 	if (bin_slot < 0) {
 		if (bin_slot != -EINTR && bin_slot != -ERESTARTSYS) {
-			DRM_ERROR("Failed to allocate binner memory: %d\n",
-				  bin_slot);
+			drm_err(dev, "Failed to allocate binner memory: %d\n",
+				bin_slot);
 		}
 		return bin_slot;
 	}
@@ -810,7 +810,7 @@ validate_gl_shader_rec(struct drm_device *dev,
 			return -EINVAL;
 		}
 
-		bo[i] = exec->bo[src_handles[i]];
+		bo[i] = to_drm_gem_dma_obj(exec->bo[src_handles[i]]);
 		if (!bo[i])
 			return -EINVAL;
 	}

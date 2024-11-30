@@ -433,9 +433,9 @@ requires_new_range:
 			should_add_tail = Tovcn < r->len;
 
 			if (should_add_tail) {
-				tail_lcn = r->lcn == SPARSE_LCN
-						   ? SPARSE_LCN
-						   : (r->lcn + Tovcn);
+				tail_lcn = r->lcn == SPARSE_LCN ?
+						   SPARSE_LCN :
+						   (r->lcn + Tovcn);
 				tail_vcn = r->vcn + Tovcn;
 				tail_len = r->len - Tovcn;
 			}
@@ -919,11 +919,14 @@ out:
  */
 int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 	       CLST svcn, CLST evcn, CLST vcn, const u8 *run_buf,
-	       u32 run_buf_size)
+	       int run_buf_size)
 {
 	u64 prev_lcn, vcn64, lcn, next_vcn;
 	const u8 *run_last, *run_0;
 	bool is_mft = ino == MFT_REC_MFT;
+
+	if (run_buf_size < 0)
+		return -EINVAL;
 
 	/* Check for empty. */
 	if (evcn + 1 == svcn)
@@ -956,7 +959,7 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 		 * Large positive number requires to store 5 bytes
 		 * e.g.: 05 FF 7E FF FF 00 00 00
 		 */
-		if (size_size > 8)
+		if (size_size > sizeof(len))
 			return -EINVAL;
 
 		len = run_unpack_s64(run_buf, size_size, 0);
@@ -968,7 +971,7 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 
 		if (!offset_size)
 			lcn = SPARSE_LCN64;
-		else if (offset_size <= 8) {
+		else if (offset_size <= sizeof(s64)) {
 			s64 dlcn;
 
 			/* Initial value of dlcn is -1 or 0. */
@@ -981,8 +984,10 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 				return -EINVAL;
 			lcn = prev_lcn + dlcn;
 			prev_lcn = lcn;
-		} else
+		} else {
+			/* The size of 'dlcn' can't be > 8. */
 			return -EINVAL;
+		}
 
 		next_vcn = vcn64 + len;
 		/* Check boundary. */
@@ -1046,7 +1051,7 @@ int run_unpack(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
  */
 int run_unpack_ex(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 		  CLST svcn, CLST evcn, CLST vcn, const u8 *run_buf,
-		  u32 run_buf_size)
+		  int run_buf_size)
 {
 	int ret, err;
 	CLST next_vcn, lcn, len;
@@ -1093,25 +1098,8 @@ int run_unpack_ex(struct runs_tree *run, struct ntfs_sb_info *sbi, CLST ino,
 
 		if (down_write_trylock(&wnd->rw_lock)) {
 			/* Mark all zero bits as used in range [lcn, lcn+len). */
-			CLST i, lcn_f = 0, len_f = 0;
-
-			err = 0;
-			for (i = 0; i < len; i++) {
-				if (wnd_is_free(wnd, lcn + i, 1)) {
-					if (!len_f)
-						lcn_f = lcn + i;
-					len_f += 1;
-				} else if (len_f) {
-					err = wnd_set_used(wnd, lcn_f, len_f);
-					len_f = 0;
-					if (err)
-						break;
-				}
-			}
-
-			if (len_f)
-				err = wnd_set_used(wnd, lcn_f, len_f);
-
+			size_t done;
+			err = wnd_set_used_safe(wnd, lcn, len, &done);
 			up_write(&wnd->rw_lock);
 			if (err)
 				return err;

@@ -312,9 +312,7 @@ static int call_break_hook(struct pt_regs *regs, unsigned long esr)
 	 * entirely not preemptible, and we can use rcu list safely here.
 	 */
 	list_for_each_entry_rcu(hook, list, node) {
-		unsigned long comment = esr & ESR_ELx_BRK64_ISS_COMMENT_MASK;
-
-		if ((comment & ~hook->mask) == hook->imm)
+		if ((esr_brk_comment(esr) & ~hook->mask) == hook->imm)
 			fn = hook->fn;
 	}
 
@@ -437,6 +435,11 @@ int kernel_active_single_step(void)
 	return mdscr_read() & DBG_MDSCR_SS;
 }
 NOKPROBE_SYMBOL(kernel_active_single_step);
+
+void kernel_rewind_single_step(struct pt_regs *regs)
+{
+	set_regs_spsr_ss(regs);
+}
 
 /* ptrace API */
 void user_enable_single_step(struct task_struct *task)

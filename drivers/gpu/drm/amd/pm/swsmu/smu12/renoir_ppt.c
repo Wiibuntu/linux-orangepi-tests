@@ -262,15 +262,15 @@ static int renoir_get_profiling_clk_mask(struct smu_context *smu,
 			/* mclk levels are in reverse order */
 			*mclk_mask = NUM_MEMCLK_DPM_LEVELS - 1;
 	} else if (level == AMD_DPM_FORCED_LEVEL_PROFILE_PEAK) {
-		if(sclk_mask)
+		if (sclk_mask)
 			/* The sclk as gfxclk and has three level about max/min/current */
 			*sclk_mask = 3 - 1;
 
-		if(mclk_mask)
+		if (mclk_mask)
 			/* mclk levels are in reverse order */
 			*mclk_mask = 0;
 
-		if(soc_mask)
+		if (soc_mask)
 			*soc_mask = NUM_SOCCLK_DPM_LEVELS - 1;
 	}
 
@@ -494,7 +494,7 @@ static int renoir_set_fine_grain_gfx_freq_parameters(struct smu_context *smu)
 static int renoir_print_clk_levels(struct smu_context *smu,
 			enum smu_clk_type clk_type, char *buf)
 {
-	int i, size = 0, ret = 0;
+	int i, idx, size = 0, ret = 0;
 	uint32_t cur_value = 0, value = 0, count = 0, min = 0, max = 0;
 	SmuMetrics_t metrics;
 	struct smu_dpm_context *smu_dpm_ctx = &(smu->smu_dpm);
@@ -585,8 +585,6 @@ static int renoir_print_clk_levels(struct smu_context *smu,
 	}
 
 	switch (clk_type) {
-	case SMU_GFXCLK:
-	case SMU_SCLK:
 	case SMU_SOCCLK:
 	case SMU_MCLK:
 	case SMU_DCEFCLK:
@@ -594,7 +592,8 @@ static int renoir_print_clk_levels(struct smu_context *smu,
 	case SMU_VCLK:
 	case SMU_DCLK:
 		for (i = 0; i < count; i++) {
-			ret = renoir_get_dpm_clk_limited(smu, clk_type, i, &value);
+			idx = (clk_type == SMU_FCLK || clk_type == SMU_MCLK) ? (count - i - 1) : i;
+			ret = renoir_get_dpm_clk_limited(smu, clk_type, idx, &value);
 			if (ret)
 				return ret;
 			if (!value)
@@ -927,11 +926,56 @@ static int renoir_set_peak_clock_by_device(struct smu_context *smu)
 	return ret;
 }
 
+static int renior_set_dpm_profile_freq(struct smu_context *smu,
+					enum amd_dpm_forced_level level,
+					enum smu_clk_type clk_type)
+{
+	int ret = 0;
+	uint32_t sclk = 0, socclk = 0, fclk = 0;
+
+	switch (clk_type) {
+	case SMU_GFXCLK:
+	case SMU_SCLK:
+		sclk = RENOIR_UMD_PSTATE_GFXCLK;
+		if (level == AMD_DPM_FORCED_LEVEL_PROFILE_PEAK)
+			renoir_get_dpm_ultimate_freq(smu, SMU_SCLK, NULL, &sclk);
+		else if (level == AMD_DPM_FORCED_LEVEL_PROFILE_MIN_SCLK)
+			renoir_get_dpm_ultimate_freq(smu, SMU_SCLK, &sclk, NULL);
+		break;
+	case SMU_SOCCLK:
+		socclk = RENOIR_UMD_PSTATE_SOCCLK;
+		if (level == AMD_DPM_FORCED_LEVEL_PROFILE_PEAK)
+			renoir_get_dpm_ultimate_freq(smu, SMU_SOCCLK, NULL, &socclk);
+		break;
+	case SMU_FCLK:
+	case SMU_MCLK:
+		fclk = RENOIR_UMD_PSTATE_FCLK;
+		if (level == AMD_DPM_FORCED_LEVEL_PROFILE_PEAK)
+			renoir_get_dpm_ultimate_freq(smu, SMU_FCLK, NULL, &fclk);
+		else if (level == AMD_DPM_FORCED_LEVEL_PROFILE_MIN_MCLK)
+			renoir_get_dpm_ultimate_freq(smu, SMU_FCLK, &fclk, NULL);
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	if (sclk)
+		ret = smu_v12_0_set_soft_freq_limited_range(smu, SMU_SCLK, sclk, sclk);
+
+	if (socclk)
+		ret = smu_v12_0_set_soft_freq_limited_range(smu, SMU_SOCCLK, socclk, socclk);
+
+	if (fclk)
+		ret = smu_v12_0_set_soft_freq_limited_range(smu, SMU_FCLK, fclk, fclk);
+
+	return ret;
+}
+
 static int renoir_set_performance_level(struct smu_context *smu,
 					enum amd_dpm_forced_level level)
 {
 	int ret = 0;
-	uint32_t sclk_mask, mclk_mask, soc_mask;
 
 	switch (level) {
 	case AMD_DPM_FORCED_LEVEL_HIGH:
@@ -1011,15 +1055,9 @@ static int renoir_set_performance_level(struct smu_context *smu,
 		smu->gfx_actual_hard_min_freq = smu->gfx_default_hard_min_freq;
 		smu->gfx_actual_soft_max_freq = smu->gfx_default_soft_max_freq;
 
-		ret = renoir_get_profiling_clk_mask(smu, level,
-						    &sclk_mask,
-						    &mclk_mask,
-						    &soc_mask);
-		if (ret)
-			return ret;
-		renoir_force_clk_levels(smu, SMU_SCLK, 1 << sclk_mask);
-		renoir_force_clk_levels(smu, SMU_MCLK, 1 << mclk_mask);
-		renoir_force_clk_levels(smu, SMU_SOCCLK, 1 << soc_mask);
+		renior_set_dpm_profile_freq(smu, level, SMU_SCLK);
+		renior_set_dpm_profile_freq(smu, level, SMU_MCLK);
+		renior_set_dpm_profile_freq(smu, level, SMU_SOCCLK);
 		break;
 	case AMD_DPM_FORCED_LEVEL_PROFILE_PEAK:
 		smu->gfx_actual_hard_min_freq = smu->gfx_default_hard_min_freq;
@@ -1171,6 +1209,7 @@ static int renoir_get_smu_metrics_data(struct smu_context *smu,
 	int ret = 0;
 	uint32_t apu_percent = 0;
 	uint32_t dgpu_percent = 0;
+	struct amdgpu_device *adev = smu->adev;
 
 
 	ret = smu_cmn_get_metrics_table(smu,
@@ -1195,8 +1234,16 @@ static int renoir_get_smu_metrics_data(struct smu_context *smu,
 	case METRICS_AVERAGE_VCNACTIVITY:
 		*value = metrics->AverageUvdActivity / 100;
 		break;
-	case METRICS_AVERAGE_SOCKETPOWER:
-		*value = (metrics->CurrentSocketPower << 8) / 1000;
+	case METRICS_CURR_SOCKETPOWER:
+		if (((amdgpu_ip_version(adev, MP1_HWIP, 0) ==
+		      IP_VERSION(12, 0, 1)) &&
+		     (adev->pm.fw_version >= 0x40000f)) ||
+		    ((amdgpu_ip_version(adev, MP1_HWIP, 0) ==
+		      IP_VERSION(12, 0, 0)) &&
+		     (adev->pm.fw_version >= 0x373200)))
+			*value = metrics->CurrentSocketPower << 8;
+		else
+			*value = (metrics->CurrentSocketPower << 8) / 1000;
 		break;
 	case METRICS_TEMPERATURE_EDGE:
 		*value = (metrics->GfxTemperature / 100) *
@@ -1291,9 +1338,9 @@ static int renoir_read_sensor(struct smu_context *smu,
 						  (uint32_t *)data);
 		*size = 4;
 		break;
-	case AMDGPU_PP_SENSOR_GPU_POWER:
+	case AMDGPU_PP_SENSOR_GPU_INPUT_POWER:
 		ret = renoir_get_smu_metrics_data(smu,
-						  METRICS_AVERAGE_SOCKETPOWER,
+						  METRICS_CURR_SOCKETPOWER,
 						  (uint32_t *)data);
 		*size = 4;
 		break;
@@ -1309,6 +1356,7 @@ static int renoir_read_sensor(struct smu_context *smu,
 						  (uint32_t *)data);
 		*size = 4;
 		break;
+	case AMDGPU_PP_SENSOR_GPU_AVG_POWER:
 	default:
 		ret = -EOPNOTSUPP;
 		break;
