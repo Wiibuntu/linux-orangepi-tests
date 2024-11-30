@@ -150,6 +150,13 @@ static void hisi_i2c_handle_errors(struct hisi_i2c_controller *ctlr)
 		if (reg & HISI_I2C_FIFO_STATE_TX_WERR)
 			dev_err(ctlr->dev, "tx fifo error write\n");
 	}
+
+	/*
+	 * Disable the TX_EMPTY interrupt after finishing all the messages to
+	 * avoid overwhelming the CPU.
+	 */
+	if (ctlr->msg_tx_idx == ctlr->msg_num)
+		hisi_i2c_disable_int(ctlr, HISI_I2C_INT_TX_EMPTY);
 }
 
 static int hisi_i2c_start_xfer(struct hisi_i2c_controller *ctlr)

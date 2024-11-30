@@ -852,6 +852,43 @@ static void vmw_sw_context_fini(struct vmw_private *dev_priv)
 		vmw_binding_state_free(sw_context->staged_bindings);
 }
 
+static void vmw_write_driver_id(struct vmw_private *dev)
+{
+	if ((dev->capabilities2 & SVGA_CAP2_DX2) != 0) {
+		vmw_write(dev,  SVGA_REG_GUEST_DRIVER_ID,
+			  SVGA_REG_GUEST_DRIVER_ID_LINUX);
+
+		vmw_write(dev, SVGA_REG_GUEST_DRIVER_VERSION1,
+			  LINUX_VERSION_MAJOR << 24 |
+			  LINUX_VERSION_PATCHLEVEL << 16 |
+			  LINUX_VERSION_SUBLEVEL);
+		vmw_write(dev, SVGA_REG_GUEST_DRIVER_VERSION2,
+			  VMWGFX_DRIVER_MAJOR << 24 |
+			  VMWGFX_DRIVER_MINOR << 16 |
+			  VMWGFX_DRIVER_PATCHLEVEL);
+		vmw_write(dev, SVGA_REG_GUEST_DRIVER_VERSION3, 0);
+
+		vmw_write(dev, SVGA_REG_GUEST_DRIVER_ID,
+			  SVGA_REG_GUEST_DRIVER_ID_SUBMIT);
+	}
+}
+
+static void vmw_sw_context_init(struct vmw_private *dev_priv)
+{
+	struct vmw_sw_context *sw_context = &dev_priv->ctx;
+
+	hash_init(sw_context->res_ht);
+}
+
+static void vmw_sw_context_fini(struct vmw_private *dev_priv)
+{
+	struct vmw_sw_context *sw_context = &dev_priv->ctx;
+
+	vfree(sw_context->cmd_bounce);
+	if (sw_context->staged_bindings)
+		vmw_binding_state_free(sw_context->staged_bindings);
+}
+
 static int vmw_driver_load(struct vmw_private *dev_priv, u32 pci_id)
 {
 	int ret;
@@ -860,6 +897,8 @@ static int vmw_driver_load(struct vmw_private *dev_priv, u32 pci_id)
 	struct pci_dev *pdev = to_pci_dev(dev_priv->drm.dev);
 
 	dev_priv->drm.dev_private = dev_priv;
+
+	vmw_sw_context_init(dev_priv);
 
 	vmw_sw_context_init(dev_priv);
 

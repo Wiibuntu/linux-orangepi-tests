@@ -419,6 +419,8 @@ int adreno_set_param(struct msm_gpu *gpu, struct msm_file_private *ctx,
 
 		mutex_lock(&gpu->lock);
 
+		mutex_lock(&gpu->lock);
+
 		if (param == MSM_PARAM_COMM) {
 			paramp = &ctx->comm;
 		} else {
@@ -427,6 +429,8 @@ int adreno_set_param(struct msm_gpu *gpu, struct msm_file_private *ctx,
 
 		kfree(*paramp);
 		*paramp = str;
+
+		mutex_unlock(&gpu->lock);
 
 		mutex_unlock(&gpu->lock);
 

@@ -1243,6 +1243,12 @@ static void a6xx_recover(struct msm_gpu *gpu)
 	 */
 	a6xx_gpu->hung = true;
 
+	/*
+	 * To handle recovery specific sequences during the rpm suspend we are
+	 * about to trigger
+	 */
+	a6xx_gpu->hung = true;
+
 	/* Halt SQE first */
 	gpu_write(gpu, REG_A6XX_CP_SQE_CNTL, 3);
 

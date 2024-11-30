@@ -846,7 +846,7 @@ static int am65_cpsw_nuss_ndo_slave_stop(struct net_device *ndev)
 
 	ret = am65_cpsw_nuss_common_stop(common);
 	if (ret)
-		return ret;
+		goto runtime_put;
 
 	common->usage_count--;
 	pm_runtime_put(common->dev);
@@ -938,6 +938,10 @@ static int am65_cpsw_nuss_ndo_slave_open(struct net_device *ndev)
 
 error_cleanup:
 	am65_cpsw_nuss_ndo_slave_stop(ndev);
+	return ret;
+
+runtime_put:
+	pm_runtime_put(common->dev);
 	return ret;
 
 runtime_put:

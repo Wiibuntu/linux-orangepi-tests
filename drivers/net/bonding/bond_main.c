@@ -1941,6 +1941,20 @@ void bond_xdp_set_features(struct net_device *bond_dev)
 	xdp_set_features_flag(bond_dev, val);
 }
 
+/* The bonding driver uses ether_setup() to convert a master bond device
+ * to ARPHRD_ETHER, that resets the target netdevice's flags so we always
+ * have to restore the IFF_MASTER flag, and only restore IFF_SLAVE and IFF_UP
+ * if they were set
+ */
+static void bond_ether_setup(struct net_device *bond_dev)
+{
+	unsigned int flags = bond_dev->flags & (IFF_SLAVE | IFF_UP);
+
+	ether_setup(bond_dev);
+	bond_dev->flags |= IFF_MASTER | flags;
+	bond_dev->priv_flags &= ~IFF_TX_SKB_SHARING;
+}
+
 /* enslave device <slave> to bond device <master> */
 int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev,
 		 struct netlink_ext_ack *extack)
@@ -4942,6 +4956,7 @@ unwind:
 static struct slave *bond_get_slave_by_id(struct bonding *bond,
 					  int slave_id)
 {
+	bool do_failover = false;
 	struct list_head *iter;
 	struct slave *slave;
 	int i = slave_id;
@@ -6473,6 +6488,8 @@ static int bond_init(struct net_device *bond_dev)
 					   bond_dev->name);
 	if (!bond->wq)
 		return -ENOMEM;
+
+	bond->notifier_ctx = false;
 
 	bond->notifier_ctx = false;
 

@@ -1519,6 +1519,7 @@ static void __make_request(struct mddev *mddev, struct bio *bio, int sectors)
 	r10_bio->sector = bio->bi_iter.bi_sector;
 	r10_bio->state = 0;
 	r10_bio->read_slot = -1;
+	r10_bio->start_time = 0;
 	memset(r10_bio->devs, 0, sizeof(r10_bio->devs[0]) *
 			conf->geo.raid_disks);
 
@@ -3172,6 +3173,10 @@ static sector_t raid10_sync_request(struct mddev *mddev, sector_t sector_nr,
 		if (init_resync(conf))
 			return 0;
 
+	if (!mempool_initialized(&conf->r10buf_pool))
+		if (init_resync(conf))
+			return 0;
+
  skipped:
 	if (sector_nr >= max_sector) {
 		conf->cluster_sync_low = 0;
@@ -3878,6 +3883,20 @@ static void raid10_free_conf(struct r10conf *conf)
 	kfree(conf);
 }
 
+static void raid10_free_conf(struct r10conf *conf)
+{
+	if (!conf)
+		return;
+
+	mempool_exit(&conf->r10bio_pool);
+	kfree(conf->mirrors);
+	kfree(conf->mirrors_old);
+	kfree(conf->mirrors_new);
+	safe_put_page(conf->tmppage);
+	bioset_exit(&conf->bio_split);
+	kfree(conf);
+}
+
 static struct r10conf *setup_conf(struct mddev *mddev)
 {
 	struct r10conf *conf = NULL;
@@ -4015,6 +4034,9 @@ static int raid10_run(struct mddev *mddev)
 
 	rcu_assign_pointer(mddev->thread, conf->thread);
 	rcu_assign_pointer(conf->thread, NULL);
+
+	mddev->thread = conf->thread;
+	conf->thread = NULL;
 
 	if (mddev_is_clustered(conf->mddev)) {
 		int fc, fo;

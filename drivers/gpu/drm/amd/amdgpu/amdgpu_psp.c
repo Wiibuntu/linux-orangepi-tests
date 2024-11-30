@@ -233,6 +233,7 @@ static int psp_early_init(void *handle)
 	case IP_VERSION(13, 0, 0):
 	case IP_VERSION(13, 0, 7):
 	case IP_VERSION(13, 0, 10):
+	case IP_VERSION(13, 0, 11):
 		psp_v13_0_set_psp_funcs(psp);
 		adev->psp.sup_ifwi_up = !amdgpu_sriov_vf(adev);
 		psp->boot_time_tmr = false;

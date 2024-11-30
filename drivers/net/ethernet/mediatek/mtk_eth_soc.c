@@ -3672,7 +3672,6 @@ static void mtk_dim_tx(struct work_struct *work)
 static void mtk_set_mcr_max_rx(struct mtk_mac *mac, u32 val)
 {
 	struct mtk_eth *eth = mac->hw;
-	u32 mcr_cur, mcr_new;
 
 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_SOC_MT7628))
 		return;

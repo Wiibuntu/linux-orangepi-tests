@@ -169,6 +169,18 @@ static bool __init acpi_is_processor_usable(u32 lapic_flags)
 	return false;
 }
 
+static bool __init acpi_is_processor_usable(u32 lapic_flags)
+{
+	if (lapic_flags & ACPI_MADT_ENABLED)
+		return true;
+
+	if (!acpi_support_online_capable ||
+	    (lapic_flags & ACPI_MADT_ONLINE_CAPABLE))
+		return true;
+
+	return false;
+}
+
 static int __init
 acpi_parse_x2apic(union acpi_subtable_headers *header, const unsigned long end)
 {
@@ -203,6 +215,10 @@ acpi_parse_x2apic(union acpi_subtable_headers *header, const unsigned long end)
 	 * in x2APIC must be equal or greater than 0xff.
 	 */
 	if (has_lapic_cpus && apic_id < 0xff)
+		return 0;
+
+	/* don't register processors that cannot be onlined */
+	if (!acpi_is_processor_usable(processor->lapic_flags))
 		return 0;
 
 	/*

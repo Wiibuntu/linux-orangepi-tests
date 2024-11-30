@@ -1780,7 +1780,12 @@ static int intel_pinctrl_suspend_noirq(struct device *dev)
 		void __iomem *padcfg;
 		u32 val;
 
-		if (!intel_pinctrl_should_save(pctrl, desc->number))
+		if (!(intel_pinctrl_should_save(pctrl, desc->number) ||
+		      /*
+		       * If the firmware mangled the register contents too much,
+		       * check the saved value for the Direct IRQ mode.
+		       */
+		      __intel_gpio_is_direct_irq(pads[i].padcfg0)))
 			continue;
 
 		val = readl(intel_get_padcfg(pctrl, desc->number, PADCFG0));

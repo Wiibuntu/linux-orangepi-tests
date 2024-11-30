@@ -4253,6 +4253,14 @@ static const struct dmi_system_id fwbug_list[] __initconst = {
 		},
 	},
 	{
+		.ident = "T14s Gen1 AMD",
+		.driver_data = &quirk_s2idle_bug,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "20UJ"),
+		}
+	},
+	{
 		.ident = "ThinkPad A485 - 20MV",
 		.driver_data = &quirk_btusb_bug,
 		.matches = {
@@ -10188,6 +10196,14 @@ static void lapsensor_refresh(void)
 			lap_state = state;
 			sysfs_notify(&tpacpi_pdev->dev.kobj, NULL, "dytc_lapmode");
 		}
+		return 0;
+	case DYTC_FUNCTION_AMT:
+		/* For now return balanced. It's the closest we have to 'auto' */
+		*profile =  PLATFORM_PROFILE_BALANCED;
+		return 0;
+	default:
+		/* Unknown function */
+		return -EOPNOTSUPP;
 	}
 }
 
@@ -11777,6 +11793,9 @@ module_param_named(uwb_state, tpacpi_uwb_emulstate, bool, 0);
 MODULE_PARM_DESC(uwb_state,
 		 "Initial state of the emulated UWB switch");
 #endif
+
+module_param(profile_force, int, 0444);
+MODULE_PARM_DESC(profile_force, "Force profile mode. -1=off, 1=MMC, 2=PSC");
 
 module_param(profile_force, int, 0444);
 MODULE_PARM_DESC(profile_force, "Force profile mode. -1=off, 1=MMC, 2=PSC");

@@ -171,6 +171,11 @@ int dw_pcie_get_resources(struct dw_pcie *pci)
 	if (pci->max_link_speed < 1)
 		pci->max_link_speed = of_pci_get_max_link_speed(np);
 
+	val = dw_pcie_readl_dbi(pci, PCIE_PORT_LINK_CONTROL);
+	val &= ~PORT_LINK_FAST_LINK_MODE;
+	val |= PORT_LINK_DLL_LINK_EN;
+	dw_pcie_writel_dbi(pci, PCIE_PORT_LINK_CONTROL, val);
+
 	of_property_read_u32(np, "num-lanes", &pci->num_lanes);
 
 	if (of_property_read_bool(np, "snps,enable-cdm-check"))

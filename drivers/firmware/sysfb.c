@@ -143,6 +143,8 @@ static __init int sysfb_init(void)
 		goto unlock_mutex;
 	}
 
+	sysfb_apply_efi_quirks();
+
 	/* try to create a simple-framebuffer device */
 	compatible = sysfb_parse_mode(si, &mode);
 	if (compatible) {

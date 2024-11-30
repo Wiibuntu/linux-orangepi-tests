@@ -505,6 +505,11 @@ static bool max310x_reg_noinc(struct device *dev, unsigned int reg)
 	return reg == MAX310X_RHR_REG;
 }
 
+static bool max310x_reg_noinc(struct device *dev, unsigned int reg)
+{
+	return reg == MAX310X_RHR_REG;
+}
+
 static int max310x_set_baud(struct uart_port *port, int baud)
 {
 	unsigned int mode = 0, div = 0, frac = 0, c = 0, F = 0;

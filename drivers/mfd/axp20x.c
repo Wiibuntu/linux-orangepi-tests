@@ -238,6 +238,24 @@ static const struct regmap_access_table axp717_volatile_table = {
 	.n_yes_ranges = ARRAY_SIZE(axp717_volatile_ranges),
 };
 
+static const struct regmap_range axp313a_writeable_ranges[] = {
+	regmap_reg_range(AXP313A_ON_INDICATE, AXP313A_IRQ_STATE),
+};
+
+static const struct regmap_range axp313a_volatile_ranges[] = {
+	regmap_reg_range(AXP313A_ON_INDICATE, AXP313A_IRQ_STATE),
+};
+
+static const struct regmap_access_table axp313a_writeable_table = {
+	.yes_ranges = axp313a_writeable_ranges,
+	.n_yes_ranges = ARRAY_SIZE(axp313a_writeable_ranges),
+};
+
+static const struct regmap_access_table axp313a_volatile_table = {
+	.yes_ranges = axp313a_volatile_ranges,
+	.n_yes_ranges = ARRAY_SIZE(axp313a_volatile_ranges),
+};
+
 static const struct regmap_range axp806_volatile_ranges[] = {
 	regmap_reg_range(AXP20X_IRQ1_STATE, AXP20X_IRQ2_STATE),
 };
@@ -364,6 +382,11 @@ static const struct resource axp803_pek_resources[] = {
 	DEFINE_RES_IRQ_NAMED(AXP803_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
 };
 
+static struct resource axp313a_pek_resources[] = {
+	DEFINE_RES_IRQ_NAMED(AXP313A_IRQ_PEK_RIS_EDGE, "PEK_DBR"),
+	DEFINE_RES_IRQ_NAMED(AXP313A_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
+};
+
 static const struct resource axp806_pek_resources[] = {
 	DEFINE_RES_IRQ_NAMED(AXP806_IRQ_POK_RISE, "PEK_DBR"),
 	DEFINE_RES_IRQ_NAMED(AXP806_IRQ_POK_FALL, "PEK_DBF"),
@@ -440,6 +463,15 @@ static const struct regmap_config axp717_regmap_config = {
 	.volatile_table = &axp717_volatile_table,
 	.max_register = AXP717_ADC_DATA_L,
 	.cache_type = REGCACHE_MAPLE,
+};
+
+static const struct regmap_config axp313a_regmap_config = {
+	.reg_bits = 8,
+	.val_bits = 8,
+	.wr_table = &axp313a_writeable_table,
+	.volatile_table = &axp313a_volatile_table,
+	.max_register = AXP313A_IRQ_STATE,
+	.cache_type = REGCACHE_RBTREE,
 };
 
 static const struct regmap_config axp806_regmap_config = {
@@ -674,6 +706,16 @@ static const struct regmap_irq axp717_regmap_irqs[] = {
 	INIT_REGMAP_IRQ(AXP717, TYPEC_PLUGIN,		4, 5),
 };
 
+static const struct regmap_irq axp313a_regmap_irqs[] = {
+	INIT_REGMAP_IRQ(AXP313A, PEK_RIS_EDGE,		0, 7),
+	INIT_REGMAP_IRQ(AXP313A, PEK_FAL_EDGE,		0, 6),
+	INIT_REGMAP_IRQ(AXP313A, PEK_SHORT,		0, 5),
+	INIT_REGMAP_IRQ(AXP313A, PEK_LONG,		0, 4),
+	INIT_REGMAP_IRQ(AXP313A, DCDC3_V_LOW,		0, 3),
+	INIT_REGMAP_IRQ(AXP313A, DCDC2_V_LOW,		0, 2),
+	INIT_REGMAP_IRQ(AXP313A, DIE_TEMP_HIGH,		0, 0),
+};
+
 static const struct regmap_irq axp803_regmap_irqs[] = {
 	INIT_REGMAP_IRQ(AXP803, ACIN_OVER_V,		0, 7),
 	INIT_REGMAP_IRQ(AXP803, ACIN_PLUGIN,		0, 6),
@@ -872,6 +914,18 @@ static const struct regmap_irq_chip axp717_regmap_irq_chip = {
 	.num_regs		= 5,
 };
 
+static const struct regmap_irq_chip axp313a_regmap_irq_chip = {
+	.name			= "axp313a_irq_chip",
+	.status_base		= AXP313A_IRQ_STATE,
+	.ack_base		= AXP313A_IRQ_STATE,
+	.unmask_base		= AXP313A_IRQ_EN,
+	.mask_invert		= true,
+	.init_ack_masked	= true,
+	.irqs			= axp313a_regmap_irqs,
+	.num_irqs		= ARRAY_SIZE(axp313a_regmap_irqs),
+	.num_regs		= 1,
+};
+
 static const struct regmap_irq_chip axp803_regmap_irq_chip = {
 	.name			= "axp803",
 	.status_base		= AXP20X_IRQ1_STATE,
@@ -1047,6 +1101,22 @@ static struct mfd_cell axp717_cells[] = {
 		    "x-powers,axp717-usb-power-supply"),
 	MFD_CELL_OF("axp20x-battery-power-supply",
 		    NULL, NULL, 0, 0, "x-powers,axp717-battery-power-supply"),
+};
+
+static struct mfd_cell axp313a_cells[] = {
+	{
+		.name           = "axp221-pek",
+		.num_resources  = ARRAY_SIZE(axp313a_pek_resources),
+		.resources      = axp313a_pek_resources,
+	}, {
+		.name = "axp20x-regulator",
+	},
+};
+
+static struct mfd_cell axp313a_cells_noirq[] = {
+	{
+		.name = "axp20x-regulator",
+	},
 };
 
 static const struct resource axp288_adc_resources[] = {
@@ -1294,6 +1364,17 @@ int axp20x_match_device(struct axp20x_dev *axp20x)
 		axp20x->cells = axp717_cells;
 		axp20x->regmap_cfg = &axp717_regmap_config;
 		axp20x->regmap_irq_chip = &axp717_regmap_irq_chip;
+		break;
+	case AXP313A_ID:
+                if (axp20x->irq > 0) {
+			axp20x->nr_cells = ARRAY_SIZE(axp313a_cells);
+			axp20x->cells = axp313a_cells;
+		} else {
+			axp20x->nr_cells = ARRAY_SIZE(axp313a_cells_noirq);
+			axp20x->cells = axp313a_cells_noirq;
+		}
+		axp20x->regmap_cfg = &axp313a_regmap_config;
+		axp20x->regmap_irq_chip = &axp313a_regmap_irq_chip;
 		break;
 	case AXP803_ID:
 		axp20x->nr_cells = ARRAY_SIZE(axp803_cells);

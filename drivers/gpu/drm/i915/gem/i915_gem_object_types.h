@@ -485,6 +485,9 @@ struct drm_i915_gem_object {
 #define I915_BO_CACHE_COHERENT_FOR_WRITE BIT(1)
 	unsigned int cache_coherent:2;
 
+	/* @is_dpt: Object houses a display page table (DPT) */
+	unsigned int is_dpt:1;
+
 	/**
 	 * @cache_dirty:
 	 *

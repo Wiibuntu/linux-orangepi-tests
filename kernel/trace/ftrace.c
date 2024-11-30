@@ -6257,6 +6257,10 @@ EXPORT_SYMBOL_GPL(ftrace_set_notrace);
  *
  * Filters denote which functions should be enabled when tracing is enabled.
  * If @buf is NULL and reset is set, all functions will be enabled for tracing.
+ *
+ * This can allocate memory which must be freed before @ops can be freed,
+ * either by removing each filtered addr or by using
+ * ftrace_free_filter(@ops).
  */
 void ftrace_set_global_filter(unsigned char *buf, int len, int reset)
 {
@@ -6273,6 +6277,10 @@ EXPORT_SYMBOL_GPL(ftrace_set_global_filter);
  * Notrace Filters denote which functions should not be enabled when tracing
  * is enabled. If @buf is NULL and reset is set, all functions will be enabled
  * for tracing.
+ *
+ * This can allocate memory which must be freed before @ops can be freed,
+ * either by removing each filtered addr or by using
+ * ftrace_free_filter(@ops).
  */
 void ftrace_set_global_notrace(unsigned char *buf, int len, int reset)
 {

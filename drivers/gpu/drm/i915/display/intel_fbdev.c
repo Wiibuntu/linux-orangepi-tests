@@ -188,6 +188,7 @@ static int intelfb_create(struct drm_fb_helper *helper,
 	unsigned long flags = 0;
 	bool prealloc = false;
 	struct drm_i915_gem_object *obj;
+	struct i915_gem_ww_ctx ww;
 	int ret;
 
 	mutex_lock(&ifbdev->hpd_lock);

@@ -359,6 +359,16 @@ static int max_pte_pkt_size(struct i915_request *rq, int pkt)
 
 #define I915_EMIT_PTE_NUM_DWORDS 6
 
+static int max_pte_pkt_size(struct i915_request *rq, int pkt)
+{
+	struct intel_ring *ring = rq->ring;
+
+	pkt = min_t(int, pkt, (ring->space - rq->reserved_space) / sizeof(u32) + 5);
+	pkt = min_t(int, pkt, (ring->size - ring->emit) / sizeof(u32) + 5);
+
+	return pkt;
+}
+
 static int emit_pte(struct i915_request *rq,
 		    struct sgt_dma *it,
 		    unsigned int pat_index,

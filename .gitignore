@@ -38,9 +38,11 @@
 *.mod.c
 *.o
 *.o.*
+*.orig
 *.patch
 *.rmeta
 *.rpm
+*.rej
 *.rsi
 *.s
 *.so

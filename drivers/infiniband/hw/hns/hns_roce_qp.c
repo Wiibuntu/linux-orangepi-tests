@@ -716,6 +716,7 @@ static int set_kernel_sq_size(struct hns_roce_dev *hr_dev,
 
 	hr_qp->sq.wqe_shift = ilog2(hr_dev->caps.max_sq_desc_sz);
 	hr_qp->sq.wqe_cnt = cnt;
+	cap->max_send_sge = hr_qp->sq.max_gs;
 
 	set_ext_sge_param(hr_dev, cnt, hr_qp, cap);
 

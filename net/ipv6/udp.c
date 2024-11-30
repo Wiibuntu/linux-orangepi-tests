@@ -675,6 +675,7 @@ static int __udpv6_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 		sk_skb_reason_drop(sk, skb, drop_reason);
 		return -1;
 	}
+	nf_reset_ct(skb);
 
 	return 0;
 }
@@ -946,6 +947,7 @@ int __udp6_lib_rcv(struct sk_buff *skb, struct udp_table *udptable,
 
 	if (!pskb_may_pull(skb, sizeof(struct udphdr)))
 		goto discard;
+	nf_reset_ct(skb);
 
 	saddr = &ipv6_hdr(skb)->saddr;
 	daddr = &ipv6_hdr(skb)->daddr;

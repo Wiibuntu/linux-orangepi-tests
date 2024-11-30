@@ -43,6 +43,8 @@ void __iomem *bmips_cbr_addr __read_mostly;
 
 extern bool bmips_rac_flush_disable;
 
+extern bool bmips_rac_flush_disable;
+
 static const unsigned long kbase = VMLINUX_LOAD_ADDRESS & 0xfff00000;
 
 struct bmips_quirk {
@@ -77,6 +79,12 @@ static void bcm3384_viper_quirks(void)
 	 */
 	board_ebase_setup = &kbase_setup;
 	bmips_smp_enabled = 0;
+
+	/*
+	 * RAC flush causes kernel panics on BCM6358 when booting from TP1
+	 * because the bootloader is not initializing it properly.
+	 */
+	bmips_rac_flush_disable = !!(read_c0_brcm_cmt_local() & (1 << 31));
 }
 
 static void bcm63xx_fixup_cpu1(void)

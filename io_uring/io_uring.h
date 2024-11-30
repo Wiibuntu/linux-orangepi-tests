@@ -150,6 +150,11 @@ static inline void io_submit_flush_completions(struct io_ring_ctx *ctx)
 		__io_submit_flush_completions(ctx);
 }
 
+static inline void io_req_task_work_add(struct io_kiocb *req)
+{
+	__io_req_task_work_add(req, true);
+}
+
 #define io_for_each_link(pos, head) \
 	for (pos = (head); pos; pos = pos->link)
 

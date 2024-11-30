@@ -211,6 +211,8 @@ static void __exit amd_rng_mod_exit(void)
 
 	pci_dev_put(priv->pcidev);
 
+	pci_dev_put(priv->pcidev);
+
 	kfree(priv);
 }
 

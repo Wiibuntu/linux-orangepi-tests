@@ -137,6 +137,10 @@
 
 #define INTEL_PANTHERLAKE_L		IFM(6, 0xCC)
 
+#define INTEL_FAM6_LUNARLAKE_M		0xBD
+
+#define INTEL_FAM6_ARROWLAKE		0xC6
+
 /* "Small Core" Processors (Atom/E-Core) */
 
 #define INTEL_ATOM_BONNELL		IFM(6, 0x1C) /* Diamondville, Pineview */

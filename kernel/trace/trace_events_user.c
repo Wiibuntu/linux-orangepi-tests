@@ -2254,6 +2254,9 @@ static ssize_t user_events_write_core(struct file *file, struct iov_iter *i)
 	if (idx < 0)
 		return -EINVAL;
 
+	if (idx < 0)
+		return -EINVAL;
+
 	rcu_read_lock_sched();
 
 	refs = rcu_dereference_sched(info->refs);

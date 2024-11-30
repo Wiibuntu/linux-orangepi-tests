@@ -141,6 +141,9 @@ static int exynos_generic_icc_probe(struct platform_device *pdev)
 	icc_node->data = priv;
 	icc_node_add(icc_node, provider);
 
+	icc_node->data = priv;
+	icc_node_add(icc_node, provider);
+
 	/*
 	 * Register a PM QoS request for the parent (devfreq) device.
 	 */

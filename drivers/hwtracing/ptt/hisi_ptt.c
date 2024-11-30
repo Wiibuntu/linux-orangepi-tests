@@ -495,8 +495,18 @@ static void hisi_ptt_remove_filter_attr(struct hisi_ptt *hisi_ptt,
 
 static void hisi_ptt_remove_all_filter_attributes(void *data)
 {
+	struct pci_dev *root_port = pcie_find_root_port(pdev);
 	struct hisi_ptt_filter_desc *filter;
 	struct hisi_ptt *hisi_ptt = data;
+	u32 port_devid;
+
+	if (!root_port)
+		return 0;
+
+	port_devid = PCI_DEVID(root_port->bus->number, root_port->devfn);
+	if (port_devid < hisi_ptt->lower_bdf ||
+	    port_devid > hisi_ptt->upper_bdf)
+		return 0;
 
 	mutex_lock(&hisi_ptt->filter_lock);
 

@@ -762,6 +762,7 @@ int __bpf_address_lookup(unsigned long addr, unsigned long *size,
 
 bool is_bpf_text_address(unsigned long addr)
 {
+	enum bpf_prog_type prog_type = resolve_prog_type(fp);
 	bool ret;
 
 	rcu_read_lock();

@@ -129,6 +129,9 @@ bool amdgpu_dm_link_setup_psr(struct dc_stream_state *stream)
 		if (!psr_su_set_dsc_slice_height(dc, link, stream, &psr_config))
 			return false;
 
+		if (!psr_su_set_y_granularity(dc, link, stream, &psr_config))
+			return false;
+
 		ret = dc_link_setup_psr(link, stream, &psr_config, &psr_context);
 
 	}

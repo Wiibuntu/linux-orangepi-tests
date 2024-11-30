@@ -591,6 +591,9 @@ err_put_group:
 	mutex_unlock(&group->mutex);
 	iommu_group_put(group);
 
+err_unlock:
+	mutex_unlock(&iommu_probe_device_lock);
+
 	return ret;
 }
 

@@ -1703,6 +1703,9 @@ static const struct of_device_id exynos_mfc_match[] = {
 		.compatible = "samsung,exynos3250-mfc",
 		.data = &mfc_drvdata_v7_3250,
 	}, {
+		.compatible = "samsung,exynos3250-mfc",
+		.data = &mfc_drvdata_v7_3250,
+	}, {
 		.compatible = "samsung,mfc-v8",
 		.data = &mfc_drvdata_v8,
 	}, {

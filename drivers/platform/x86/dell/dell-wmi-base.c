@@ -279,6 +279,9 @@ static const struct key_entry dell_wmi_keymap_type_0010[] = {
 	/* Entering S2Idle suspend */
 	{ KE_IGNORE, 0x140, { KEY_RESERVED }},
 
+	/*Speaker Mute*/
+	{ KE_KEY, 0x109, { KEY_MUTE} },
+
 	/* Mic mute */
 	{ KE_KEY, 0x150, { KEY_MICMUTE } },
 

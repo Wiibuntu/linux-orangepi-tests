@@ -294,7 +294,6 @@ static int lan874x_phy_config_init(struct phy_device *phydev)
 static void lan874x_get_wol(struct phy_device *phydev,
 			    struct ethtool_wolinfo *wol)
 {
-	struct smsc_phy_priv *priv = phydev->priv;
 	int rc;
 
 	wol->supported = (WAKE_UCAST | WAKE_BCAST | WAKE_MAGIC |

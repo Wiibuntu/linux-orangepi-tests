@@ -194,6 +194,20 @@ struct dvb_device {
 };
 
 /**
+ * dvb_device_get - Increase dvb_device reference
+ *
+ * @dvbdev:	pointer to struct dvb_device
+ */
+struct dvb_device *dvb_device_get(struct dvb_device *dvbdev);
+
+/**
+ * dvb_device_put - Decrease dvb_device reference
+ *
+ * @dvbdev:	pointer to struct dvb_device
+ */
+void dvb_device_put(struct dvb_device *dvbdev);
+
+/**
  * struct dvbdevfops_node - fops nodes registered in dvbdevfops_list
  *
  * @fops:		Dynamically allocated fops for ->owner registration

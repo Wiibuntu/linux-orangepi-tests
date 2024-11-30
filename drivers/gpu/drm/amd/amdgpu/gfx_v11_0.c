@@ -5445,7 +5445,6 @@ static int gfx_v11_0_set_clockgating_state(void *handle,
 
 	switch (amdgpu_ip_version(adev, GC_HWIP, 0)) {
 	case IP_VERSION(11, 0, 0):
-	case IP_VERSION(11, 0, 1):
 	case IP_VERSION(11, 0, 2):
 	case IP_VERSION(11, 0, 3):
 	case IP_VERSION(11, 0, 4):
@@ -6053,6 +6052,15 @@ static void gfx_v11_0_ring_emit_wreg(struct amdgpu_ring *ring, uint32_t reg,
 		break;
 	case AMDGPU_RING_TYPE_KIQ:
 		cmd = (1 << 16); /* no inc addr */
+		break;
+	case IP_VERSION(11, 0, 1):
+	case IP_VERSION(11, 0, 4):
+		adev->gfx.me.num_me = 1;
+		adev->gfx.me.num_pipe_per_me = 1;
+		adev->gfx.me.num_queue_per_pipe = 1;
+		adev->gfx.mec.num_mec = 1;
+		adev->gfx.mec.num_pipe_per_mec = 4;
+		adev->gfx.mec.num_queue_per_pipe = 4;
 		break;
 	default:
 		cmd = WR_CONFIRM;

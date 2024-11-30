@@ -91,6 +91,10 @@ int __initdata boot_core_hwid = -1;
 int boot_cpu_hwid = -1;
 #endif
 
+#ifdef CONFIG_PPC64
+int boot_cpu_hwid = -1;
+#endif
+
 /*
  * These are used in binfmt_elf.c to put aux entries on the stack
  * for each elf executable being started.

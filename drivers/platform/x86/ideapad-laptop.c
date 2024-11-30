@@ -115,6 +115,48 @@ enum {
 	VPCCMD_W_BL_POWER = 0x33,
 };
 
+static bool ctrl_ps2_aux_port;
+module_param(ctrl_ps2_aux_port, bool, 0444);
+MODULE_PARM_DESC(ctrl_ps2_aux_port,
+	"Enable driver based PS/2 aux port en-/dis-abling on touchpad on/off toggle. "
+	"If you need this please report this to: platform-driver-x86@vger.kernel.org");
+
+/*
+ * shared data
+ */
+
+static struct ideapad_private *ideapad_shared;
+static DEFINE_MUTEX(ideapad_shared_mutex);
+
+static int ideapad_shared_init(struct ideapad_private *priv)
+{
+	int ret;
+
+	mutex_lock(&ideapad_shared_mutex);
+
+	if (!ideapad_shared) {
+		ideapad_shared = priv;
+		ret = 0;
+	} else {
+		dev_warn(&priv->adev->dev, "found multiple platform devices\n");
+		ret = -EINVAL;
+	}
+
+	mutex_unlock(&ideapad_shared_mutex);
+
+	return ret;
+}
+
+static void ideapad_shared_exit(struct ideapad_private *priv)
+{
+	mutex_lock(&ideapad_shared_mutex);
+
+	if (ideapad_shared == priv)
+		ideapad_shared = NULL;
+
+	mutex_unlock(&ideapad_shared_mutex);
+}
+
 /*
  * These correspond to the number of supported states - 1
  * Future keyboard types may need a new system, if there's a collision
@@ -563,6 +605,8 @@ static ssize_t camera_power_show(struct device *dev,
 			return err;
 	}
 
+	priv->r_touchpad_val = result;
+
 	return sysfs_emit(buf, "%d\n", !!result);
 }
 
@@ -619,6 +663,8 @@ static ssize_t conservation_mode_store(struct device *dev,
 	err = exec_sbmc(priv->adev->handle, state ? SBMC_CONSERVATION_ON : SBMC_CONSERVATION_OFF);
 	if (err)
 		return err;
+
+	priv->r_touchpad_val = state;
 
 	return count;
 }
@@ -1919,6 +1965,12 @@ static const struct dmi_system_id set_fn_lock_led_list[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo Legion R7000P2020H"),
+		}
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo Legion 5 15ARH05"),
 		}
 	},
 	{

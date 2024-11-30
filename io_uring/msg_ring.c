@@ -277,6 +277,8 @@ int io_msg_ring_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 
 	if (unlikely(sqe->buf_index || sqe->personality))
 		return -EINVAL;
+	if (target_ctx->flags & IORING_SETUP_R_DISABLED)
+		return -EBADFD;
 
 	msg->src_file = NULL;
 	msg->user_data = READ_ONCE(sqe->off);

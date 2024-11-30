@@ -924,6 +924,28 @@ SETUP_HCRX(struct stifb_info *fb)
 static int
 stifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 {
+	struct stifb_info *fb = container_of(info, struct stifb_info, info);
+
+	if (var->xres != fb->info.var.xres ||
+	    var->yres != fb->info.var.yres ||
+	    var->bits_per_pixel != fb->info.var.bits_per_pixel)
+		return -EINVAL;
+
+	var->xres_virtual = var->xres;
+	var->yres_virtual = var->yres;
+	var->xoffset = 0;
+	var->yoffset = 0;
+	var->grayscale = fb->info.var.grayscale;
+	var->red.length = fb->info.var.red.length;
+	var->green.length = fb->info.var.green.length;
+	var->blue.length = fb->info.var.blue.length;
+
+	return 0;
+}
+
+static int
+stifb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
+{
 	struct stifb_info *fb = info->par;
 
 	if (var->xres != fb->info->var.xres ||
@@ -1367,6 +1389,9 @@ static int __init stifb_init_fb(struct sti_struct *sti, int bpp_pref)
 	info->screen_size = fix->smem_len;
 	info->flags = FBINFO_HWACCEL_COPYAREA | FBINFO_HWACCEL_FILLRECT;
 	info->pseudo_palette = &fb->pseudo_palette;
+
+	scnprintf(modestr, sizeof(modestr), "%dx%d-%d", xres, yres, bpp);
+	fb_find_mode(&info->var, info, modestr, NULL, 0, NULL, bpp);
 
 	scnprintf(modestr, sizeof(modestr), "%dx%d-%d", xres, yres, bpp);
 	fb_find_mode(&info->var, info, modestr, NULL, 0, NULL, bpp);

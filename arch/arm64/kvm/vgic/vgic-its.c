@@ -1855,6 +1855,16 @@ static int vgic_its_create(struct kvm_device *dev, u32 type)
 	mutex_unlock(&its->cmd_lock);
 #endif
 
+	/* Yep, even more trickery for lock ordering... */
+#ifdef CONFIG_LOCKDEP
+	mutex_lock(&dev->kvm->arch.config_lock);
+	mutex_lock(&its->cmd_lock);
+	mutex_lock(&its->its_lock);
+	mutex_unlock(&its->its_lock);
+	mutex_unlock(&its->cmd_lock);
+	mutex_unlock(&dev->kvm->arch.config_lock);
+#endif
+
 	its->vgic_its_base = VGIC_ADDR_UNDEF;
 
 	INIT_LIST_HEAD(&its->device_list);
@@ -1948,6 +1958,13 @@ static int vgic_its_attr_regs_access(struct kvm_device *dev,
 		return -EINVAL;
 
 	mutex_lock(&dev->kvm->lock);
+
+	if (!lock_all_vcpus(dev->kvm)) {
+		mutex_unlock(&dev->kvm->lock);
+		return -EBUSY;
+	}
+
+	mutex_lock(&dev->kvm->arch.config_lock);
 
 	if (!lock_all_vcpus(dev->kvm)) {
 		mutex_unlock(&dev->kvm->lock);

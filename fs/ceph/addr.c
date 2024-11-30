@@ -354,6 +354,11 @@ static void ceph_netfs_issue_read(struct netfs_io_subrequest *subreq)
 		goto out;
 	}
 
+	if (ceph_inode_is_shutdown(inode)) {
+		err = -EIO;
+		goto out;
+	}
+
 	if (ceph_has_inline_data(ci) && ceph_netfs_issue_op_inline(subreq))
 		return;
 
@@ -681,6 +686,9 @@ static int writepage_nounlock(struct page *page, struct writeback_control *wbc)
 
 	doutc(cl, "%llx.%llx page %p idx %lu\n", ceph_vinop(inode), page,
 	      page->index);
+
+	if (ceph_inode_is_shutdown(inode))
+		return -EIO;
 
 	if (ceph_inode_is_shutdown(inode))
 		return -EIO;
@@ -1869,6 +1877,11 @@ int ceph_uninline_data(struct file *file)
 
 	doutc(cl, "%llx.%llx inline_version %llu\n", ceph_vinop(inode),
 	      inline_version);
+
+	if (ceph_inode_is_shutdown(inode)) {
+		err = -EIO;
+		goto out;
+	}
 
 	if (ceph_inode_is_shutdown(inode)) {
 		err = -EIO;

@@ -346,6 +346,7 @@ config PCI_EXYNOS
 	depends on ARCH_EXYNOS || COMPILE_TEST
 	depends on PCI_MSI
 	select PCIE_DW_HOST
+	select REGMAP_MMIO
 	help
 	  Enables support for the PCIe controller in the Samsung Exynos SoCs
 	  to work in host mode. The PCI controller is based on the DesignWare

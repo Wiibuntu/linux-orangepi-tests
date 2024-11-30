@@ -774,6 +774,8 @@ static int do_tls_setsockopt(struct sock *sk, int optname, sockptr_t optval,
 {
 	int rc = 0;
 
+	lock_sock(sk);
+
 	switch (optname) {
 	case TLS_TX:
 	case TLS_RX:
@@ -794,6 +796,9 @@ static int do_tls_setsockopt(struct sock *sk, int optname, sockptr_t optval,
 		rc = -ENOPROTOOPT;
 		break;
 	}
+
+	release_sock(sk);
+
 	return rc;
 }
 

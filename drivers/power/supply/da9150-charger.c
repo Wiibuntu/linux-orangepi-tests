@@ -604,6 +604,7 @@ tjunc_irq_fail:
 chg_irq_fail:
 	if (!IS_ERR_OR_NULL(charger->usb_phy))
 		usb_unregister_notifier(charger->usb_phy, &charger->otg_nb);
+	cancel_work_sync(&charger->otg_work);
 
 	return ret;
 }

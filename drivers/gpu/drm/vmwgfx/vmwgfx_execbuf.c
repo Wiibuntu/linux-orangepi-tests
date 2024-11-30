@@ -868,7 +868,8 @@ static int vmw_cmd_set_render_target_check(struct vmw_private *dev_priv,
 	VMW_DECLARE_CMD_VAR(*cmd, SVGA3dCmdSetRenderTarget);
 	struct vmw_resource *ctx;
 	struct vmw_resource *res;
-	int ret;
+	int ret = 0;
+	bool needs_unref = false;
 
 	cmd = container_of(header, typeof(*cmd), header);
 
@@ -905,7 +906,11 @@ static int vmw_cmd_set_render_target_check(struct vmw_private *dev_priv,
 		vmw_binding_add(node->staged, &binding.bi, 0, binding.slot);
 	}
 
-	return 0;
+res_check_done:
+	if (needs_unref)
+		vmw_resource_unreference(&res);
+
+	return ret;
 }
 
 static int vmw_cmd_surface_copy_check(struct vmw_private *dev_priv,

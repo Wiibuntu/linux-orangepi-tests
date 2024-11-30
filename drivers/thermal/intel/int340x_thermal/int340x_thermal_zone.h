@@ -24,6 +24,7 @@ struct int34x_thermal_zone {
 	struct thermal_zone_device *zone;
 	void *priv_data;
 	struct acpi_lpat_conversion_table *lpat_table;
+	struct mutex trip_mutex;
 };
 
 struct int34x_thermal_zone *int340x_thermal_zone_add(struct acpi_device *,

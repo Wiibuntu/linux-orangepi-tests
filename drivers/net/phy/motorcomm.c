@@ -660,6 +660,447 @@ static int yt8531_set_wol(struct phy_device *phydev,
 	return 0;
 }
 
+/* Extended register is different from MMD Register and MII Register.
+ * We can use ytphy_read_ext/ytphy_write_ext/ytphy_modify_ext function to
+ * operate extended register.
+ * Extended Register  start
+ */
+
+/* Phy gmii clock gating Register */
+#define YT8521_CLOCK_GATING_REG			0xC
+#define YT8521_CGR_RX_CLK_EN			BIT(12)
+
+#define YT8521_EXTREG_SLEEP_CONTROL1_REG	0x27
+#define YT8521_ESC1R_SLEEP_SW			BIT(15)
+#define YT8521_ESC1R_PLLON_SLP			BIT(14)
+
+/* Phy fiber Link timer cfg2 Register */
+#define YT8521_LINK_TIMER_CFG2_REG		0xA5
+#define YT8521_LTCR_EN_AUTOSEN			BIT(15)
+
+/* 0xA000, 0xA001, 0xA003, 0xA006 ~ 0xA00A and 0xA012 are common ext registers
+ * of yt8521 phy. There is no need to switch reg space when operating these
+ * registers.
+ */
+
+#define YT8521_REG_SPACE_SELECT_REG		0xA000
+#define YT8521_RSSR_SPACE_MASK			BIT(1)
+#define YT8521_RSSR_FIBER_SPACE			(0x1 << 1)
+#define YT8521_RSSR_UTP_SPACE			(0x0 << 1)
+#define YT8521_RSSR_TO_BE_ARBITRATED		(0xFF)
+
+#define YT8521_CHIP_CONFIG_REG			0xA001
+#define YT8521_CCR_SW_RST			BIT(15)
+/* 1b0 disable 1.9ns rxc clock delay  *default*
+ * 1b1 enable 1.9ns rxc clock delay
+ */
+#define YT8521_CCR_RXC_DLY_EN			BIT(8)
+#define YT8521_CCR_RXC_DLY_1_900_NS		1900
+
+#define YT8521_CCR_MODE_SEL_MASK		(BIT(2) | BIT(1) | BIT(0))
+#define YT8521_CCR_MODE_UTP_TO_RGMII		0
+#define YT8521_CCR_MODE_FIBER_TO_RGMII		1
+#define YT8521_CCR_MODE_UTP_FIBER_TO_RGMII	2
+#define YT8521_CCR_MODE_UTP_TO_SGMII		3
+#define YT8521_CCR_MODE_SGPHY_TO_RGMAC		4
+#define YT8521_CCR_MODE_SGMAC_TO_RGPHY		5
+#define YT8521_CCR_MODE_UTP_TO_FIBER_AUTO	6
+#define YT8521_CCR_MODE_UTP_TO_FIBER_FORCE	7
+
+/* 3 phy polling modes,poll mode combines utp and fiber mode*/
+#define YT8521_MODE_FIBER			0x1
+#define YT8521_MODE_UTP				0x2
+#define YT8521_MODE_POLL			0x3
+
+#define YT8521_RGMII_CONFIG1_REG		0xA003
+/* 1b0 use original tx_clk_rgmii  *default*
+ * 1b1 use inverted tx_clk_rgmii.
+ */
+#define YT8521_RC1R_TX_CLK_SEL_INVERTED		BIT(14)
+#define YT8521_RC1R_RX_DELAY_MASK		GENMASK(13, 10)
+#define YT8521_RC1R_FE_TX_DELAY_MASK		GENMASK(7, 4)
+#define YT8521_RC1R_GE_TX_DELAY_MASK		GENMASK(3, 0)
+#define YT8521_RC1R_RGMII_0_000_NS		0
+#define YT8521_RC1R_RGMII_0_150_NS		1
+#define YT8521_RC1R_RGMII_0_300_NS		2
+#define YT8521_RC1R_RGMII_0_450_NS		3
+#define YT8521_RC1R_RGMII_0_600_NS		4
+#define YT8521_RC1R_RGMII_0_750_NS		5
+#define YT8521_RC1R_RGMII_0_900_NS		6
+#define YT8521_RC1R_RGMII_1_050_NS		7
+#define YT8521_RC1R_RGMII_1_200_NS		8
+#define YT8521_RC1R_RGMII_1_350_NS		9
+#define YT8521_RC1R_RGMII_1_500_NS		10
+#define YT8521_RC1R_RGMII_1_650_NS		11
+#define YT8521_RC1R_RGMII_1_800_NS		12
+#define YT8521_RC1R_RGMII_1_950_NS		13
+#define YT8521_RC1R_RGMII_2_100_NS		14
+#define YT8521_RC1R_RGMII_2_250_NS		15
+
+#define YTPHY_MISC_CONFIG_REG			0xA006
+#define YTPHY_MCR_FIBER_SPEED_MASK		BIT(0)
+#define YTPHY_MCR_FIBER_1000BX			(0x1 << 0)
+#define YTPHY_MCR_FIBER_100FX			(0x0 << 0)
+
+/* WOL MAC ADDR: MACADDR2(highest), MACADDR1(middle), MACADDR0(lowest) */
+#define YTPHY_WOL_MACADDR2_REG			0xA007
+#define YTPHY_WOL_MACADDR1_REG			0xA008
+#define YTPHY_WOL_MACADDR0_REG			0xA009
+
+#define YTPHY_WOL_CONFIG_REG			0xA00A
+#define YTPHY_WCR_INTR_SEL			BIT(6)
+#define YTPHY_WCR_ENABLE			BIT(3)
+
+/* 2b00 84ms
+ * 2b01 168ms  *default*
+ * 2b10 336ms
+ * 2b11 672ms
+ */
+#define YTPHY_WCR_PULSE_WIDTH_MASK		(BIT(2) | BIT(1))
+#define YTPHY_WCR_PULSE_WIDTH_672MS		(BIT(2) | BIT(1))
+
+/* 1b0 Interrupt and WOL events is level triggered and active LOW  *default*
+ * 1b1 Interrupt and WOL events is pulse triggered and active LOW
+ */
+#define YTPHY_WCR_TYPE_PULSE			BIT(0)
+
+#define YTPHY_SYNCE_CFG_REG			0xA012
+#define YT8521_SCR_SYNCE_ENABLE			BIT(5)
+/* 1b0 output 25m clock
+ * 1b1 output 125m clock  *default*
+ */
+#define YT8521_SCR_CLK_FRE_SEL_125M		BIT(3)
+#define YT8521_SCR_CLK_SRC_MASK			GENMASK(2, 1)
+#define YT8521_SCR_CLK_SRC_PLL_125M		0
+#define YT8521_SCR_CLK_SRC_UTP_RX		1
+#define YT8521_SCR_CLK_SRC_SDS_RX		2
+#define YT8521_SCR_CLK_SRC_REF_25M		3
+#define YT8531_SCR_SYNCE_ENABLE			BIT(6)
+/* 1b0 output 25m clock   *default*
+ * 1b1 output 125m clock
+ */
+#define YT8531_SCR_CLK_FRE_SEL_125M		BIT(4)
+#define YT8531_SCR_CLK_SRC_MASK			GENMASK(3, 1)
+#define YT8531_SCR_CLK_SRC_PLL_125M		0
+#define YT8531_SCR_CLK_SRC_UTP_RX		1
+#define YT8531_SCR_CLK_SRC_SDS_RX		2
+#define YT8531_SCR_CLK_SRC_CLOCK_FROM_DIGITAL	3
+#define YT8531_SCR_CLK_SRC_REF_25M		4
+#define YT8531_SCR_CLK_SRC_SSC_25M		5
+
+/* Extended Register  end */
+
+#define YTPHY_DTS_OUTPUT_CLK_DIS		0
+#define YTPHY_DTS_OUTPUT_CLK_25M		25000000
+#define YTPHY_DTS_OUTPUT_CLK_125M		125000000
+
+struct yt8521_priv {
+	/* combo_advertising is used for case of YT8521 in combo mode,
+	 * this means that yt8521 may work in utp or fiber mode which depends
+	 * on which media is connected (YT8521_RSSR_TO_BE_ARBITRATED).
+	 */
+	__ETHTOOL_DECLARE_LINK_MODE_MASK(combo_advertising);
+
+	/* YT8521_MODE_FIBER / YT8521_MODE_UTP / YT8521_MODE_POLL*/
+	u8 polling_mode;
+	u8 strap_mode; /* 8 working modes  */
+	/* current reg page of yt8521 phy:
+	 * YT8521_RSSR_UTP_SPACE
+	 * YT8521_RSSR_FIBER_SPACE
+	 * YT8521_RSSR_TO_BE_ARBITRATED
+	 */
+	u8 reg_page;
+};
+
+/**
+ * ytphy_read_ext() - read a PHY's extended register
+ * @phydev: a pointer to a &struct phy_device
+ * @regnum: register number to read
+ *
+ * NOTE:The caller must have taken the MDIO bus lock.
+ *
+ * returns the value of regnum reg or negative error code
+ */
+static int ytphy_read_ext(struct phy_device *phydev, u16 regnum)
+{
+	int ret;
+
+	ret = __phy_write(phydev, YTPHY_PAGE_SELECT, regnum);
+	if (ret < 0)
+		return ret;
+
+	return __phy_read(phydev, YTPHY_PAGE_DATA);
+}
+
+/**
+ * ytphy_read_ext_with_lock() - read a PHY's extended register
+ * @phydev: a pointer to a &struct phy_device
+ * @regnum: register number to read
+ *
+ * returns the value of regnum reg or negative error code
+ */
+static int ytphy_read_ext_with_lock(struct phy_device *phydev, u16 regnum)
+{
+	int ret;
+
+	phy_lock_mdio_bus(phydev);
+	ret = ytphy_read_ext(phydev, regnum);
+	phy_unlock_mdio_bus(phydev);
+
+	return ret;
+}
+
+/**
+ * ytphy_write_ext() - write a PHY's extended register
+ * @phydev: a pointer to a &struct phy_device
+ * @regnum: register number to write
+ * @val: value to write to @regnum
+ *
+ * NOTE:The caller must have taken the MDIO bus lock.
+ *
+ * returns 0 or negative error code
+ */
+static int ytphy_write_ext(struct phy_device *phydev, u16 regnum, u16 val)
+{
+	int ret;
+
+	ret = __phy_write(phydev, YTPHY_PAGE_SELECT, regnum);
+	if (ret < 0)
+		return ret;
+
+	return __phy_write(phydev, YTPHY_PAGE_DATA, val);
+}
+
+/**
+ * ytphy_write_ext_with_lock() - write a PHY's extended register
+ * @phydev: a pointer to a &struct phy_device
+ * @regnum: register number to write
+ * @val: value to write to @regnum
+ *
+ * returns 0 or negative error code
+ */
+static int ytphy_write_ext_with_lock(struct phy_device *phydev, u16 regnum,
+				     u16 val)
+{
+	int ret;
+
+	phy_lock_mdio_bus(phydev);
+	ret = ytphy_write_ext(phydev, regnum, val);
+	phy_unlock_mdio_bus(phydev);
+
+	return ret;
+}
+
+/**
+ * ytphy_modify_ext() - bits modify a PHY's extended register
+ * @phydev: a pointer to a &struct phy_device
+ * @regnum: register number to write
+ * @mask: bit mask of bits to clear
+ * @set: bit mask of bits to set
+ *
+ * NOTE: Convenience function which allows a PHY's extended register to be
+ * modified as new register value = (old register value & ~mask) | set.
+ * The caller must have taken the MDIO bus lock.
+ *
+ * returns 0 or negative error code
+ */
+static int ytphy_modify_ext(struct phy_device *phydev, u16 regnum, u16 mask,
+			    u16 set)
+{
+	int ret;
+
+	ret = __phy_write(phydev, YTPHY_PAGE_SELECT, regnum);
+	if (ret < 0)
+		return ret;
+
+	return __phy_modify(phydev, YTPHY_PAGE_DATA, mask, set);
+}
+
+/**
+ * ytphy_modify_ext_with_lock() - bits modify a PHY's extended register
+ * @phydev: a pointer to a &struct phy_device
+ * @regnum: register number to write
+ * @mask: bit mask of bits to clear
+ * @set: bit mask of bits to set
+ *
+ * NOTE: Convenience function which allows a PHY's extended register to be
+ * modified as new register value = (old register value & ~mask) | set.
+ *
+ * returns 0 or negative error code
+ */
+static int ytphy_modify_ext_with_lock(struct phy_device *phydev, u16 regnum,
+				      u16 mask, u16 set)
+{
+	int ret;
+
+	phy_lock_mdio_bus(phydev);
+	ret = ytphy_modify_ext(phydev, regnum, mask, set);
+	phy_unlock_mdio_bus(phydev);
+
+	return ret;
+}
+
+/**
+ * ytphy_get_wol() - report whether wake-on-lan is enabled
+ * @phydev: a pointer to a &struct phy_device
+ * @wol: a pointer to a &struct ethtool_wolinfo
+ *
+ * NOTE: YTPHY_WOL_CONFIG_REG is common ext reg.
+ */
+static void ytphy_get_wol(struct phy_device *phydev,
+			  struct ethtool_wolinfo *wol)
+{
+	int wol_config;
+
+	wol->supported = WAKE_MAGIC;
+	wol->wolopts = 0;
+
+	wol_config = ytphy_read_ext_with_lock(phydev, YTPHY_WOL_CONFIG_REG);
+	if (wol_config < 0)
+		return;
+
+	if (wol_config & YTPHY_WCR_ENABLE)
+		wol->wolopts |= WAKE_MAGIC;
+}
+
+/**
+ * ytphy_set_wol() - turn wake-on-lan on or off
+ * @phydev: a pointer to a &struct phy_device
+ * @wol: a pointer to a &struct ethtool_wolinfo
+ *
+ * NOTE: YTPHY_WOL_CONFIG_REG, YTPHY_WOL_MACADDR2_REG, YTPHY_WOL_MACADDR1_REG
+ * and YTPHY_WOL_MACADDR0_REG are common ext reg. The
+ * YTPHY_INTERRUPT_ENABLE_REG of UTP is special, fiber also use this register.
+ *
+ * returns 0 or negative errno code
+ */
+static int ytphy_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
+{
+	struct net_device *p_attached_dev;
+	const u16 mac_addr_reg[] = {
+		YTPHY_WOL_MACADDR2_REG,
+		YTPHY_WOL_MACADDR1_REG,
+		YTPHY_WOL_MACADDR0_REG,
+	};
+	const u8 *mac_addr;
+	int old_page;
+	int ret = 0;
+	u16 mask;
+	u16 val;
+	u8 i;
+
+	if (wol->wolopts & WAKE_MAGIC) {
+		p_attached_dev = phydev->attached_dev;
+		if (!p_attached_dev)
+			return -ENODEV;
+
+		mac_addr = (const u8 *)p_attached_dev->dev_addr;
+		if (!is_valid_ether_addr(mac_addr))
+			return -EINVAL;
+
+		/* lock mdio bus then switch to utp reg space */
+		old_page = phy_select_page(phydev, YT8521_RSSR_UTP_SPACE);
+		if (old_page < 0)
+			goto err_restore_page;
+
+		/* Store the device address for the magic packet */
+		for (i = 0; i < 3; i++) {
+			ret = ytphy_write_ext(phydev, mac_addr_reg[i],
+					      ((mac_addr[i * 2] << 8)) |
+						      (mac_addr[i * 2 + 1]));
+			if (ret < 0)
+				goto err_restore_page;
+		}
+
+		/* Enable WOL feature */
+		mask = YTPHY_WCR_PULSE_WIDTH_MASK | YTPHY_WCR_INTR_SEL;
+		val = YTPHY_WCR_ENABLE | YTPHY_WCR_INTR_SEL;
+		val |= YTPHY_WCR_TYPE_PULSE | YTPHY_WCR_PULSE_WIDTH_672MS;
+		ret = ytphy_modify_ext(phydev, YTPHY_WOL_CONFIG_REG, mask, val);
+		if (ret < 0)
+			goto err_restore_page;
+
+		/* Enable WOL interrupt */
+		ret = __phy_modify(phydev, YTPHY_INTERRUPT_ENABLE_REG, 0,
+				   YTPHY_IER_WOL);
+		if (ret < 0)
+			goto err_restore_page;
+
+	} else {
+		old_page = phy_select_page(phydev, YT8521_RSSR_UTP_SPACE);
+		if (old_page < 0)
+			goto err_restore_page;
+
+		/* Disable WOL feature */
+		mask = YTPHY_WCR_ENABLE | YTPHY_WCR_INTR_SEL;
+		ret = ytphy_modify_ext(phydev, YTPHY_WOL_CONFIG_REG, mask, 0);
+
+		/* Disable WOL interrupt */
+		ret = __phy_modify(phydev, YTPHY_INTERRUPT_ENABLE_REG,
+				   YTPHY_IER_WOL, 0);
+		if (ret < 0)
+			goto err_restore_page;
+	}
+
+err_restore_page:
+	return phy_restore_page(phydev, old_page, ret);
+}
+
+static int yt8531_set_wol(struct phy_device *phydev,
+			  struct ethtool_wolinfo *wol)
+{
+	const u16 mac_addr_reg[] = {
+		YTPHY_WOL_MACADDR2_REG,
+		YTPHY_WOL_MACADDR1_REG,
+		YTPHY_WOL_MACADDR0_REG,
+	};
+	const u8 *mac_addr;
+	u16 mask, val;
+	int ret;
+	u8 i;
+
+	if (wol->wolopts & WAKE_MAGIC) {
+		mac_addr = phydev->attached_dev->dev_addr;
+
+		/* Store the device address for the magic packet */
+		for (i = 0; i < 3; i++) {
+			ret = ytphy_write_ext_with_lock(phydev, mac_addr_reg[i],
+							((mac_addr[i * 2] << 8)) |
+							(mac_addr[i * 2 + 1]));
+			if (ret < 0)
+				return ret;
+		}
+
+		/* Enable WOL feature */
+		mask = YTPHY_WCR_PULSE_WIDTH_MASK | YTPHY_WCR_INTR_SEL;
+		val = YTPHY_WCR_ENABLE | YTPHY_WCR_INTR_SEL;
+		val |= YTPHY_WCR_TYPE_PULSE | YTPHY_WCR_PULSE_WIDTH_672MS;
+		ret = ytphy_modify_ext_with_lock(phydev, YTPHY_WOL_CONFIG_REG,
+						 mask, val);
+		if (ret < 0)
+			return ret;
+
+		/* Enable WOL interrupt */
+		ret = phy_modify(phydev, YTPHY_INTERRUPT_ENABLE_REG, 0,
+				 YTPHY_IER_WOL);
+		if (ret < 0)
+			return ret;
+	} else {
+		/* Disable WOL feature */
+		mask = YTPHY_WCR_ENABLE | YTPHY_WCR_INTR_SEL;
+		ret = ytphy_modify_ext_with_lock(phydev, YTPHY_WOL_CONFIG_REG,
+						 mask, 0);
+
+		/* Disable WOL interrupt */
+		ret = phy_modify(phydev, YTPHY_INTERRUPT_ENABLE_REG,
+				 YTPHY_IER_WOL, 0);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int yt8511_read_page(struct phy_device *phydev)
 {
 	return __phy_read(phydev, YT8511_PAGE_SELECT);

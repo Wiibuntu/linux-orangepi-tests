@@ -1459,7 +1459,7 @@ static int imx_uart_startup(struct uart_port *port)
 	int retval;
 	unsigned long flags;
 	int dma_is_inited = 0;
-	u32 ucr1, ucr2, ucr3, ucr4;
+	u32 ucr1, ucr2, ucr3, ucr4, uts;
 
 	retval = clk_prepare_enable(sport->clk_per);
 	if (retval)
@@ -2428,6 +2428,36 @@ static int imx_uart_probe(struct platform_device *pdev)
 	ucr1 = imx_uart_readl(sport, UCR1);
 	ucr1 &= ~(UCR1_ADEN | UCR1_TRDYEN | UCR1_IDEN | UCR1_RRDYEN | UCR1_RTSDEN);
 	imx_uart_writel(sport, ucr1, UCR1);
+
+	/* Disable Ageing Timer interrupt */
+	ucr2 = imx_uart_readl(sport, UCR2);
+	ucr2 &= ~UCR2_ATEN;
+	imx_uart_writel(sport, ucr2, UCR2);
+
+	/*
+	 * In case RS485 is enabled without GPIO RTS control, the UART IP
+	 * is used to control CTS signal. Keep both the UART and Receiver
+	 * enabled, otherwise the UART IP pulls CTS signal always HIGH no
+	 * matter how the UCR2 CTSC and CTS bits are set. To prevent any
+	 * data from being fed into the RX FIFO, enable loopback mode in
+	 * UTS register, which disconnects the RX path from external RXD
+	 * pin and connects it to the Transceiver, which is disabled, so
+	 * no data can be fed to the RX FIFO that way.
+	 */
+	if (sport->port.rs485.flags & SER_RS485_ENABLED &&
+	    sport->have_rtscts && !sport->have_rtsgpio) {
+		uts = imx_uart_readl(sport, imx_uart_uts_reg(sport));
+		uts |= UTS_LOOP;
+		imx_uart_writel(sport, uts, imx_uart_uts_reg(sport));
+
+		ucr1 = imx_uart_readl(sport, UCR1);
+		ucr1 |= UCR1_UARTEN;
+		imx_uart_writel(sport, ucr1, UCR1);
+
+		ucr2 = imx_uart_readl(sport, UCR2);
+		ucr2 |= UCR2_RXEN;
+		imx_uart_writel(sport, ucr2, UCR2);
+	}
 
 	/* Disable Ageing Timer interrupt */
 	ucr2 = imx_uart_readl(sport, UCR2);

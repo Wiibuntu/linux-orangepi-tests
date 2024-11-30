@@ -274,6 +274,10 @@ int perf_quiet_option(void)
 	debug_kmaps = 0;
 	debug_type_profile = 0;
 
+	/* For debug variables that are used as bool types, set to 0. */
+	redirect_to_stderr = 0;
+	debug_peo_args = 0;
+
 	return 0;
 }
 

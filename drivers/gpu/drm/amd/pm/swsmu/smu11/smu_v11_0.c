@@ -1568,6 +1568,10 @@ int smu_v11_0_get_bamaco_support(struct smu_context *smu)
 	if (smu_v11_0_baco_get_state(smu) == SMU_BACO_STATE_ENTER)
 		return bamaco_support |= BACO_SUPPORT;
 
+	/* return true if ASIC is in BACO state already */
+	if (smu_v11_0_baco_get_state(smu) == SMU_BACO_STATE_ENTER)
+		return true;
+
 	/* Arcturus does not support this bit mask */
 	if (smu_cmn_feature_is_supported(smu, SMU_FEATURE_BACO_BIT) &&
 	   !smu_cmn_feature_is_enabled(smu, SMU_FEATURE_BACO_BIT))

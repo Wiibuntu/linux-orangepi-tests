@@ -473,6 +473,182 @@ static void nfp_add_media_link_mode(struct nfp_port *port,
 		bitmap_fill(port->speed_bitmap, NFP_SUP_SPEED_NUMBER);
 }
 
+static const struct nfp_eth_media_link_mode {
+	u16 ethtool_link_mode;
+	u16 speed;
+} nfp_eth_media_table[NFP_MEDIA_LINK_MODES_NUMBER] = {
+	[NFP_MEDIA_1000BASE_CX] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_1000baseKX_Full_BIT,
+		.speed			= NFP_SPEED_1G,
+	},
+	[NFP_MEDIA_1000BASE_KX] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_1000baseKX_Full_BIT,
+		.speed			= NFP_SPEED_1G,
+	},
+	[NFP_MEDIA_10GBASE_KX4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT,
+		.speed			= NFP_SPEED_10G,
+	},
+	[NFP_MEDIA_10GBASE_KR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseKR_Full_BIT,
+		.speed			= NFP_SPEED_10G,
+	},
+	[NFP_MEDIA_10GBASE_CX4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT,
+		.speed			= NFP_SPEED_10G,
+	},
+	[NFP_MEDIA_10GBASE_CR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseCR_Full_BIT,
+		.speed			= NFP_SPEED_10G,
+	},
+	[NFP_MEDIA_10GBASE_SR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseSR_Full_BIT,
+		.speed			= NFP_SPEED_10G,
+	},
+	[NFP_MEDIA_10GBASE_ER] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseER_Full_BIT,
+		.speed			= NFP_SPEED_10G,
+	},
+	[NFP_MEDIA_25GBASE_KR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_25000baseKR_Full_BIT,
+		.speed			= NFP_SPEED_25G,
+	},
+	[NFP_MEDIA_25GBASE_KR_S] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_25000baseKR_Full_BIT,
+		.speed			= NFP_SPEED_25G,
+	},
+	[NFP_MEDIA_25GBASE_CR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_25000baseCR_Full_BIT,
+		.speed			= NFP_SPEED_25G,
+	},
+	[NFP_MEDIA_25GBASE_CR_S] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_25000baseCR_Full_BIT,
+		.speed			= NFP_SPEED_25G,
+	},
+	[NFP_MEDIA_25GBASE_SR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_25000baseSR_Full_BIT,
+		.speed			= NFP_SPEED_25G,
+	},
+	[NFP_MEDIA_40GBASE_CR4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_40000baseCR4_Full_BIT,
+		.speed			= NFP_SPEED_40G,
+	},
+	[NFP_MEDIA_40GBASE_KR4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_40000baseKR4_Full_BIT,
+		.speed			= NFP_SPEED_40G,
+	},
+	[NFP_MEDIA_40GBASE_SR4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_40000baseSR4_Full_BIT,
+		.speed			= NFP_SPEED_40G,
+	},
+	[NFP_MEDIA_40GBASE_LR4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_40000baseLR4_Full_BIT,
+		.speed			= NFP_SPEED_40G,
+	},
+	[NFP_MEDIA_50GBASE_KR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_50000baseKR_Full_BIT,
+		.speed			= NFP_SPEED_50G,
+	},
+	[NFP_MEDIA_50GBASE_SR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_50000baseSR_Full_BIT,
+		.speed			= NFP_SPEED_50G,
+	},
+	[NFP_MEDIA_50GBASE_CR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_50000baseCR_Full_BIT,
+		.speed			= NFP_SPEED_50G,
+	},
+	[NFP_MEDIA_50GBASE_LR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_50000baseLR_ER_FR_Full_BIT,
+		.speed			= NFP_SPEED_50G,
+	},
+	[NFP_MEDIA_50GBASE_ER] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_50000baseLR_ER_FR_Full_BIT,
+		.speed			= NFP_SPEED_50G,
+	},
+	[NFP_MEDIA_50GBASE_FR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_50000baseLR_ER_FR_Full_BIT,
+		.speed			= NFP_SPEED_50G,
+	},
+	[NFP_MEDIA_100GBASE_KR4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT,
+		.speed			= NFP_SPEED_100G,
+	},
+	[NFP_MEDIA_100GBASE_SR4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_100000baseSR4_Full_BIT,
+		.speed			= NFP_SPEED_100G,
+	},
+	[NFP_MEDIA_100GBASE_CR4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT,
+		.speed			= NFP_SPEED_100G,
+	},
+	[NFP_MEDIA_100GBASE_KP4] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT,
+		.speed			= NFP_SPEED_100G,
+	},
+	[NFP_MEDIA_100GBASE_CR10] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT,
+		.speed			= NFP_SPEED_100G,
+	},
+};
+
+static const unsigned int nfp_eth_speed_map[NFP_SUP_SPEED_NUMBER] = {
+	[NFP_SPEED_1G]		= SPEED_1000,
+	[NFP_SPEED_10G]		= SPEED_10000,
+	[NFP_SPEED_25G]		= SPEED_25000,
+	[NFP_SPEED_40G]		= SPEED_40000,
+	[NFP_SPEED_50G]		= SPEED_50000,
+	[NFP_SPEED_100G]	= SPEED_100000,
+};
+
+static void nfp_add_media_link_mode(struct nfp_port *port,
+				    struct nfp_eth_table_port *eth_port,
+				    struct ethtool_link_ksettings *cmd)
+{
+	u64 supported_modes[2], advertised_modes[2];
+	struct nfp_eth_media_buf ethm = {
+		.eth_index = eth_port->eth_index,
+	};
+	struct nfp_cpp *cpp = port->app->cpp;
+
+	if (nfp_eth_read_media(cpp, &ethm)) {
+		bitmap_fill(port->speed_bitmap, NFP_SUP_SPEED_NUMBER);
+		return;
+	}
+
+	bitmap_zero(port->speed_bitmap, NFP_SUP_SPEED_NUMBER);
+
+	for (u32 i = 0; i < 2; i++) {
+		supported_modes[i] = le64_to_cpu(ethm.supported_modes[i]);
+		advertised_modes[i] = le64_to_cpu(ethm.advertised_modes[i]);
+	}
+
+	for (u32 i = 0; i < NFP_MEDIA_LINK_MODES_NUMBER; i++) {
+		if (i < 64) {
+			if (supported_modes[0] & BIT_ULL(i)) {
+				__set_bit(nfp_eth_media_table[i].ethtool_link_mode,
+					  cmd->link_modes.supported);
+				__set_bit(nfp_eth_media_table[i].speed,
+					  port->speed_bitmap);
+			}
+
+			if (advertised_modes[0] & BIT_ULL(i))
+				__set_bit(nfp_eth_media_table[i].ethtool_link_mode,
+					  cmd->link_modes.advertising);
+		} else {
+			if (supported_modes[1] & BIT_ULL(i - 64)) {
+				__set_bit(nfp_eth_media_table[i].ethtool_link_mode,
+					  cmd->link_modes.supported);
+				__set_bit(nfp_eth_media_table[i].speed,
+					  port->speed_bitmap);
+			}
+
+			if (advertised_modes[1] & BIT_ULL(i - 64))
+				__set_bit(nfp_eth_media_table[i].ethtool_link_mode,
+					  cmd->link_modes.advertising);
+		}
+	}
+}
+
 /**
  * nfp_net_get_link_ksettings - Get Link Speed settings
  * @netdev:	network interface device structure

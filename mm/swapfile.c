@@ -4048,6 +4048,7 @@ static int __init swapfile_init(void)
 		return -ENOMEM;
 	}
 
+	assert_spin_locked(&p->lock);
 	for_each_node(nid)
 		plist_head_init(&swap_avail_heads[nid]);
 

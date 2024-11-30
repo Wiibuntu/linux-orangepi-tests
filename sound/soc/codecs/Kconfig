@@ -1623,6 +1623,11 @@ config SND_SOC_RT1320_SDW
 	select REGMAP_SOUNDWIRE
 	select REGMAP_SOUNDWIRE_MBQ
 
+config SND_SOC_RT1318_SDW
+	tristate "Realtek RT1318 Codec - SDW"
+	depends on SOUNDWIRE
+	select REGMAP_SOUNDWIRE
+
 config SND_SOC_RT5514
 	tristate
 	depends on I2C

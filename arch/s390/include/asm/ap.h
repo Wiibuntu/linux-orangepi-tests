@@ -419,7 +419,7 @@ static inline struct ap_queue_status ap_aapq(ap_qid_t qid, unsigned int sec_idx)
 		"	lgr	%[reg1],1\n"		/* gr1 (status) into reg1 */
 		: [reg1] "=&d" (reg1.value)
 		: [reg0] "d" (reg0), [reg2] "d" (reg2)
-		: "cc", "0", "1", "2");
+		: "cc", "memory", "0", "1", "2");
 
 	return reg1.status;
 }

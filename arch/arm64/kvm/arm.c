@@ -184,6 +184,16 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 
 	kvm_init_nested(kvm);
 
+	mutex_init(&kvm->arch.config_lock);
+
+#ifdef CONFIG_LOCKDEP
+	/* Clue in lockdep that the config_lock must be taken inside kvm->lock */
+	mutex_lock(&kvm->lock);
+	mutex_lock(&kvm->arch.config_lock);
+	mutex_unlock(&kvm->arch.config_lock);
+	mutex_unlock(&kvm->lock);
+#endif
+
 	ret = kvm_share_hyp(kvm, kvm + 1);
 	if (ret)
 		return ret;
@@ -456,6 +466,16 @@ int kvm_arch_vcpu_precreate(struct kvm *kvm, unsigned int id)
 int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 {
 	int err;
+
+	spin_lock_init(&vcpu->arch.mp_state_lock);
+
+#ifdef CONFIG_LOCKDEP
+	/* Inform lockdep that the config_lock is acquired after vcpu->mutex */
+	mutex_lock(&vcpu->mutex);
+	mutex_lock(&vcpu->kvm->arch.config_lock);
+	mutex_unlock(&vcpu->kvm->arch.config_lock);
+	mutex_unlock(&vcpu->mutex);
+#endif
 
 	spin_lock_init(&vcpu->arch.mp_state_lock);
 
@@ -1619,6 +1639,8 @@ static int kvm_arm_vcpu_set_attr(struct kvm_vcpu *vcpu,
 		break;
 	}
 
+	spin_unlock(&vcpu->arch.mp_state_lock);
+
 	return ret;
 }
 
@@ -2655,6 +2677,8 @@ static int __init init_hyp_mode(void)
 		/* Prepare the CPU initialization parameters */
 		cpu_prepare_hyp_mode(cpu, hyp_va_bits);
 	}
+
+	kvm_hyp_init_symbols();
 
 	kvm_hyp_init_symbols();
 

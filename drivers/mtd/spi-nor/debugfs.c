@@ -253,3 +253,8 @@ void spi_nor_debugfs_shutdown(void)
 {
 	debugfs_remove(rootdir);
 }
+
+void spi_nor_debugfs_shutdown(void)
+{
+	debugfs_remove(rootdir);
+}

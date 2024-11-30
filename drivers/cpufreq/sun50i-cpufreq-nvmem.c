@@ -253,7 +253,7 @@ static int sun50i_cpufreq_nvmem_probe(struct platform_device *pdev)
 	cpufreq_dt_pdev = platform_device_register_simple("cpufreq-dt", -1,
 							  NULL, 0);
 	if (!IS_ERR(cpufreq_dt_pdev)) {
-		platform_set_drvdata(pdev, opp_tokens);
+		platform_set_drvdata(pdev, opp_tables);
 		return 0;
 	}
 
@@ -323,9 +323,8 @@ static int __init sun50i_cpufreq_init(void)
 	if (unlikely(ret < 0))
 		return ret;
 
-	sun50i_cpufreq_pdev =
-		platform_device_register_simple("sun50i-cpufreq-nvmem",
-						-1, NULL, 0);
+	sun50i_cpufreq_pdev = platform_device_register_data(NULL,
+			      "sun50i-cpufreq-nvmem", -1, match, sizeof(*match));
 	ret = PTR_ERR_OR_ZERO(sun50i_cpufreq_pdev);
 	if (ret == 0)
 		return 0;

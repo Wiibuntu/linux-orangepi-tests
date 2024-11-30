@@ -232,6 +232,14 @@ static int vdec_ctrl_init(struct vpu_inst *inst)
 			  V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY_ENABLE,
 			  0, 1, 1, 0);
 
+	v4l2_ctrl_new_std(&inst->ctrl_handler, &vdec_ctrl_ops,
+			  V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY,
+			  0, 0, 1, 0);
+
+	v4l2_ctrl_new_std(&inst->ctrl_handler, &vdec_ctrl_ops,
+			  V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY_ENABLE,
+			  0, 1, 1, 0);
+
 	ctrl = v4l2_ctrl_new_std(&inst->ctrl_handler, &vdec_ctrl_ops,
 				 V4L2_CID_MIN_BUFFERS_FOR_CAPTURE, 1, 32, 1, 2);
 	if (ctrl)
@@ -444,6 +452,7 @@ static int vdec_s_fmt_common(struct vpu_inst *inst, struct v4l2_format *f)
 	if (vpu_try_fmt_common(inst, f, &fmt))
 		return -EINVAL;
 
+	vpu_inst_lock(inst);
 	cur_fmt = vpu_get_format(inst, f->type);
 	if (V4L2_TYPE_IS_OUTPUT(f->type) && inst->state != VPU_CODEC_STATE_DEINIT) {
 		if (cur_fmt->pixfmt != fmt.pixfmt) {
@@ -523,6 +532,7 @@ static int vdec_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	f->fmt.pix_mp.xfer_func = vdec->codec_info.transfer_chars;
 	f->fmt.pix_mp.ycbcr_enc = vdec->codec_info.matrix_coeffs;
 	f->fmt.pix_mp.quantization = vdec->codec_info.full_range;
+	vpu_inst_unlock(inst);
 
 exit:
 	vpu_inst_unlock(inst);
@@ -866,6 +876,9 @@ static bool vdec_check_source_change(struct vpu_inst *inst)
 	sibling = vpu_helper_find_sibling(inst, inst->cap_format.type, inst->cap_format.pixfmt);
 	if (sibling && vdec->codec_info.pixfmt == sibling->pixfmt)
 		vdec->codec_info.pixfmt = inst->cap_format.pixfmt;
+
+	if (vdec->reset_codec)
+		return false;
 
 	if (!vb2_is_streaming(v4l2_m2m_get_dst_vq(inst->fh.m2m_ctx)))
 		return true;
@@ -1315,6 +1328,7 @@ static void vdec_event_eos(struct vpu_inst *inst)
 	vpu_inst_lock(inst);
 	vdec->eos_received++;
 	vdec->fixed_fmt = false;
+	vdec->state = VPU_CODEC_STATE_ACTIVE;
 	inst->min_buffer_cap = VDEC_MIN_BUFFER_CAP;
 	vdec_set_last_buffer_dequeued(inst);
 	vpu_inst_unlock(inst);

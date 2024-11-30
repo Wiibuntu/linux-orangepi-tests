@@ -275,6 +275,7 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
 	u16 cmd, chipid;
 	u8 features;
 	int ret;
+	u16 cmd;
 
 	ret = pcim_enable_device(pdev);
 	if (ret)

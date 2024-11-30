@@ -70,7 +70,7 @@ static int mt7921u_mcu_init(struct mt792x_dev *dev)
 	mt76_set(dev, MT_UDMA_TX_QSEL, MT_FW_DL_EN);
 	ret = mt7921_run_firmware(dev);
 	if (ret)
-		return ret;
+		goto error;
 
 	set_bit(MT76_STATE_MCU_RUNNING, &dev->mphy.state);
 	mt76_clear(dev, MT_UDMA_TX_QSEL, MT_FW_DL_EN);

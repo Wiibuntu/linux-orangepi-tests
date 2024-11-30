@@ -247,6 +247,8 @@ static void pvcalls_front_destroy_active(struct pvcalls_bedata *bedata,
 	free_active_ring(map);
 }
 
+static void free_active_ring(struct sock_mapping *map);
+
 static void pvcalls_front_free_map(struct pvcalls_bedata *bedata,
 				   struct sock_mapping *map)
 {

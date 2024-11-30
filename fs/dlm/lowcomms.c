@@ -1957,6 +1957,16 @@ void dlm_lowcomms_init(void)
 	INIT_WORK(&listen_con.rwork, process_listen_recv_socket);
 }
 
+void dlm_lowcomms_init(void)
+{
+	int i;
+
+	for (i = 0; i < CONN_HASH_SIZE; i++)
+		INIT_HLIST_HEAD(&connection_hash[i]);
+
+	INIT_WORK(&listen_con.rwork, process_listen_recv_socket);
+}
+
 void dlm_lowcomms_exit(void)
 {
 	struct connection *con;

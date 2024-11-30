@@ -85,6 +85,13 @@ int __init acpi_parse_mp_wake(union acpi_subtable_headers *header,
 
 void asm_acpi_mp_play_dead(u64 reset_vector, u64 pgd_pa);
 
+static inline bool acpi_skip_set_wakeup_address(void)
+{
+	return cpu_feature_enabled(X86_FEATURE_XENPV);
+}
+
+#define acpi_skip_set_wakeup_address acpi_skip_set_wakeup_address
+
 /*
  * Check if the CPU can handle C2 and deeper
  */

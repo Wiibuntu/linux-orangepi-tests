@@ -314,6 +314,10 @@ static int acp_dma_open(struct snd_soc_component *component, struct snd_pcm_subs
 	list_add_tail(&stream->list, &adata->stream_list);
 	spin_unlock_irq(&adata->acp_lock);
 
+	spin_lock_irq(&adata->acp_lock);
+	list_add_tail(&stream->list, &adata->stream_list);
+	spin_unlock_irq(&adata->acp_lock);
+
 	return ret;
 }
 

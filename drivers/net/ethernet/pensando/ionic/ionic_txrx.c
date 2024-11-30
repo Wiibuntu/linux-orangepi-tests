@@ -1297,6 +1297,9 @@ unsigned int ionic_tx_cq_service(struct ionic_cq *cq,
 						 IONIC_TSO_DESCS_NEEDED);
 	}
 
+	if (!work_done && ionic_txq_poke_doorbell(&qcq->q))
+		mod_timer(&qcq->napi_deadline, jiffies + IONIC_NAPI_DEADLINE);
+
 	return work_done;
 }
 

@@ -102,6 +102,19 @@ void rdt_staged_configs_clear(void)
 	}
 }
 
+void rdt_staged_configs_clear(void)
+{
+	struct rdt_resource *r;
+	struct rdt_domain *dom;
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	for_each_alloc_capable_rdt_resource(r) {
+		list_for_each_entry(dom, &r->domains, list)
+			memset(dom->staged_config, 0, sizeof(dom->staged_config));
+	}
+}
+
 /*
  * Trivial allocator for CLOSIDs. Since h/w only supports a small number,
  * we can keep a bitmap of free CLOSIDs in a single integer.
@@ -2863,6 +2876,14 @@ static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to,
 		    is_rmid_match(t, from)) {
 			resctrl_arch_set_closid_rmid(t, to->closid,
 						     to->mon.rmid);
+
+			/*
+			 * Order the closid/rmid stores above before the loads
+			 * in task_curr(). This pairs with the full barrier
+			 * between the rq->curr update and resctrl_sched_in()
+			 * during context switch.
+			 */
+			smp_mb();
 
 			/*
 			 * Order the closid/rmid stores above before the loads

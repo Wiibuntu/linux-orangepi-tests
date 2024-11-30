@@ -31,6 +31,10 @@ The 4 voltages require a board-specific multiplier, since the BMC can
 only measure voltages up to 3.3V and thus relies on voltage dividers.
 Consult your motherboard manual for details.
 
+The 4 voltages require a board-specific multiplier, since the BMC can
+only measure voltages up to 3.3V and thus relies on voltage dividers.
+Consult your motherboard manual for details.
+
 To clear a temperature or fan alarm, execute the following command with the
 correct path to the alarm file::
 

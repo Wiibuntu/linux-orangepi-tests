@@ -109,6 +109,12 @@
 #define IMX219_REG_OPSYCK_DIV		CCI_REG8(0x030b)
 #define IMX219_REG_PLL_OP_MPY		CCI_REG16(0x030c)
 
+/* Binning  Mode */
+#define IMX219_REG_BINNING_MODE		0x0174
+#define IMX219_BINNING_NONE		0x0000
+#define IMX219_BINNING_2X2		0x0101
+#define IMX219_BINNING_2X2_ANALOG	0x0303
+
 /* Test Pattern Control */
 #define IMX219_REG_TEST_PATTERN		CCI_REG16(0x0600)
 #define IMX219_TEST_PATTERN_DISABLE	0
@@ -697,6 +703,13 @@ static int imx219_start_streaming(struct imx219 *imx219,
 	ret = imx219_set_framefmt(imx219, state);
 	if (ret) {
 		dev_err(&client->dev, "%s failed to set frame format: %d\n",
+			__func__, ret);
+		goto err_rpm_put;
+	}
+
+	ret = imx219_set_binning(imx219);
+	if (ret) {
+		dev_err(&client->dev, "%s failed to set binning: %d\n",
 			__func__, ret);
 		goto err_rpm_put;
 	}

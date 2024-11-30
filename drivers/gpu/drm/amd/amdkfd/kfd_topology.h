@@ -95,6 +95,8 @@ struct kfd_mem_properties {
 
 #define CACHE_SIBLINGMAP_SIZE 128
 
+#define CACHE_SIBLINGMAP_SIZE 64
+
 struct kfd_cache_properties {
 	struct list_head	list;
 	uint32_t		processor_id_low;

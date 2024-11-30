@@ -175,6 +175,11 @@ static inline bool apple_gmux_detect(struct pnp_dev *pnp_dev, bool *indexed_ret)
 	return false;
 }
 
+static inline bool apple_gmux_detect(struct pnp_dev *pnp_dev, bool *indexed_ret)
+{
+	return false;
+}
+
 #endif /* !CONFIG_APPLE_GMUX */
 
 #endif /* LINUX_APPLE_GMUX_H */

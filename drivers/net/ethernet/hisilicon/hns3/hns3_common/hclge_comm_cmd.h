@@ -375,6 +375,11 @@ struct hclge_cmdq_tx_timeout_map {
 	u32 tx_timeout;
 };
 
+struct hclge_cmdq_tx_timeout_map {
+	u32 opcode;
+	u32 tx_timeout;
+};
+
 struct hclge_comm_firmware_compat_cmd {
 	__le32 compat;
 	u8 rsv[20];

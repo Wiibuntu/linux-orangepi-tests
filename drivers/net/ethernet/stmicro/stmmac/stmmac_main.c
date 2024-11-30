@@ -6648,6 +6648,10 @@ static int stmmac_vlan_rx_add_vid(struct net_device *ndev, __be16 proto, u16 vid
 	if (ret < 0)
 		return ret;
 
+	ret = pm_runtime_resume_and_get(priv->device);
+	if (ret < 0)
+		return ret;
+
 	if (be16_to_cpu(proto) == ETH_P_8021AD)
 		is_double = true;
 
@@ -6930,6 +6934,8 @@ int stmmac_xdp_open(struct net_device *dev)
 			   __func__);
 		goto init_error;
 	}
+
+	stmmac_reset_queues_param(priv);
 
 	stmmac_reset_queues_param(priv);
 
@@ -7336,7 +7342,7 @@ int stmmac_reinit_queues(struct net_device *dev, u32 rx_cnt, u32 tx_cnt)
 int stmmac_reinit_ringparam(struct net_device *dev, u32 rx_size, u32 tx_size)
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
-	int ret = 0;
+	int ret = 0, i;
 
 	if (netif_running(dev))
 		stmmac_release(dev);

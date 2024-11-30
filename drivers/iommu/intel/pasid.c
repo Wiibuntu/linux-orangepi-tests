@@ -74,6 +74,9 @@ int intel_pasid_alloc_table(struct device *dev)
 	if (!ecap_coherent(info->iommu->ecap))
 		clflush_cache_range(pasid_table->table, (1 << order) * PAGE_SIZE);
 
+	if (!ecap_coherent(info->iommu->ecap))
+		clflush_cache_range(pasid_table->table, size);
+
 	return 0;
 }
 
@@ -163,6 +166,10 @@ retry:
 				   (u64)virt_to_phys(entries) | PASID_PTE_PRESENT)) {
 			iommu_free_page(entries);
 			goto retry;
+		}
+		if (!ecap_coherent(info->iommu->ecap)) {
+			clflush_cache_range(entries, VTD_PAGE_SIZE);
+			clflush_cache_range(&dir[dir_index].val, sizeof(*dir));
 		}
 		if (!ecap_coherent(info->iommu->ecap)) {
 			clflush_cache_range(entries, VTD_PAGE_SIZE);
@@ -343,6 +350,16 @@ int intel_pasid_setup_first_level(struct intel_iommu *iommu,
 	pasid_flush_caches(iommu, pte, pasid, did);
 
 	return 0;
+}
+
+/*
+ * Setup No Execute Enable bit (Bit 133) of a scalable mode PASID
+ * entry. It is required when XD bit of the first level page table
+ * entry is about to be set.
+ */
+static inline void pasid_set_nxe(struct pasid_entry *pe)
+{
+	pasid_set_bits(&pe->val[2], 1 << 5, 1 << 5);
 }
 
 /*

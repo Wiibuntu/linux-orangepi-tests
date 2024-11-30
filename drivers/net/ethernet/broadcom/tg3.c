@@ -18116,6 +18116,9 @@ static int tg3_resume(struct device *device)
 	struct tg3 *tp = netdev_priv(dev);
 	int err = 0;
 
+	/* Want to make sure that the reset task doesn't run */
+	tg3_reset_task_cancel(tp);
+
 	rtnl_lock();
 
 	if (!netif_running(dev))

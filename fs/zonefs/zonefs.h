@@ -136,6 +136,31 @@ static inline bool zonefs_inode_is_seq(struct inode *inode)
 	return zonefs_zone_is_seq(zonefs_inode_zone(inode));
 }
 
+static inline bool zonefs_zone_is_cnv(struct zonefs_zone *z)
+{
+	return z->z_flags & ZONEFS_ZONE_CNV;
+}
+
+static inline bool zonefs_zone_is_seq(struct zonefs_zone *z)
+{
+	return !zonefs_zone_is_cnv(z);
+}
+
+static inline struct zonefs_zone *zonefs_inode_zone(struct inode *inode)
+{
+	return inode->i_private;
+}
+
+static inline bool zonefs_inode_is_cnv(struct inode *inode)
+{
+	return zonefs_zone_is_cnv(zonefs_inode_zone(inode));
+}
+
+static inline bool zonefs_inode_is_seq(struct inode *inode)
+{
+	return zonefs_zone_is_seq(zonefs_inode_zone(inode));
+}
+
 /*
  * On-disk super block (block 0).
  */

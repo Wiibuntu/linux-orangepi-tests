@@ -571,6 +571,14 @@ static void io_poll_add_hash(struct io_kiocb *req)
 		io_poll_req_insert(req);
 }
 
+static void io_poll_add_hash(struct io_kiocb *req)
+{
+	if (req->flags & REQ_F_HASH_LOCKED)
+		io_poll_req_insert_locked(req);
+	else
+		io_poll_req_insert(req);
+}
+
 /*
  * Returns 0 when it's handed over for polling. The caller owns the requests if
  * it returns non-zero, but otherwise should not touch it. Negative values
@@ -675,6 +683,14 @@ static void io_async_queue_proc(struct file *file, struct wait_queue_head *head,
 
 	__io_queue_proc(&apoll->poll, pt, head, &apoll->double_poll);
 }
+
+/*
+ * We can't reliably detect loops in repeated poll triggers and issue
+ * subsequently failing. But rather than fail these immediately, allow a
+ * certain amount of retries before we give up. Given that this condition
+ * should _rarely_ trigger even once, we should be fine with a larger value.
+ */
+#define APOLL_MAX_RETRY		128
 
 /*
  * We can't reliably detect loops in repeated poll triggers and issue

@@ -3431,6 +3431,9 @@ out:
 	if (rc)
 		return rc;
 
+	if (rc)
+		return rc;
+
 	switch (cxlr->mode) {
 	case CXL_DECODER_PMEM:
 		return devm_cxl_add_pmem_region(cxlr);

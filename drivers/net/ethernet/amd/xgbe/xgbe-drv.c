@@ -1062,6 +1062,9 @@ err_dma_irq:
 		devm_free_irq(pdata->dev, channel->dma_irq, channel);
 	}
 
+	tasklet_kill(&pdata->tasklet_dev);
+	tasklet_kill(&pdata->tasklet_ecc);
+
 	if (pdata->vdata->ecc_support && (pdata->dev_irq != pdata->ecc_irq))
 		devm_free_irq(pdata->dev, pdata->ecc_irq, pdata);
 

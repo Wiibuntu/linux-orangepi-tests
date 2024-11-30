@@ -855,6 +855,10 @@ static inline struct NTFS_DE *hdr_delete_de(struct INDEX_HDR *hdr,
 	if (!check_index_header(hdr, le32_to_cpu(hdr->total)))
 		return NULL;
 
+	/* check INDEX_HDR valid before using INDEX_HDR */
+	if (!check_index_header(hdr, le32_to_cpu(hdr->total)))
+		return NULL;
+
 	if (off >= used || esize < sizeof(struct NTFS_DE) ||
 	    bytes < sizeof(struct NTFS_DE))
 		return NULL;
@@ -1108,6 +1112,12 @@ ok:
 	/* check for index header length */
 	if (offsetof(struct INDEX_BUFFER, ihdr) + le32_to_cpu(ib->ihdr.used) >
 	    bytes) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	/* check for index header length */
+	if (offsetof(struct INDEX_BUFFER, ihdr) + ib->ihdr.used > bytes) {
 		err = -EINVAL;
 		goto out;
 	}

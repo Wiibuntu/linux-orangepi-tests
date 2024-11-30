@@ -525,7 +525,7 @@ static int video_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 
 	ret = __video_try_fmt(video, f);
 	if (ret < 0)
-		return ret;
+		goto flush_buffers;
 
 	video->active_fmt = *f;
 

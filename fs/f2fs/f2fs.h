@@ -3151,6 +3151,8 @@ static inline void f2fs_i_blocks_write(struct inode *inode,
 
 static inline bool f2fs_is_atomic_file(struct inode *inode);
 
+static inline bool f2fs_is_atomic_file(struct inode *inode);
+
 static inline void f2fs_i_size_write(struct inode *inode, loff_t i_size)
 {
 	bool clean = !is_inode_flag_set(inode, FI_DIRTY_INODE);
@@ -4577,6 +4579,11 @@ static inline bool f2fs_hw_is_readonly(struct f2fs_sb_info *sbi)
 		if (bdev_read_only(FDEV(i).bdev))
 			return true;
 	return false;
+}
+
+static inline bool f2fs_dev_is_readonly(struct f2fs_sb_info *sbi)
+{
+	return f2fs_sb_has_readonly(sbi) || f2fs_hw_is_readonly(sbi);
 }
 
 static inline bool f2fs_dev_is_readonly(struct f2fs_sb_info *sbi)

@@ -755,6 +755,7 @@ _hci_cmd_sync_lookup_entry(struct hci_dev *hdev, hci_cmd_sync_work_func_t func,
 {
 	struct hci_cmd_sync_work_entry *entry, *tmp;
 
+	mutex_lock(&hdev->cmd_sync_work_lock);
 	list_for_each_entry_safe(entry, tmp, &hdev->cmd_sync_work_list, list) {
 		if (func && entry->func != func)
 			continue;
@@ -5970,6 +5971,7 @@ static void hci_suspend_monitor_sync(struct hci_dev *hdev)
 	default:
 		return;
 	}
+	mutex_unlock(&hdev->cmd_sync_work_lock);
 }
 
 /* This function disables discovery and mark it as paused */

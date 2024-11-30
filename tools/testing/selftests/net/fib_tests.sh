@@ -2621,6 +2621,8 @@ EOF
 
 trap cleanup EXIT
 
+trap cleanup EXIT
+
 while getopts :t:pPhv o
 do
 	case $o in

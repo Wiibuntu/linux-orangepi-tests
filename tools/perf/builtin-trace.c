@@ -101,6 +101,8 @@
 
 #define RAW_SYSCALL_ARGS_NUM	6
 
+#define RAW_SYSCALL_ARGS_NUM	6
+
 /*
  * strtoul: Go from a string to a value, i.e. for msr: MSR_FS_BASE to 0xc0000100
  *

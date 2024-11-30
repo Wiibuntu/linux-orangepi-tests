@@ -250,6 +250,40 @@ static void dm_helpers_construct_old_payload(
 	old_payload->pbn = allocated_time_slots * pbn_per_slot;
 }
 
+static void dm_helpers_construct_old_payload(
+			struct dc_link *link,
+			int pbn_per_slot,
+			struct drm_dp_mst_atomic_payload *new_payload,
+			struct drm_dp_mst_atomic_payload *old_payload)
+{
+	struct link_mst_stream_allocation_table current_link_table =
+									link->mst_stream_alloc_table;
+	struct link_mst_stream_allocation *dc_alloc;
+	int i;
+
+	*old_payload = *new_payload;
+
+	/* Set correct time_slots/PBN of old payload.
+	 * other fields (delete & dsc_enabled) in
+	 * struct drm_dp_mst_atomic_payload are don't care fields
+	 * while calling drm_dp_remove_payload()
+	 */
+	for (i = 0; i < current_link_table.stream_count; i++) {
+		dc_alloc =
+			&current_link_table.stream_allocations[i];
+
+		if (dc_alloc->vcp_id == new_payload->vcpi) {
+			old_payload->time_slots = dc_alloc->slot_count;
+			old_payload->pbn = dc_alloc->slot_count * pbn_per_slot;
+			break;
+		}
+	}
+
+	/* make sure there is an old payload*/
+	ASSERT(i != current_link_table.stream_count);
+
+}
+
 /*
  * Writes payload allocation table in immediate downstream device.
  */

@@ -1381,6 +1381,12 @@ static void bfq_add_to_burst(struct bfq_data *bfqd, struct bfq_queue *bfqq)
  */
 static void bfq_handle_burst(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 {
+	struct bfq_queue *old_bfqq = bic->bfqq[is_sync];
+
+	/* Clear bic pointer if bfqq is detached from this bic */
+	if (old_bfqq && old_bfqq->bic == bic)
+		old_bfqq->bic = NULL;
+
 	/*
 	 * If bfqq is already in the burst list or is part of a large
 	 * burst, or finally has just been split, then there is

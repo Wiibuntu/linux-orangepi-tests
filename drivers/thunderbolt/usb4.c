@@ -1582,6 +1582,20 @@ int usb4_port_asym_set_link_width(struct tb_port *port, enum tb_link_width width
 }
 
 /**
+ * usb4_port_retimer_unset_inbound_sbtx() - Disable sideband channel transactions
+ * @port: USB4 port
+ * @index: Retimer index
+ *
+ * Disables sideband channel transations on SBTX. The reverse of
+ * usb4_port_retimer_set_inbound_sbtx().
+ */
+int usb4_port_retimer_unset_inbound_sbtx(struct tb_port *port, u8 index)
+{
+	return usb4_port_retimer_op(port, index,
+				    USB4_SB_OPCODE_UNSET_INBOUND_SBTX, 500);
+}
+
+/**
  * usb4_port_asym_start() - Start symmetry change and wait for completion
  * @port: USB4 port
  *
@@ -2083,6 +2097,15 @@ int usb4_port_retimer_nvm_read(struct tb_port *port, u8 index,
 
 	return tb_nvm_read_data(address, buf, size, USB4_DATA_RETRIES,
 				usb4_port_retimer_nvm_read_block, &info);
+}
+
+static inline unsigned int
+usb4_usb3_port_max_bandwidth(const struct tb_port *port, unsigned int bw)
+{
+	/* Take the possible bandwidth limitation into account */
+	if (port->max_bw)
+		return min(bw, port->max_bw);
+	return bw;
 }
 
 static inline unsigned int

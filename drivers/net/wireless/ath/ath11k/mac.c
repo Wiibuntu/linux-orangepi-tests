@@ -8823,6 +8823,7 @@ ath11k_mac_op_reconfig_complete(struct ieee80211_hw *hw,
 		}
 	}
 
+err_rc_bw_changed:
 	mutex_unlock(&ar->conf_mutex);
 }
 
@@ -9550,6 +9551,34 @@ static int ath11k_mac_station_remove(struct ath11k *ar,
 	arsta->rx_stats = NULL;
 
 	return ret;
+}
+
+static u32 ath11k_mac_ieee80211_sta_bw_to_wmi(struct ath11k *ar,
+					      struct ieee80211_sta *sta)
+{
+	u32 bw = WMI_PEER_CHWIDTH_20MHZ;
+
+	switch (sta->deflink.bandwidth) {
+	case IEEE80211_STA_RX_BW_20:
+		bw = WMI_PEER_CHWIDTH_20MHZ;
+		break;
+	case IEEE80211_STA_RX_BW_40:
+		bw = WMI_PEER_CHWIDTH_40MHZ;
+		break;
+	case IEEE80211_STA_RX_BW_80:
+		bw = WMI_PEER_CHWIDTH_80MHZ;
+		break;
+	case IEEE80211_STA_RX_BW_160:
+		bw = WMI_PEER_CHWIDTH_160MHZ;
+		break;
+	default:
+		ath11k_warn(ar->ab, "Invalid bandwidth %d for %pM\n",
+			    sta->deflink.bandwidth, sta->addr);
+		bw = WMI_PEER_CHWIDTH_20MHZ;
+		break;
+	}
+
+	return bw;
 }
 
 static int ath11k_mac_op_sta_state(struct ieee80211_hw *hw,

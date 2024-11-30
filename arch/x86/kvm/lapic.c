@@ -2251,6 +2251,7 @@ static void apic_manage_nmi_watchdog(struct kvm_lapic *apic, u32 lvt0_val)
 		} else
 			atomic_dec(&apic->vcpu->kvm->arch.vapics_in_nmi_mode);
 	}
+	apic->highest_isr_cache = -1;
 }
 
 static int get_lvt_index(u32 reg)
@@ -3086,6 +3087,9 @@ int kvm_apic_set_state(struct kvm_vcpu *vcpu, struct kvm_lapic_state *s)
 		return r;
 	}
 	memcpy(vcpu->arch.apic->regs, s->regs, sizeof(*s));
+
+	if (!apic_x2apic_mode(apic))
+		kvm_lapic_xapic_id_updated(apic);
 
 	atomic_set_release(&apic->vcpu->kvm->arch.apic_map_dirty, DIRTY);
 	kvm_recalculate_apic_map(vcpu->kvm);

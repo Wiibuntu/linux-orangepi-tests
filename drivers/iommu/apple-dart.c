@@ -485,6 +485,7 @@ static void apple_dart_domain_flush_tlb(struct apple_dart_domain *domain)
 	int i, j;
 	struct apple_dart_atomic_stream_map *domain_stream_map;
 	struct apple_dart_stream_map stream_map;
+	int i;
 
 	for_each_stream_map(i, domain, domain_stream_map) {
 		stream_map.dart = domain_stream_map->dart;

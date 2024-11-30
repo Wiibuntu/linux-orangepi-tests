@@ -3302,7 +3302,8 @@ static void drm_dp_destroy_payload_at_remote_and_dfp(struct drm_dp_mst_topology_
  * drm_dp_add_payload_part1() - Execute payload update part 1
  * @mgr: Manager to use.
  * @mst_state: The MST atomic state
- * @payload: The payload to write
+ * @old_payload: The payload with its old state
+ * @new_payload: The payload to write
  *
  * Determines the starting time slot for the given payload, and programs the VCPI for this payload
  * into the DPCD of DPRX. After calling this, the driver should generate ACT and payload packets.

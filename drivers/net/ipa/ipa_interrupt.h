@@ -86,6 +86,22 @@ void ipa_interrupt_irq_disable(struct ipa *ipa);
 int ipa_interrupt_config(struct ipa *ipa);
 
 /**
+ * ipa_interrupt_irq_enable() - Enable IPA interrupts
+ * @ipa:	IPA pointer
+ *
+ * This enables the IPA interrupt line
+ */
+void ipa_interrupt_irq_enable(struct ipa *ipa);
+
+/**
+ * ipa_interrupt_irq_disable() - Disable IPA interrupts
+ * @ipa:	IPA pointer
+ *
+ * This disables the IPA interrupt line
+ */
+void ipa_interrupt_irq_disable(struct ipa *ipa);
+
+/**
  * ipa_interrupt_deconfig() - Inverse of ipa_interrupt_config()
  * @ipa:	IPA pointer
  */

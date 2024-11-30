@@ -787,6 +787,13 @@ static void iwl_mei_set_init_conf(struct iwl_mei *mei)
 		iwl_mei_cache.ops->sap_connected(iwl_mei_cache.priv);
 	}
 
+	/* wifi driver has registered already */
+	if (iwl_mei_cache.ops) {
+		iwl_mei_send_sap_msg(mei->cldev,
+				     SAP_MSG_NOTIF_WIFIDR_UP);
+		iwl_mei_cache.ops->sap_connected(iwl_mei_cache.priv);
+	}
+
 	iwl_mei_send_sap_msg(mei->cldev, SAP_MSG_NOTIF_WHO_OWNS_NIC);
 
 	if (iwl_mei_cache.conn_info) {
@@ -1382,7 +1389,7 @@ struct iwl_mei_nvm *iwl_mei_get_nvm(void)
 
 	mei = mei_cldev_get_drvdata(iwl_mei_global_cldev);
 
-	if (!mei)
+	if (!mei && !mei->amt_enabled)
 		goto out;
 
 	if (mei->nvm)
@@ -1740,7 +1747,7 @@ void iwl_mei_set_netdev(struct net_device *netdev)
 
 	mei = mei_cldev_get_drvdata(iwl_mei_global_cldev);
 
-	if (!mei)
+	if (!mei && !mei->amt_enabled)
 		goto out;
 
 	if (!netdev) {
@@ -1775,7 +1782,7 @@ void iwl_mei_device_state(bool up)
 
 	mei = mei_cldev_get_drvdata(iwl_mei_global_cldev);
 
-	if (!mei)
+	if (!mei && !mei->amt_enabled)
 		goto out;
 
 	mei->device_down = !up;

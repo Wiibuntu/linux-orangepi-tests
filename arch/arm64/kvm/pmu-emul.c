@@ -533,6 +533,65 @@ static void kvm_pmu_perf_overflow(struct perf_event *perf_event,
 	cpu_pmu->pmu.start(perf_event, PERF_EF_RELOAD);
 }
 
+/*
+ * Perform an increment on any of the counters described in @mask,
+ * generating the overflow if required, and propagate it as a chained
+ * event if possible.
+ */
+static void kvm_pmu_counter_increment(struct kvm_vcpu *vcpu,
+				      unsigned long mask, u32 event)
+{
+	int i;
+
+	if (!(__vcpu_sys_reg(vcpu, PMCR_EL0) & ARMV8_PMU_PMCR_E))
+		return;
+
+	/* Weed out disabled counters */
+	mask &= __vcpu_sys_reg(vcpu, PMCNTENSET_EL0);
+
+	for_each_set_bit(i, &mask, ARMV8_PMU_CYCLE_IDX) {
+		u64 type, reg;
+
+		/* Filter on event type */
+		type = __vcpu_sys_reg(vcpu, PMEVTYPER0_EL0 + i);
+		type &= kvm_pmu_event_mask(vcpu->kvm);
+		if (type != event)
+			continue;
+
+		/* Increment this counter */
+		reg = __vcpu_sys_reg(vcpu, PMEVCNTR0_EL0 + i) + 1;
+		reg = lower_32_bits(reg);
+		__vcpu_sys_reg(vcpu, PMEVCNTR0_EL0 + i) = reg;
+
+		if (reg) /* No overflow? move on */
+			continue;
+
+		/* Mark overflow */
+		__vcpu_sys_reg(vcpu, PMOVSSET_EL0) |= BIT(i);
+
+		if (kvm_pmu_counter_can_chain(vcpu, i))
+			kvm_pmu_counter_increment(vcpu, BIT(i + 1),
+						  ARMV8_PMUV3_PERFCTR_CHAIN);
+	}
+}
+
+/* Compute the sample period for a given counter value */
+static u64 compute_period(struct kvm_vcpu *vcpu, u64 select_idx, u64 counter)
+{
+	u64 val;
+
+	if (kvm_pmu_idx_is_64bit(vcpu, select_idx)) {
+		if (!kvm_pmu_idx_has_64bit_overflow(vcpu, select_idx))
+			val = -(counter & GENMASK(31, 0));
+		else
+			val = (-counter) & GENMASK(63, 0);
+	} else {
+		val = (-counter) & GENMASK(31, 0);
+	}
+
+	return val;
+}
+
 /**
  * kvm_pmu_software_increment - do software increment
  * @vcpu: The vcpu pointer
@@ -558,6 +617,9 @@ void kvm_pmu_handle_pmcr(struct kvm_vcpu *vcpu, u64 val)
 	/* Fixup PMCR_EL0 to reconcile the PMU version and the LP bit */
 	if (!kvm_has_feat(vcpu->kvm, ID_AA64DFR0_EL1, PMUVer, V3P5))
 		val &= ~ARMV8_PMU_PMCR_LP;
+
+	/* The reset bits don't indicate any state, and shouldn't be saved. */
+	__vcpu_sys_reg(vcpu, PMCR_EL0) = val & ~(ARMV8_PMU_PMCR_C | ARMV8_PMU_PMCR_P);
 
 	/* The reset bits don't indicate any state, and shouldn't be saved. */
 	__vcpu_sys_reg(vcpu, PMCR_EL0) = val & ~(ARMV8_PMU_PMCR_C | ARMV8_PMU_PMCR_P);

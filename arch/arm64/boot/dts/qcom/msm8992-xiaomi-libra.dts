@@ -18,6 +18,12 @@
 /delete-node/ &res_hyp_mem;
 /delete-node/ &rmtfs_mem;
 
+/delete-node/ &adsp_mem;
+/delete-node/ &audio_mem;
+/delete-node/ &mpss_mem;
+/delete-node/ &peripheral_region;
+/delete-node/ &rmtfs_mem;
+
 / {
 	model = "Xiaomi Mi 4C";
 	compatible = "xiaomi,libra", "qcom,msm8992";

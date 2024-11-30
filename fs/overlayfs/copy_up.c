@@ -710,7 +710,7 @@ static int ovl_copy_up_metadata(struct ovl_copy_up_ctx *c, struct dentry *temp)
 
 		err = ovl_set_metacopy_xattr(ofs, temp, &metacopy_data);
 		if (err)
-			return err;
+			goto out_fput;
 	}
 
 	inode_lock(temp->d_inode);

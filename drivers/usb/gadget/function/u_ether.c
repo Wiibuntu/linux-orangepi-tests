@@ -967,6 +967,8 @@ int gether_get_host_addr_cdc(struct net_device *net, char *host_addr, int len)
 
 	string_upper(host_addr, host_addr);
 
+	string_upper(host_addr, host_addr);
+
 	return strlen(host_addr);
 }
 EXPORT_SYMBOL_GPL(gether_get_host_addr_cdc);

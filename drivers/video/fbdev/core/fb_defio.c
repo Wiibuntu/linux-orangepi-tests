@@ -283,6 +283,22 @@ static void fb_deferred_io_work(struct work_struct *work)
 		folio_mkclean(folio);
 		folio_unlock(folio);
 	}
+}
+
+void fb_deferred_io_release(struct fb_info *info)
+{
+	struct fb_deferred_io *fbdefio = info->fbdefio;
+
+	if (!--fbdefio->open_count)
+		fb_deferred_io_lastclose(info);
+}
+EXPORT_SYMBOL_GPL(fb_deferred_io_release);
+
+void fb_deferred_io_cleanup(struct fb_info *info)
+{
+	struct fb_deferred_io *fbdefio = info->fbdefio;
+
+	fb_deferred_io_lastclose(info);
 
 	/* driver's callback with pagereflist */
 	fbdefio->deferred_io(info, &fbdefio->pagereflist);

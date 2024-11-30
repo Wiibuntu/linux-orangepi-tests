@@ -640,6 +640,12 @@ kill_events_pids()
 	evts_ns2_pid=0
 }
 
+kill_tests_wait()
+{
+	kill -SIGUSR1 $(ip netns pids $ns2) $(ip netns pids $ns1)
+	wait
+}
+
 pm_nl_set_limits()
 {
 	mptcp_lib_pm_nl_set_limits "${@}"

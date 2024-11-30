@@ -3402,7 +3402,7 @@ skip_rx_agg_free:
 
 static void bnxt_free_rx_skbs(struct bnxt *bp)
 {
-	int i;
+	int i, j;
 
 	if (!bp->rx_ring)
 		return;

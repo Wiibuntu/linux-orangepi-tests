@@ -1295,4 +1295,10 @@ struct dc_commit_streams_params {
 	enum dc_power_source_type power_source;
 };
 
+enum dc_hpd_enable_select {
+	HPD_EN_FOR_ALL_EDP = 0,
+	HPD_EN_FOR_PRIMARY_EDP_ONLY,
+	HPD_EN_FOR_SECONDARY_EDP_ONLY,
+};
+
 #endif /* DC_TYPES_H_ */

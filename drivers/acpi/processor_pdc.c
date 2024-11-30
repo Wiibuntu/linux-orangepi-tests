@@ -13,6 +13,8 @@
 #include <linux/acpi.h>
 #include <acpi/processor.h>
 
+#include <xen/xen.h>
+
 #include "internal.h"
 
 static void acpi_set_pdc_bits(u32 *buf)

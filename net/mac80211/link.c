@@ -88,6 +88,7 @@ void ieee80211_link_stop(struct ieee80211_link_data *link)
 				   GFP_KERNEL, link->link_id);
 	}
 
+	cancel_delayed_work_sync(&link->color_collision_detect_work);
 	ieee80211_link_release_channel(link);
 }
 

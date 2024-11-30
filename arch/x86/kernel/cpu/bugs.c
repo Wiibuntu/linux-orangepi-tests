@@ -2193,6 +2193,8 @@ static int ssb_prctl_set(struct task_struct *task, unsigned long ctrl)
 		task_clear_spec_ssb_disable(task);
 		task_clear_spec_ssb_noexec(task);
 		task_update_spec_tif(task);
+		if (task == current)
+			indirect_branch_prediction_barrier();
 		break;
 	case PR_SPEC_DISABLE:
 		task_set_spec_ssb_disable(task);

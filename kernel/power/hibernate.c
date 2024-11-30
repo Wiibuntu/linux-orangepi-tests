@@ -74,6 +74,7 @@ enum {
 static int hibernation_mode = HIBERNATION_SHUTDOWN;
 
 bool freezer_test_done;
+bool snapshot_test;
 
 static const struct platform_hibernation_ops *hibernation_ops;
 
@@ -735,7 +736,6 @@ static int load_image_and_restore(void)
  */
 int hibernate(void)
 {
-	bool snapshot_test = false;
 	unsigned int sleep_flags;
 	int error;
 
@@ -773,6 +773,9 @@ int hibernate(void)
 	error = freeze_processes();
 	if (error)
 		goto Exit;
+
+	/* protected by system_transition_mutex */
+	snapshot_test = false;
 
 	lock_device_hotplug();
 	/* Allocate memory management structures */

@@ -101,6 +101,8 @@ static int int340x_thermal_read_trips(struct acpi_device *zone_adev,
 		trip_cnt++;
 	}
 
+	mutex_unlock(&int34x_zone->trip_mutex);
+
 	return trip_cnt;
 }
 

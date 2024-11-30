@@ -177,6 +177,11 @@ static int q6apm_lpass_dai_prepare(struct snd_pcm_substream *substream, struct s
 		}
 	}
 
+	if (dai_data->is_port_started[dai->id]) {
+		q6apm_graph_stop(dai_data->graph[dai->id]);
+		dai_data->is_port_started[dai->id] = false;
+	}
+
 	/**
 	 * It is recommend to load DSP with source graph first and then sink
 	 * graph, so sequence for playback and capture will be different

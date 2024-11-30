@@ -166,6 +166,36 @@ static int ttm_tfile_find_ref(struct ttm_object_file *tfile,
 	return -EINVAL;
 }
 
+static int ttm_tfile_find_ref_rcu(struct ttm_object_file *tfile,
+				  uint64_t key,
+				  struct vmwgfx_hash_item **p_hash)
+{
+	struct vmwgfx_hash_item *hash;
+
+	hash_for_each_possible_rcu(tfile->ref_hash, hash, head, key) {
+		if (hash->key == key) {
+			*p_hash = hash;
+			return 0;
+		}
+	}
+	return -EINVAL;
+}
+
+static int ttm_tfile_find_ref(struct ttm_object_file *tfile,
+			      uint64_t key,
+			      struct vmwgfx_hash_item **p_hash)
+{
+	struct vmwgfx_hash_item *hash;
+
+	hash_for_each_possible(tfile->ref_hash, hash, head, key) {
+		if (hash->key == key) {
+			*p_hash = hash;
+			return 0;
+		}
+	}
+	return -EINVAL;
+}
+
 static void ttm_object_file_destroy(struct kref *kref)
 {
 	struct ttm_object_file *tfile =

@@ -270,6 +270,8 @@ static irqreturn_t cptlf_done_intr_handler(int irq, void *arg)
 	}
 	return IRQ_HANDLED;
 }
+EXPORT_SYMBOL_NS_GPL(otx2_cptlf_unregister_interrupts,
+		     CRYPTO_DEV_OCTEONTX2_CPT);
 
 void otx2_cptlf_unregister_misc_interrupts(struct otx2_cptlfs_info *lfs)
 {
@@ -329,6 +331,7 @@ static int cptlf_do_register_interrrupts(struct otx2_cptlfs_info *lfs,
 
 	return ret;
 }
+EXPORT_SYMBOL_NS_GPL(otx2_cptlf_register_interrupts, CRYPTO_DEV_OCTEONTX2_CPT);
 
 int otx2_cptlf_register_misc_interrupts(struct otx2_cptlfs_info *lfs)
 {

@@ -609,8 +609,12 @@ static inline void __get_secs_required(struct f2fs_sb_info *sbi,
 				node_blocks, dent_blocks);
 }
 
-static inline bool has_not_enough_free_secs(struct f2fs_sb_info *sbi,
-					int freed, int needed)
+/*
+ * calculate needed sections for dirty node/dentry
+ * and call has_curseg_enough_space
+ */
+static inline void __get_secs_required(struct f2fs_sb_info *sbi,
+		unsigned int *lower_p, unsigned int *upper_p, bool *curseg_p)
 {
 	unsigned int free_secs, lower_secs, upper_secs;
 	bool curseg_space;

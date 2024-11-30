@@ -360,6 +360,11 @@ static bool check_tick_dependency(atomic_t *dep)
 		return true;
 	}
 
+	if (val & TICK_DEP_MASK_RCU_EXP) {
+		trace_tick_stop(0, TICK_DEP_MASK_RCU_EXP);
+		return true;
+	}
+
 	return false;
 }
 
@@ -624,7 +629,7 @@ bool tick_nohz_cpu_hotpluggable(unsigned int cpu)
 	return true;
 }
 
-static int tick_nohz_cpu_down(unsigned int cpu)
+bool tick_nohz_cpu_hotpluggable(unsigned int cpu)
 {
 	return tick_nohz_cpu_hotpluggable(cpu) ? 0 : -EBUSY;
 }

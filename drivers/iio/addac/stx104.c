@@ -226,6 +226,8 @@ static int stx104_read_raw(struct iio_dev *indio_dev,
 
 		mutex_lock(&priv->lock);
 
+		mutex_lock(&priv->lock);
+
 		/* select ADC channel */
 		err = regmap_write(priv->aio_ctl_map, STX104_ADC_CHANNEL,
 				   STX104_SINGLE_CHANNEL(chan->channel));
@@ -386,6 +388,8 @@ static int bank_select_i8254(struct regmap *map)
 static int stx104_init_hw(struct stx104_iio *const priv)
 {
 	int err;
+
+	mutex_init(&priv->lock);
 
 	/* configure device for software trigger operation */
 	err = regmap_write(priv->aio_ctl_map, STX104_ADC_CONTROL, STX104_SOFTWARE_TRIGGER);

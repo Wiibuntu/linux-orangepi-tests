@@ -563,6 +563,7 @@ static void rwsem_mark_wake(struct rw_semaphore *sem,
 		 */
 		wake_q_add_safe(wake_q, tsk);
 	}
+	preempt_enable();
 }
 
 /*

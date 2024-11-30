@@ -2215,6 +2215,10 @@ noinstr int poke_int3_handler(struct pt_regs *regs)
 		int3_emulate_jcc(regs, tp->opcode & 0xf, (long)ip, tp->disp);
 		break;
 
+	case 0x70 ... 0x7f: /* Jcc */
+		int3_emulate_jcc(regs, tp->opcode & 0xf, (long)ip, tp->disp);
+		break;
+
 	default:
 		BUG();
 	}
@@ -2402,6 +2406,13 @@ static void text_poke_loc_init(struct text_poke_loc *tp, void *addr,
 	tp->rel_addr = addr - (void *)_stext;
 	tp->len = len;
 	tp->opcode = insn.opcode.bytes[0];
+
+	if (is_jcc32(&insn)) {
+		/*
+		 * Map Jcc.d32 onto Jcc.d8 and use len to distinguish.
+		 */
+		tp->opcode = insn.opcode.bytes[1] - 0x10;
+	}
 
 	if (is_jcc32(&insn)) {
 		/*

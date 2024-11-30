@@ -451,6 +451,25 @@ static u32 arm_cmn_device_connect_info(const struct arm_cmn *cmn,
 	return readl_relaxed(xp->pmu_base + offset);
 }
 
+static u32 arm_cmn_device_connect_info(const struct arm_cmn *cmn,
+				       const struct arm_cmn_node *xp, int port)
+{
+	int offset = CMN_MXP__CONNECT_INFO(port);
+
+	if (port >= 2) {
+		if (cmn->model & (CMN600 | CMN650))
+			return 0;
+		/*
+		 * CI-700 may have extra ports, but still has the
+		 * mesh_port_connect_info registers in the way.
+		 */
+		if (cmn->model == CI700)
+			offset += CI700_CONNECT_INFO_P2_5_OFFSET;
+	}
+
+	return readl_relaxed(xp->pmu_base - CMN_PMU_OFFSET + offset);
+}
+
 static struct dentry *arm_cmn_debugfs;
 
 #ifdef CONFIG_DEBUG_FS
@@ -1830,6 +1849,12 @@ static int arm_cmn_event_init(struct perf_event *event)
 		dev_dbg(cmn->dev, "invalid node 0x%x type 0x%x\n", nodeid, type);
 		return -EINVAL;
 	}
+	/*
+	 * Keep assuming non-cycles events count in all DTC domains; turns out
+	 * it's hard to make a worthwhile optimisation around this, short of
+	 * going all-in with domain-local counter allocation as well.
+	 */
+	hw->dtcs_used = (1U << cmn->num_dtcs) - 1;
 
 	return arm_cmn_validate_group(cmn, event);
 }

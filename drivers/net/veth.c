@@ -944,6 +944,9 @@ static int veth_poll(struct napi_struct *napi, int budget)
 	if (stats.xdp_redirect > 0)
 		xdp_do_flush();
 
+	if (stats.xdp_redirect > 0)
+		xdp_do_flush();
+
 	if (done < budget && napi_complete_done(napi, done)) {
 		/* Write rx_notify_masked before reading ptr_ring */
 		smp_store_mb(rq->rx_notify_masked, false);

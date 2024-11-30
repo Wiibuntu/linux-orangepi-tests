@@ -4999,6 +4999,9 @@ void ext4_mb_generate_from_pa(struct super_block *sb, void *bitmap,
 	if (!grp)
 		return;
 
+	if (!grp)
+		return;
+
 	/* all form of preallocation discards first load group,
 	 * so the only competing code is preallocation use.
 	 * we don't need any locking here

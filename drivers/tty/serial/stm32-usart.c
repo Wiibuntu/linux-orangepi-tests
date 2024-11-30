@@ -1805,6 +1805,17 @@ static int stm32_usart_serial_probe(struct platform_device *pdev)
 			goto err_deinit_port;
 	}
 
+	ret = stm32_usart_init_port(stm32port, pdev);
+	if (ret)
+		goto err_dma_tx;
+
+	if (stm32port->wakeup_src) {
+		device_set_wakeup_capable(&pdev->dev, true);
+		ret = dev_pm_set_wake_irq(&pdev->dev, stm32port->port.irq);
+		if (ret)
+			goto err_deinit_port;
+	}
+
 	if (stm32port->rx_ch && stm32_usart_of_dma_rx_probe(stm32port, pdev)) {
 		/* Fall back in interrupt mode */
 		dma_release_channel(stm32port->rx_ch);
@@ -1854,6 +1865,14 @@ err_deinit_port:
 		device_set_wakeup_capable(&pdev->dev, false);
 
 	stm32_usart_deinit_port(stm32port);
+
+err_dma_tx:
+	if (stm32port->tx_ch)
+		dma_release_channel(stm32port->tx_ch);
+
+err_dma_rx:
+	if (stm32port->rx_ch)
+		dma_release_channel(stm32port->rx_ch);
 
 err_dma_tx:
 	if (stm32port->tx_ch)

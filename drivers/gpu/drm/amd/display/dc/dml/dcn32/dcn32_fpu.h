@@ -77,4 +77,7 @@ void dcn32_override_min_req_memclk(struct dc *dc, struct dc_state *context);
 
 void dcn32_set_clock_limits(const struct _vcs_dpi_soc_bounding_box_st *soc_bb);
 
+void dcn32_zero_pipe_dcc_fraction(display_e2e_pipe_params_st *pipes,
+				  int pipe_cnt);
+
 #endif

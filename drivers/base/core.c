@@ -131,6 +131,19 @@ static void __fwnode_link_cycle(struct fwnode_link *link)
 }
 
 /**
+ * __fwnode_link_cycle - Mark a fwnode link as being part of a cycle.
+ * @link: the fwnode_link to be marked
+ *
+ * The fwnode_link_lock needs to be held when this function is called.
+ */
+static void __fwnode_link_cycle(struct fwnode_link *link)
+{
+	pr_debug("%pfwf: Relaxing link with %pfwf\n",
+		 link->consumer, link->supplier);
+	link->flags |= FWLINK_FLAG_CYCLE;
+}
+
+/**
  * fwnode_links_purge_suppliers - Delete all supplier links of fwnode_handle.
  * @fwnode: fwnode whose supplier links need to be deleted
  *
@@ -290,6 +303,12 @@ static bool device_is_ancestor(struct device *dev, struct device *target)
 static inline bool device_link_flag_is_sync_state_only(u32 flags)
 {
 	return (flags & ~DL_MARKER_FLAGS) == DL_FLAG_SYNC_STATE_ONLY;
+}
+
+static inline bool device_link_flag_is_sync_state_only(u32 flags)
+{
+	return (flags & ~(DL_FLAG_INFERRED | DL_FLAG_CYCLE)) ==
+		(DL_FLAG_SYNC_STATE_ONLY | DL_FLAG_MANAGED);
 }
 
 /**
@@ -752,6 +771,10 @@ struct device_link *device_link_add(struct device *consumer,
 	    !device_link_flag_is_sync_state_only(flags))
 		return NULL;
 
+	if (flags & DL_FLAG_SYNC_STATE_ONLY &&
+	    !device_link_flag_is_sync_state_only(flags))
+		return NULL;
+
 	device_links_write_lock();
 	device_pm_lock();
 
@@ -1027,6 +1050,21 @@ static struct fwnode_handle *fwnode_links_check_suppliers(
 	list_for_each_entry(link, &fwnode->suppliers, c_hook)
 		if (!(link->flags &
 		      (FWLINK_FLAG_CYCLE | FWLINK_FLAG_IGNORE)))
+			return link->supplier;
+
+	return NULL;
+}
+
+static struct fwnode_handle *fwnode_links_check_suppliers(
+						struct fwnode_handle *fwnode)
+{
+	struct fwnode_link *link;
+
+	if (!fwnode || fw_devlink_is_permissive())
+		return NULL;
+
+	list_for_each_entry(link, &fwnode->suppliers, c_hook)
+		if (!(link->flags & FWLINK_FLAG_CYCLE))
 			return link->supplier;
 
 	return NULL;

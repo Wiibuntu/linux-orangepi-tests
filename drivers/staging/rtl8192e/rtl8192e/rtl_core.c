@@ -765,6 +765,7 @@ static short _rtl92e_get_channel_map(struct net_device *dev)
 	(priv->rtllib->active_channel_map)[12] = 2;
 	(priv->rtllib->active_channel_map)[13] = 2;
 
+	priv->bfirst_after_down = false;
 	return 0;
 }
 

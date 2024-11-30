@@ -197,6 +197,10 @@ module_param(eager_page_split, bool, 0644);
 static bool __read_mostly mitigate_smt_rsb;
 module_param(mitigate_smt_rsb, bool, 0444);
 
+/* Enable/disable SMT_RSB bug mitigation */
+bool __read_mostly mitigate_smt_rsb;
+module_param(mitigate_smt_rsb, bool, 0444);
+
 /*
  * Restoring the host value for MSRs that are only consumed when running in
  * usermode, e.g. SYSCALL MSRs and TSC_AUX, can be deferred until the CPU
@@ -9414,6 +9418,7 @@ static void tsc_khz_changed(void *data)
 		khz = tsc_khz;
 	__this_cpu_write(cpu_tsc_khz, khz);
 }
+EXPORT_SYMBOL_GPL(kvm_x86_vendor_exit);
 
 #ifdef CONFIG_X86_64
 static void kvm_hyperv_tsc_notifier(void)

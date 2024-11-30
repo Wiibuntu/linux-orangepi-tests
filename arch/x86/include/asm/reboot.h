@@ -36,6 +36,8 @@ static inline void cpu_emergency_unregister_virt_callback(cpu_emergency_virt_cb 
 static inline void cpu_emergency_disable_virtualization(void) {}
 #endif /* CONFIG_KVM_X86 */
 
+void cpu_emergency_disable_virtualization(void);
+
 typedef void (*nmi_shootdown_cb)(int, struct pt_regs*);
 void nmi_shootdown_cpus(nmi_shootdown_cb callback);
 void run_crash_ipi_callback(struct pt_regs *regs);

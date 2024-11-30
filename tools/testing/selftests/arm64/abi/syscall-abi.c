@@ -488,6 +488,10 @@ void sve_count_vls(void)
 
 		vl &= PR_SVE_VL_LEN_MASK;
 
+		/* Found lowest VL */
+		if (sve_vq_from_vl(vl) > vq)
+			break;
+
 		if (vq != sve_vq_from_vl(vl))
 			vq = sve_vq_from_vl(vl);
 

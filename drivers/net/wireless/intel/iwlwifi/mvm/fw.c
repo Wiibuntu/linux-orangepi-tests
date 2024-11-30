@@ -1609,6 +1609,8 @@ int iwl_mvm_up(struct iwl_mvm *mvm)
 
 	iwl_mvm_mei_device_state(mvm, true);
 
+	iwl_mvm_mei_device_state(mvm, true);
+
 	IWL_DEBUG_INFO(mvm, "RT uCode started.\n");
 	return 0;
  error:

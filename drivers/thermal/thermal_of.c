@@ -431,6 +431,8 @@ static struct thermal_zone_device *thermal_of_zone_register(struct device_node *
 
 	of_node_put(np);
 	kfree(trips);
+out_kfree_of_ops:
+	kfree(of_ops);
 
 	ret = thermal_zone_device_enable(tz);
 	if (ret) {
