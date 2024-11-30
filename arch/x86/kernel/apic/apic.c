@@ -101,9 +101,6 @@ static int apic_extnmi __ro_after_init = APIC_EXTNMI_BSP;
  */
 static bool virt_ext_dest_id __ro_after_init;
 
-/* For parallel bootup. */
-unsigned long apic_mmio_base __ro_after_init;
-
 /*
  * Map cpu index to physical APIC ID
  */
@@ -425,9 +422,10 @@ static unsigned int reserve_eilvt_offset(int offset, unsigned int new)
 		if (vector && !eilvt_entry_is_changeable(vector, new))
 			/* may not change if vectors are different */
 			return rsvd;
-	} while (!atomic_try_cmpxchg(&eilvt_offsets[offset], &rsvd, new));
+		rsvd = atomic_cmpxchg(&eilvt_offsets[offset], rsvd, new);
+	} while (rsvd != new);
 
-	rsvd = new & ~APIC_EILVT_MASKED;
+	rsvd &= ~APIC_EILVT_MASKED;
 	if (rsvd && rsvd != vector)
 		pr_info("LVT offset %d assigned for vector 0x%02x\n",
 			offset, rsvd);
@@ -1933,19 +1931,16 @@ void __init check_x2apic(void)
 	}
 }
 #else /* CONFIG_X86_X2APIC */
-void __init check_x2apic(void)
+static int __init validate_x2apic(void)
 {
 	if (!apic_is_x2apic_enabled())
-		return;
+		return 0;
 	/*
-	 * Checkme: Can we simply turn off x2APIC here instead of disabling the APIC?
+	 * Checkme: Can we simply turn off x2apic here instead of panic?
 	 */
-	pr_err("Kernel does not support x2APIC, please recompile with CONFIG_X86_X2APIC.\n");
-	pr_err("Disabling APIC, expect reduced performance and functionality.\n");
-
-	disable_apic = 1;
-	setup_clear_cpu_cap(X86_FEATURE_APIC);
+	panic("BIOS has enabled x2apic but kernel doesn't support x2apic, please disable x2apic in BIOS.\n");
 }
+early_initcall(validate_x2apic);
 
 static inline void try_to_enable_x2apic(int remap_mode) { }
 static inline void __x2apic_enable(void) { }
@@ -2166,7 +2161,6 @@ void __init register_lapic_address(unsigned long address)
 
 	if (!x2apic_mode) {
 		set_fixmap_nocache(FIX_APIC_BASE, address);
-		apic_mmio_base = APIC_BASE;
 		apic_printk(APIC_VERBOSE, "mapped APIC to %16lx (%16lx)\n",
 			    APIC_BASE, address);
 	}
@@ -2380,7 +2374,7 @@ static int nr_logical_cpuids = 1;
 /*
  * Used to store mapping between logical CPU IDs and APIC IDs.
  */
-int cpuid_to_apicid[] = {
+static int cpuid_to_apicid[] = {
 	[0 ... NR_CPUS - 1] = -1,
 };
 
@@ -2390,31 +2384,20 @@ bool arch_match_cpu_phys_id(int cpu, u64 phys_id)
 }
 
 #ifdef CONFIG_SMP
-static void cpu_mark_primary_thread(unsigned int cpu, unsigned int apicid)
-{
-	/* Isolate the SMT bit(s) in the APICID and check for 0 */
-	u32 mask = (1U << (fls(smp_num_siblings) - 1)) - 1;
-
-	if (smp_num_siblings == 1 || !(apicid & mask))
-		cpumask_set_cpu(cpu, &__cpu_primary_thread_mask);
-}
-
-/*
- * Due to the utter mess of CPUID evaluation smp_num_siblings is not valid
- * during early boot. Initialize the primary thread mask before SMP
- * bringup.
+/**
+ * apic_id_is_primary_thread - Check whether APIC ID belongs to a primary thread
+ * @apicid: APIC ID to check
  */
-static int __init smp_init_primary_thread_mask(void)
+bool apic_id_is_primary_thread(unsigned int apicid)
 {
-	unsigned int cpu;
+	u32 mask;
 
-	for (cpu = 0; cpu < nr_logical_cpuids; cpu++)
-		cpu_mark_primary_thread(cpu, cpuid_to_apicid[cpu]);
-	return 0;
+	if (smp_num_siblings == 1)
+		return true;
+	/* Isolate the SMT bit(s) in the APICID and check for 0 */
+	mask = (1U << (fls(smp_num_siblings) - 1)) - 1;
+	return !(apicid & mask);
 }
-early_initcall(smp_init_primary_thread_mask);
-#else
-static inline void cpu_mark_primary_thread(unsigned int cpu, unsigned int apicid) { }
 #endif
 
 /*
@@ -2558,9 +2541,6 @@ int generic_processor_info(int apicid, int version)
 	physid_set(apicid, phys_cpu_present_map);
 	set_cpu_present(cpu, true);
 	num_processors++;
-
-	if (system_state != SYSTEM_BOOTING)
-		cpu_mark_primary_thread(cpu, apicid);
 
 	return cpu;
 }

@@ -726,8 +726,8 @@ static int iscsi_add_notunderstood_response(
 	}
 	INIT_LIST_HEAD(&extra_response->er_list);
 
-	strscpy(extra_response->key, key, sizeof(extra_response->key));
-	strscpy(extra_response->value, NOTUNDERSTOOD,
+	strlcpy(extra_response->key, key, sizeof(extra_response->key));
+	strlcpy(extra_response->value, NOTUNDERSTOOD,
 		sizeof(extra_response->value));
 
 	list_add_tail(&extra_response->er_list,
@@ -1262,20 +1262,18 @@ static struct iscsi_param *iscsi_check_key(
 		return param;
 
 	if (!(param->phase & phase)) {
-		char *phase_name;
-
+		pr_err("Key \"%s\" may not be negotiated during ",
+				param->name);
 		switch (phase) {
 		case PHASE_SECURITY:
-			phase_name = "Security";
+			pr_debug("Security phase.\n");
 			break;
 		case PHASE_OPERATIONAL:
-			phase_name = "Operational";
+			pr_debug("Operational phase.\n");
 			break;
 		default:
-			phase_name = "Unknown";
+			pr_debug("Unknown phase.\n");
 		}
-		pr_err("Key \"%s\" may not be negotiated during %s phase.\n",
-				param->name, phase_name);
 		return NULL;
 	}
 

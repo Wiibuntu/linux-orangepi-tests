@@ -606,12 +606,10 @@ static void sfq_perturbation(struct timer_list *t)
 {
 	struct sfq_sched_data *q = from_timer(q, t, perturb_timer);
 	struct Qdisc *sch = q->sch;
-	spinlock_t *root_lock;
+	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 	siphash_key_t nkey;
 
 	get_random_bytes(&nkey, sizeof(nkey));
-	rcu_read_lock();
-	root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 	spin_lock(root_lock);
 	q->perturbation = nkey;
 	if (!q->filter_list && q->tail)
@@ -620,7 +618,6 @@ static void sfq_perturbation(struct timer_list *t)
 
 	if (q->perturb_period)
 		mod_timer(&q->perturb_timer, jiffies + q->perturb_period);
-	rcu_read_unlock();
 }
 
 static int sfq_change(struct Qdisc *sch, struct nlattr *opt)

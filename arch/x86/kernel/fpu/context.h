@@ -19,7 +19,8 @@
  * FPU state for a task MUST let the rest of the kernel know that the
  * FPU registers are no longer valid for this task.
  *
- * Invalidate a resource you control: CPU if using the CPU for something else
+ * Either one of these invalidation functions is enough. Invalidate
+ * a resource you control: CPU if using the CPU for something else
  * (with preemption disabled), FPU for the current task, or a task that
  * is prevented from running by the current task.
  */
@@ -56,7 +57,7 @@ static inline void fpregs_restore_userregs(void)
 	struct fpu *fpu = &current->thread.fpu;
 	int cpu = smp_processor_id();
 
-	if (WARN_ON_ONCE(current->flags & (PF_KTHREAD | PF_USER_WORKER)))
+	if (WARN_ON_ONCE(current->flags & PF_KTHREAD))
 		return;
 
 	if (!fpregs_state_valid(fpu, cpu)) {

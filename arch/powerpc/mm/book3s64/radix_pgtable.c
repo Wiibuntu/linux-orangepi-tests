@@ -234,14 +234,6 @@ void radix__mark_rodata_ro(void)
 	end = (unsigned long)__end_rodata;
 
 	radix__change_memory_range(start, end, _PAGE_WRITE);
-
-	for (start = PAGE_OFFSET; start < (unsigned long)_stext; start += PAGE_SIZE) {
-		end = start + PAGE_SIZE;
-		if (overlaps_interrupt_vector_text(start, end))
-			radix__change_memory_range(start, end, _PAGE_WRITE);
-		else
-			break;
-	}
 }
 
 void radix__mark_initmem_nx(void)
@@ -270,22 +262,6 @@ print_mapping(unsigned long start, unsigned long end, unsigned long size, bool e
 static unsigned long next_boundary(unsigned long addr, unsigned long end)
 {
 #ifdef CONFIG_STRICT_KERNEL_RWX
-	unsigned long stext_phys;
-
-	stext_phys = __pa_symbol(_stext);
-
-	// Relocatable kernel running at non-zero real address
-	if (stext_phys != 0) {
-		// The end of interrupts code at zero is a rodata boundary
-		unsigned long end_intr = __pa_symbol(__end_interrupts) - stext_phys;
-		if (addr < end_intr)
-			return end_intr;
-
-		// Start of relocated kernel text is a rodata boundary
-		if (addr < stext_phys)
-			return stext_phys;
-	}
-
 	if (addr < __pa_symbol(__srwx_boundary))
 		return __pa_symbol(__srwx_boundary);
 #endif
@@ -745,9 +721,9 @@ static void free_pud_table(pud_t *pud_start, p4d_t *p4d)
 }
 
 static void remove_pte_table(pte_t *pte_start, unsigned long addr,
-			     unsigned long end, bool direct)
+			     unsigned long end)
 {
-	unsigned long next, pages = 0;
+	unsigned long next;
 	pte_t *pte;
 
 	pte = pte_start + pte_index(addr);
@@ -769,16 +745,13 @@ static void remove_pte_table(pte_t *pte_start, unsigned long addr,
 		}
 
 		pte_clear(&init_mm, addr, pte);
-		pages++;
 	}
-	if (direct)
-		update_page_count(mmu_virtual_psize, -pages);
 }
 
 static void __meminit remove_pmd_table(pmd_t *pmd_start, unsigned long addr,
-				       unsigned long end, bool direct)
+			     unsigned long end)
 {
-	unsigned long next, pages = 0;
+	unsigned long next;
 	pte_t *pte_base;
 	pmd_t *pmd;
 
@@ -796,22 +769,19 @@ static void __meminit remove_pmd_table(pmd_t *pmd_start, unsigned long addr,
 				continue;
 			}
 			pte_clear(&init_mm, addr, (pte_t *)pmd);
-			pages++;
 			continue;
 		}
 
 		pte_base = (pte_t *)pmd_page_vaddr(*pmd);
-		remove_pte_table(pte_base, addr, next, direct);
+		remove_pte_table(pte_base, addr, next);
 		free_pte_table(pte_base, pmd);
 	}
-	if (direct)
-		update_page_count(MMU_PAGE_2M, -pages);
 }
 
 static void __meminit remove_pud_table(pud_t *pud_start, unsigned long addr,
-				       unsigned long end, bool direct)
+			     unsigned long end)
 {
-	unsigned long next, pages = 0;
+	unsigned long next;
 	pmd_t *pmd_base;
 	pud_t *pud;
 
@@ -829,20 +799,16 @@ static void __meminit remove_pud_table(pud_t *pud_start, unsigned long addr,
 				continue;
 			}
 			pte_clear(&init_mm, addr, (pte_t *)pud);
-			pages++;
 			continue;
 		}
 
 		pmd_base = pud_pgtable(*pud);
-		remove_pmd_table(pmd_base, addr, next, direct);
+		remove_pmd_table(pmd_base, addr, next);
 		free_pmd_table(pmd_base, pud);
 	}
-	if (direct)
-		update_page_count(MMU_PAGE_1G, -pages);
 }
 
-static void __meminit remove_pagetable(unsigned long start, unsigned long end,
-				       bool direct)
+static void __meminit remove_pagetable(unsigned long start, unsigned long end)
 {
 	unsigned long addr, next;
 	pud_t *pud_base;
@@ -871,7 +837,7 @@ static void __meminit remove_pagetable(unsigned long start, unsigned long end,
 		}
 
 		pud_base = p4d_pgtable(*p4d);
-		remove_pud_table(pud_base, addr, next, direct);
+		remove_pud_table(pud_base, addr, next);
 		free_pud_table(pud_base, p4d);
 	}
 
@@ -894,7 +860,7 @@ int __meminit radix__create_section_mapping(unsigned long start,
 
 int __meminit radix__remove_section_mapping(unsigned long start, unsigned long end)
 {
-	remove_pagetable(start, end, true);
+	remove_pagetable(start, end);
 	return 0;
 }
 #endif /* CONFIG_MEMORY_HOTPLUG */
@@ -912,6 +878,7 @@ int __meminit radix__vmemmap_create_mapping(unsigned long start,
 				      unsigned long phys)
 {
 	/* Create a PTE encoding */
+	unsigned long flags = _PAGE_PRESENT | _PAGE_ACCESSED | _PAGE_KERNEL_RW;
 	int nid = early_pfn_to_nid(phys >> PAGE_SHIFT);
 	int ret;
 
@@ -920,7 +887,7 @@ int __meminit radix__vmemmap_create_mapping(unsigned long start,
 		return -1;
 	}
 
-	ret = __map_kernel_page_nid(start, phys, PAGE_KERNEL, page_size, nid);
+	ret = __map_kernel_page_nid(start, phys, __pgprot(flags), page_size, nid);
 	BUG_ON(ret);
 
 	return 0;
@@ -929,7 +896,7 @@ int __meminit radix__vmemmap_create_mapping(unsigned long start,
 #ifdef CONFIG_MEMORY_HOTPLUG
 void __meminit radix__vmemmap_remove_mapping(unsigned long start, unsigned long page_size)
 {
-	remove_pagetable(start, start + page_size, false);
+	remove_pagetable(start, start + page_size);
 }
 #endif
 #endif
@@ -961,7 +928,7 @@ unsigned long radix__pmd_hugepage_update(struct mm_struct *mm, unsigned long add
 	assert_spin_locked(pmd_lockptr(mm, pmdp));
 #endif
 
-	old = radix__pte_update(mm, addr, pmdp_ptep(pmdp), clr, set, 1);
+	old = radix__pte_update(mm, addr, (pte_t *)pmdp, clr, set, 1);
 	trace_hugepage_update(addr, old, clr, set);
 
 	return old;
@@ -1049,8 +1016,8 @@ void radix__ptep_set_access_flags(struct vm_area_struct *vma, pte_t *ptep,
 				  pte_t entry, unsigned long address, int psize)
 {
 	struct mm_struct *mm = vma->vm_mm;
-	unsigned long set = pte_val(entry) & (_PAGE_DIRTY | _PAGE_SOFT_DIRTY |
-					      _PAGE_ACCESSED | _PAGE_RW | _PAGE_EXEC);
+	unsigned long set = pte_val(entry) & (_PAGE_DIRTY | _PAGE_ACCESSED |
+					      _PAGE_RW | _PAGE_EXEC);
 
 	unsigned long change = pte_val(entry) ^ pte_val(*ptep);
 	/*

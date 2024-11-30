@@ -730,20 +730,12 @@ EXPORT_SYMBOL_GPL(snd_ctl_activate_id);
  * Finds the control with the old id from the card, and replaces the
  * id with the new one.
  *
- * The function tries to keep the already assigned numid while replacing
- * the rest.
- *
- * Note that this function should be used only in the card initialization
- * phase.  Calling after the card instantiation may cause issues with
- * user-space expecting persistent numids.
- *
  * Return: Zero if successful, or a negative error code on failure.
  */
 int snd_ctl_rename_id(struct snd_card *card, struct snd_ctl_elem_id *src_id,
 		      struct snd_ctl_elem_id *dst_id)
 {
 	struct snd_kcontrol *kctl;
-	int saved_numid;
 
 	down_write(&card->controls_rwsem);
 	kctl = snd_ctl_find_id(card, src_id);
@@ -751,10 +743,10 @@ int snd_ctl_rename_id(struct snd_card *card, struct snd_ctl_elem_id *src_id,
 		up_write(&card->controls_rwsem);
 		return -ENOENT;
 	}
-	saved_numid = kctl->id.numid;
 	remove_hash_entries(card, kctl);
 	kctl->id = *dst_id;
-	kctl->id.numid = saved_numid;
+	kctl->id.numid = card->last_numid + 1;
+	card->last_numid += kctl->count;
 	add_hash_entries(card, kctl);
 	up_write(&card->controls_rwsem);
 	return 0;
@@ -1211,19 +1203,14 @@ static int snd_ctl_elem_read(struct snd_card *card,
 	const u32 pattern = 0xdeadbeef;
 	int ret;
 
-	down_read(&card->controls_rwsem);
 	kctl = snd_ctl_find_id(card, &control->id);
-	if (kctl == NULL) {
-		ret = -ENOENT;
-		goto unlock;
-	}
+	if (kctl == NULL)
+		return -ENOENT;
 
 	index_offset = snd_ctl_get_ioff(kctl, &control->id);
 	vd = &kctl->vd[index_offset];
-	if (!(vd->access & SNDRV_CTL_ELEM_ACCESS_READ) || kctl->get == NULL) {
-		ret = -EPERM;
-		goto unlock;
-	}
+	if (!(vd->access & SNDRV_CTL_ELEM_ACCESS_READ) || kctl->get == NULL)
+		return -EPERM;
 
 	snd_ctl_build_ioff(&control->id, kctl, index_offset);
 
@@ -1233,7 +1220,7 @@ static int snd_ctl_elem_read(struct snd_card *card,
 	info.id = control->id;
 	ret = __snd_ctl_elem_info(card, kctl, &info, NULL);
 	if (ret < 0)
-		goto unlock;
+		return ret;
 #endif
 
 	if (!snd_ctl_skip_validation(&info))
@@ -1243,7 +1230,7 @@ static int snd_ctl_elem_read(struct snd_card *card,
 		ret = kctl->get(kctl, control);
 	snd_power_unref(card);
 	if (ret < 0)
-		goto unlock;
+		return ret;
 	if (!snd_ctl_skip_validation(&info) &&
 	    sanity_check_elem_value(card, control, &info, pattern) < 0) {
 		dev_err(card->dev,
@@ -1251,11 +1238,8 @@ static int snd_ctl_elem_read(struct snd_card *card,
 			control->id.iface, control->id.device,
 			control->id.subdevice, control->id.name,
 			control->id.index);
-		ret = -EINVAL;
-		goto unlock;
+		return -EINVAL;
 	}
-unlock:
-	up_read(&card->controls_rwsem);
 	return ret;
 }
 
@@ -1269,7 +1253,9 @@ static int snd_ctl_elem_read_user(struct snd_card *card,
 	if (IS_ERR(control))
 		return PTR_ERR(control);
 
+	down_read(&card->controls_rwsem);
 	result = snd_ctl_elem_read(card, control);
+	up_read(&card->controls_rwsem);
 	if (result < 0)
 		goto error;
 

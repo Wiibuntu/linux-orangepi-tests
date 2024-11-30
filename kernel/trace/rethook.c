@@ -54,19 +54,6 @@ static void rethook_free_rcu(struct rcu_head *head)
 }
 
 /**
- * rethook_stop() - Stop using a rethook.
- * @rh: the struct rethook to stop.
- *
- * Stop using a rethook to prepare for freeing it. If you want to wait for
- * all running rethook handler before calling rethook_free(), you need to
- * call this first and wait RCU, and call rethook_free().
- */
-void rethook_stop(struct rethook *rh)
-{
-	WRITE_ONCE(rh->handler, NULL);
-}
-
-/**
  * rethook_free() - Free struct rethook.
  * @rh: the struct rethook to be freed.
  *
@@ -301,7 +288,7 @@ unsigned long rethook_trampoline_handler(struct pt_regs *regs,
 	 * These loops must be protected from rethook_free_rcu() because those
 	 * are accessing 'rhn->rethook'.
 	 */
-	preempt_disable_notrace();
+	preempt_disable();
 
 	/*
 	 * Run the handler on the shadow stack. Do not unlink the list here because
@@ -314,8 +301,7 @@ unsigned long rethook_trampoline_handler(struct pt_regs *regs,
 			break;
 		handler = READ_ONCE(rhn->rethook->handler);
 		if (handler)
-			handler(rhn, rhn->rethook->data,
-				correct_ret_addr, regs);
+			handler(rhn, rhn->rethook->data, regs);
 
 		if (first == node)
 			break;
@@ -335,7 +321,7 @@ unsigned long rethook_trampoline_handler(struct pt_regs *regs,
 		first = first->next;
 		rethook_recycle(rhn);
 	}
-	preempt_enable_notrace();
+	preempt_enable();
 
 	return correct_ret_addr;
 }

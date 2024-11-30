@@ -8,7 +8,6 @@
 #define BSS_FIRST_SECTIONS *(.bss.prominit)
 #define EMITS_PT_NOTE
 #define RO_EXCEPTION_TABLE_ALIGN	0
-#define RUNTIME_DISCARD_EXIT
 
 #define SOFT_MASK_TABLE(align)						\
 	. = ALIGN(align);						\
@@ -112,6 +111,7 @@ SECTIONS
 #endif
 		NOINSTR_TEXT
 		SCHED_TEXT
+		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
@@ -124,7 +124,6 @@ SECTIONS
 		 * included with the main text sections, so put it by itself.
 		 */
 		*(.sfpr);
-		*(.text.asan.* .text.tsan.*)
 		MEM_KEEP(init.text)
 		MEM_KEEP(exit.text)
 	} :text
@@ -169,18 +168,12 @@ SECTIONS
 	}
 
 #else /* CONFIG_PPC32 */
-#ifndef CONFIG_PPC_KERNEL_PCREL
 	.toc1 : AT(ADDR(.toc1) - LOAD_OFFSET) {
 		*(.toc1)
 	}
-#endif
 
 	.got : AT(ADDR(.got) - LOAD_OFFSET) ALIGN(256) {
-#ifdef CONFIG_PPC_KERNEL_PCREL
-		*(.got)
-#else
 		*(.got .toc)
-#endif
 	}
 
 	SOFT_MASK_TABLE(8)
@@ -417,12 +410,9 @@ SECTIONS
 	DISCARDS
 	/DISCARD/ : {
 		*(*.EMB.apuinfo)
-		*(.glink .iplt .plt)
+		*(.glink .iplt .plt .rela* .comment)
 		*(.gnu.version*)
 		*(.gnu.attributes)
 		*(.eh_frame)
-#ifndef CONFIG_RELOCATABLE
-		*(.rela*)
-#endif
 	}
 }

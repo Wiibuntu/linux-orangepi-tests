@@ -22,6 +22,7 @@
 #include <linux/un.h>
 #include <linux/uaccess.h>
 #include <linux/inet.h>
+#include <linux/idr.h>
 #include <linux/file.h>
 #include <linux/highmem.h>
 #include <linux/slab.h>
@@ -262,7 +263,7 @@ p9_virtio_request(struct p9_client *client, struct p9_req_t *req)
 
 	p9_debug(P9_DEBUG_TRANS, "9p debug: virtio request\n");
 
-	WRITE_ONCE(req->status, REQ_STATUS_SENT);
+	req->status = REQ_STATUS_SENT;
 req_retry:
 	spin_lock_irqsave(&chan->lock, flags);
 
@@ -384,7 +385,7 @@ static void handle_rerror(struct p9_req_t *req, int in_hdr_len,
 	void *to = req->rc.sdata + in_hdr_len;
 
 	// Fits entirely into the static data?  Nothing to do.
-	if (req->rc.size < in_hdr_len || !pages)
+	if (req->rc.size < in_hdr_len)
 		return;
 
 	// Really long error message?  Tough, truncate the reply.  Might get
@@ -428,7 +429,7 @@ p9_virtio_zc_request(struct p9_client *client, struct p9_req_t *req,
 	struct page **in_pages = NULL, **out_pages = NULL;
 	struct virtio_chan *chan = client->trans;
 	struct scatterlist *sgs[4];
-	size_t offs = 0;
+	size_t offs;
 	int need_drop = 0;
 	int kicked = 0;
 
@@ -468,7 +469,7 @@ p9_virtio_zc_request(struct p9_client *client, struct p9_req_t *req,
 			inlen = n;
 		}
 	}
-	WRITE_ONCE(req->status, REQ_STATUS_SENT);
+	req->status = REQ_STATUS_SENT;
 req_retry_pinned:
 	spin_lock_irqsave(&chan->lock, flags);
 
@@ -501,8 +502,8 @@ req_retry_pinned:
 
 	if (in_pages) {
 		sgs[out_sgs + in_sgs++] = chan->sg + out + in;
-		pack_sg_list_p(chan->sg, out + in, VIRTQUEUE_NUM,
-			       in_pages, in_nr_pages, offs, inlen);
+		in += pack_sg_list_p(chan->sg, out + in, VIRTQUEUE_NUM,
+				     in_pages, in_nr_pages, offs, inlen);
 	}
 
 	BUG_ON(out_sgs + in_sgs > ARRAY_SIZE(sgs));
@@ -531,10 +532,9 @@ req_retry_pinned:
 	spin_unlock_irqrestore(&chan->lock, flags);
 	kicked = 1;
 	p9_debug(P9_DEBUG_TRANS, "virtio request kicked\n");
-	err = wait_event_killable(req->wq,
-			          READ_ONCE(req->status) >= REQ_STATUS_RCVD);
+	err = wait_event_killable(req->wq, req->status >= REQ_STATUS_RCVD);
 	// RERROR needs reply (== error string) in static data
-	if (READ_ONCE(req->status) == REQ_STATUS_RCVD &&
+	if (req->status == REQ_STATUS_RCVD &&
 	    unlikely(req->rc.sdata[4] == P9_RERROR))
 		handle_rerror(req, in_hdr_len, offs, in_pages);
 

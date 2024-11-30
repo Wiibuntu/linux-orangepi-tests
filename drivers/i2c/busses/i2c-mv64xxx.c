@@ -520,17 +520,6 @@ mv64xxx_i2c_intr(int irq, void *dev_id)
 
 	while (readl(drv_data->reg_base + drv_data->reg_offsets.control) &
 						MV64XXX_I2C_REG_CONTROL_IFLG) {
-		/*
-		 * It seems that sometime the controller updates the status
-		 * register only after it asserts IFLG in control register.
-		 * This may result in weird bugs when in atomic mode. A delay
-		 * of 100 ns before reading the status register solves this
-		 * issue. This bug does not seem to appear when using
-		 * interrupts.
-		 */
-		if (drv_data->atomic)
-			ndelay(100);
-
 		status = readl(drv_data->reg_base + drv_data->reg_offsets.status);
 		mv64xxx_i2c_fsm(drv_data, status);
 		mv64xxx_i2c_do_action(drv_data);
@@ -1084,7 +1073,7 @@ exit_disable_pm:
 	return rc;
 }
 
-static void
+static int
 mv64xxx_i2c_remove(struct platform_device *pd)
 {
 	struct mv64xxx_i2c_data		*drv_data = platform_get_drvdata(pd);
@@ -1094,6 +1083,8 @@ mv64xxx_i2c_remove(struct platform_device *pd)
 	pm_runtime_disable(&pd->dev);
 	if (!pm_runtime_status_suspended(&pd->dev))
 		mv64xxx_i2c_runtime_suspend(&pd->dev);
+
+	return 0;
 }
 
 static const struct dev_pm_ops mv64xxx_i2c_pm_ops = {
@@ -1105,7 +1096,7 @@ static const struct dev_pm_ops mv64xxx_i2c_pm_ops = {
 
 static struct platform_driver mv64xxx_i2c_driver = {
 	.probe	= mv64xxx_i2c_probe,
-	.remove_new = mv64xxx_i2c_remove,
+	.remove	= mv64xxx_i2c_remove,
 	.driver	= {
 		.name	= MV64XXX_I2C_CTLR_NAME,
 		.pm     = &mv64xxx_i2c_pm_ops,

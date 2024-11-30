@@ -116,7 +116,6 @@ static void inet_bind2_bucket_init(struct inet_bind2_bucket *tb,
 #endif
 		tb->rcv_saddr = sk->sk_rcv_saddr;
 	INIT_HLIST_HEAD(&tb->owners);
-	INIT_HLIST_HEAD(&tb->deathrow);
 	hlist_add_head(&tb->node, &head->chain);
 }
 
@@ -138,7 +137,7 @@ struct inet_bind2_bucket *inet_bind2_bucket_create(struct kmem_cache *cachep,
 /* Caller must hold hashbucket lock for this tb with local BH disabled */
 void inet_bind2_bucket_destroy(struct kmem_cache *cachep, struct inet_bind2_bucket *tb)
 {
-	if (hlist_empty(&tb->owners) && hlist_empty(&tb->deathrow)) {
+	if (hlist_empty(&tb->owners)) {
 		__hlist_del(&tb->node);
 		kmem_cache_free(cachep, tb);
 	}
@@ -813,19 +812,15 @@ bool inet_bind2_bucket_match_addr_any(const struct inet_bind2_bucket *tb, const 
 				      unsigned short port, int l3mdev, const struct sock *sk)
 {
 #if IS_ENABLED(CONFIG_IPV6)
-	if (sk->sk_family != tb->family) {
-		if (sk->sk_family == AF_INET)
-			return net_eq(ib2_net(tb), net) && tb->port == port &&
-				tb->l3mdev == l3mdev &&
-				ipv6_addr_any(&tb->v6_rcv_saddr);
+	struct in6_addr addr_any = {};
 
+	if (sk->sk_family != tb->family)
 		return false;
-	}
 
 	if (sk->sk_family == AF_INET6)
 		return net_eq(ib2_net(tb), net) && tb->port == port &&
 			tb->l3mdev == l3mdev &&
-			ipv6_addr_any(&tb->v6_rcv_saddr);
+			ipv6_addr_equal(&tb->v6_rcv_saddr, &addr_any);
 	else
 #endif
 		return net_eq(ib2_net(tb), net) && tb->port == port &&
@@ -851,10 +846,11 @@ inet_bhash2_addr_any_hashbucket(const struct sock *sk, const struct net *net, in
 {
 	struct inet_hashinfo *hinfo = tcp_or_dccp_get_hashinfo(sk);
 	u32 hash;
-
 #if IS_ENABLED(CONFIG_IPV6)
+	struct in6_addr addr_any = {};
+
 	if (sk->sk_family == AF_INET6)
-		hash = ipv6_portaddr_hash(net, &in6addr_any, port);
+		hash = ipv6_portaddr_hash(net, &addr_any, port);
 	else
 #endif
 		hash = ipv4_portaddr_hash(net, 0, port);
@@ -998,7 +994,17 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 	u32 index;
 
 	if (port) {
-		local_bh_disable();
+		head = &hinfo->bhash[inet_bhashfn(net, port,
+						  hinfo->bhash_size)];
+		tb = inet_csk(sk)->icsk_bind_hash;
+		spin_lock_bh(&head->lock);
+		if (sk_head(&tb->owners) == sk && !sk->sk_bind_node.next) {
+			inet_ehash_nolisten(sk, NULL, NULL);
+			spin_unlock_bh(&head->lock);
+			return 0;
+		}
+		spin_unlock(&head->lock);
+		/* No definite answer... Walk to established hash table */
 		ret = check_established(death_row, sk, port, NULL);
 		local_bh_enable();
 		return ret;
@@ -1006,7 +1012,7 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 
 	l3mdev = inet_sk_bound_l3mdev(sk);
 
-	inet_sk_get_local_port_range(sk, &low, &high);
+	inet_get_local_port_range(net, &low, &high);
 	high++; /* [32768, 60999] -> [32768, 61000[ */
 	remaining = high - low;
 	if (likely(remaining > 1))
@@ -1091,11 +1097,13 @@ ok:
 	 * on low contention the randomness is maximal and on high contention
 	 * it may be inexistent.
 	 */
-	i = max_t(int, i, get_random_u32_below(8) * 2);
+	i = max_t(int, i, prandom_u32_max(8) * 2);
 	WRITE_ONCE(table_perturb[index], READ_ONCE(table_perturb[index]) + i + 2);
 
 	/* Head lock still held and bh's disabled */
 	inet_bind_hash(sk, tb, tb2, port);
+
+	spin_unlock(&head2->lock);
 
 	if (sk_unhashed(sk)) {
 		inet_sk(sk)->inet_sport = htons(port);
@@ -1103,10 +1111,7 @@ ok:
 	}
 	if (tw)
 		inet_twsk_bind_unhash(tw, hinfo);
-
-	spin_unlock(&head2->lock);
 	spin_unlock(&head->lock);
-
 	if (tw)
 		inet_twsk_deschedule_put(tw);
 	local_bh_enable();

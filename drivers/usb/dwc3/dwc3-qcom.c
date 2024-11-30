@@ -167,8 +167,7 @@ static int dwc3_qcom_register_extcon(struct dwc3_qcom *qcom)
 
 	qcom->edev = extcon_get_edev_by_phandle(dev, 0);
 	if (IS_ERR(qcom->edev))
-		return dev_err_probe(dev, PTR_ERR(qcom->edev),
-				     "Failed to get extcon\n");
+		return PTR_ERR(qcom->edev);
 
 	qcom->vbus_nb.notifier_call = dwc3_qcom_vbus_notifier;
 
@@ -253,15 +252,16 @@ static int dwc3_qcom_interconnect_init(struct dwc3_qcom *qcom)
 
 	qcom->icc_path_ddr = of_icc_get(dev, "usb-ddr");
 	if (IS_ERR(qcom->icc_path_ddr)) {
-		return dev_err_probe(dev, PTR_ERR(qcom->icc_path_ddr),
-				     "failed to get usb-ddr path\n");
+		dev_err(dev, "failed to get usb-ddr path: %ld\n",
+				PTR_ERR(qcom->icc_path_ddr));
+		return PTR_ERR(qcom->icc_path_ddr);
 	}
 
 	qcom->icc_path_apps = of_icc_get(dev, "apps-usb");
 	if (IS_ERR(qcom->icc_path_apps)) {
-		ret = dev_err_probe(dev, PTR_ERR(qcom->icc_path_apps),
-				    "failed to get apps-usb path\n");
-		goto put_path_ddr;
+		dev_err(dev, "failed to get apps-usb path: %ld\n",
+				PTR_ERR(qcom->icc_path_apps));
+		return PTR_ERR(qcom->icc_path_apps);
 	}
 
 	max_speed = usb_get_maximum_speed(&qcom->dwc3->dev);
@@ -274,22 +274,16 @@ static int dwc3_qcom_interconnect_init(struct dwc3_qcom *qcom)
 	}
 	if (ret) {
 		dev_err(dev, "failed to set bandwidth for usb-ddr path: %d\n", ret);
-		goto put_path_apps;
+		return ret;
 	}
 
 	ret = icc_set_bw(qcom->icc_path_apps, APPS_USB_AVG_BW, APPS_USB_PEAK_BW);
 	if (ret) {
 		dev_err(dev, "failed to set bandwidth for apps-usb path: %d\n", ret);
-		goto put_path_apps;
+		return ret;
 	}
 
 	return 0;
-
-put_path_apps:
-	icc_put(qcom->icc_path_apps);
-put_path_ddr:
-	icc_put(qcom->icc_path_ddr);
-	return ret;
 }
 
 /**
@@ -307,16 +301,7 @@ static void dwc3_qcom_interconnect_exit(struct dwc3_qcom *qcom)
 /* Only usable in contexts where the role can not change. */
 static bool dwc3_qcom_is_host(struct dwc3_qcom *qcom)
 {
-	struct dwc3 *dwc;
-
-	/*
-	 * FIXME: Fix this layering violation.
-	 */
-	dwc = platform_get_drvdata(qcom->dwc3);
-
-	/* Core driver may not have probed yet. */
-	if (!dwc)
-		return false;
+	struct dwc3 *dwc = platform_get_drvdata(qcom->dwc3);
 
 	return dwc->xhci;
 }
@@ -799,7 +784,6 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 	struct device		*dev = &pdev->dev;
 	struct dwc3_qcom	*qcom;
 	struct resource		*res, *parent_res = NULL;
-	struct resource		local_res;
 	int			ret, i;
 	bool			ignore_pipe_clk;
 	bool			wakeup_source;
@@ -821,8 +805,9 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 
 	qcom->resets = devm_reset_control_array_get_optional_exclusive(dev);
 	if (IS_ERR(qcom->resets)) {
-		return dev_err_probe(&pdev->dev, PTR_ERR(qcom->resets),
-				     "failed to get resets\n");
+		ret = PTR_ERR(qcom->resets);
+		dev_err(&pdev->dev, "failed to get resets, err=%d\n", ret);
+		return ret;
 	}
 
 	ret = reset_control_assert(qcom->resets);
@@ -841,7 +826,7 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 
 	ret = dwc3_qcom_clk_init(qcom, of_clk_get_parent_count(np));
 	if (ret) {
-		dev_err_probe(dev, ret, "failed to get clocks\n");
+		dev_err(dev, "failed to get clocks\n");
 		goto reset_assert;
 	}
 
@@ -850,8 +835,9 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 	if (np) {
 		parent_res = res;
 	} else {
-		memcpy(&local_res, res, sizeof(struct resource));
-		parent_res = &local_res;
+		parent_res = kmemdup(res, sizeof(struct resource), GFP_KERNEL);
+		if (!parent_res)
+			return -ENOMEM;
 
 		parent_res->start = res->start +
 			qcom->acpi_pdata->qscratch_base_offset;
@@ -863,10 +849,9 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 			if (IS_ERR_OR_NULL(qcom->urs_usb)) {
 				dev_err(dev, "failed to create URS USB platdev\n");
 				if (!qcom->urs_usb)
-					ret = -ENODEV;
+					return -ENODEV;
 				else
-					ret = PTR_ERR(qcom->urs_usb);
-				goto clk_disable;
+					return PTR_ERR(qcom->urs_usb);
 			}
 		}
 	}
@@ -909,7 +894,7 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 	qcom->mode = usb_get_dr_mode(&qcom->dwc3->dev);
 
 	/* enable vbus override for device mode */
-	if (qcom->mode != USB_DR_MODE_HOST)
+	if (qcom->mode == USB_DR_MODE_PERIPHERAL)
 		dwc3_qcom_vbus_override_enable(qcom, true);
 
 	/* register extcon to override sw_vbus on Vbus change later */
@@ -946,18 +931,14 @@ reset_assert:
 	return ret;
 }
 
-static void dwc3_qcom_remove(struct platform_device *pdev)
+static int dwc3_qcom_remove(struct platform_device *pdev)
 {
 	struct dwc3_qcom *qcom = platform_get_drvdata(pdev);
-	struct device_node *np = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
 	int i;
 
 	device_remove_software_node(&qcom->dwc3->dev);
-	if (np)
-		of_platform_depopulate(&pdev->dev);
-	else
-		platform_device_put(pdev);
+	of_platform_depopulate(dev);
 
 	for (i = qcom->num_clocks - 1; i >= 0; i--) {
 		clk_disable_unprepare(qcom->clks[i]);
@@ -970,6 +951,8 @@ static void dwc3_qcom_remove(struct platform_device *pdev)
 
 	pm_runtime_allow(dev);
 	pm_runtime_disable(dev);
+
+	return 0;
 }
 
 static int __maybe_unused dwc3_qcom_pm_suspend(struct device *dev)
@@ -1062,7 +1045,7 @@ MODULE_DEVICE_TABLE(acpi, dwc3_qcom_acpi_match);
 
 static struct platform_driver dwc3_qcom_driver = {
 	.probe		= dwc3_qcom_probe,
-	.remove_new	= dwc3_qcom_remove,
+	.remove		= dwc3_qcom_remove,
 	.driver		= {
 		.name	= "dwc3-qcom",
 		.pm	= &dwc3_qcom_dev_pm_ops,

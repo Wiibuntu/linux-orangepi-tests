@@ -353,9 +353,7 @@ int snd_sof_dbg_init(struct snd_sof_dev *sdev)
 			return err;
 	}
 
-	return snd_sof_debugfs_buf_item(sdev, &sdev->fw_state,
-					sizeof(sdev->fw_state),
-					"fw_state", 0444);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_sof_dbg_init);
 
@@ -370,7 +368,6 @@ static const struct soc_fw_state_info {
 	const char *name;
 } fw_state_dbg[] = {
 	{SOF_FW_BOOT_NOT_STARTED, "SOF_FW_BOOT_NOT_STARTED"},
-	{SOF_DSPLESS_MODE, "SOF_DSPLESS_MODE"},
 	{SOF_FW_BOOT_PREPARE, "SOF_FW_BOOT_PREPARE"},
 	{SOF_FW_BOOT_IN_PROGRESS, "SOF_FW_BOOT_IN_PROGRESS"},
 	{SOF_FW_BOOT_FAILED, "SOF_FW_BOOT_FAILED"},
@@ -438,8 +435,8 @@ void snd_sof_handle_fw_exception(struct snd_sof_dev *sdev, const char *msg)
 		/* should we prevent DSP entering D3 ? */
 		if (!sdev->ipc_dump_printed)
 			dev_info(sdev->dev,
-				 "Attempting to prevent DSP from entering D3 state to preserve context\n");
-		pm_runtime_get_if_in_use(sdev->dev);
+				 "preventing DSP entering D3 state to preserve context\n");
+		pm_runtime_get_noresume(sdev->dev);
 	}
 
 	/* dump vital information to the logs */

@@ -1333,9 +1333,17 @@ static int fsgen_gate_enable(struct clk_hw *hw)
 	int ret;
 
 	ret = va_macro_mclk_enable(va, true);
-	if (va->has_swr_master)
-		regmap_update_bits(regmap, CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
-				   CDC_VA_SWR_CLK_EN_MASK, CDC_VA_SWR_CLK_ENABLE);
+	if (!va->has_swr_master)
+		return ret;
+
+	regmap_update_bits(regmap, CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
+			   CDC_VA_SWR_RESET_MASK,  CDC_VA_SWR_RESET_ENABLE);
+
+	regmap_update_bits(regmap, CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
+			   CDC_VA_SWR_CLK_EN_MASK,
+			   CDC_VA_SWR_CLK_ENABLE);
+	regmap_update_bits(regmap, CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
+			   CDC_VA_SWR_RESET_MASK, 0x0);
 
 	return ret;
 }
@@ -1516,6 +1524,16 @@ static int va_macro_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_mclk;
 
+	ret = va_macro_register_fsgen_output(va);
+	if (ret)
+		goto err_clkout;
+
+	va->fsgen = clk_hw_get_clk(&va->hw, "fsgen");
+	if (IS_ERR(va->fsgen)) {
+		ret = PTR_ERR(va->fsgen);
+		goto err_clkout;
+	}
+
 	if (va->has_swr_master) {
 		/* Set default CLK div to 1 */
 		regmap_update_bits(va->regmap, CDC_VA_TOP_CSR_SWR_MIC_CTL0,
@@ -1530,15 +1548,6 @@ static int va_macro_probe(struct platform_device *pdev)
 
 	}
 
-	if (va->has_swr_master) {
-		regmap_update_bits(va->regmap, CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
-				   CDC_VA_SWR_RESET_MASK,  CDC_VA_SWR_RESET_ENABLE);
-		regmap_update_bits(va->regmap, CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
-				   CDC_VA_SWR_CLK_EN_MASK, CDC_VA_SWR_CLK_ENABLE);
-		regmap_update_bits(va->regmap, CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
-				   CDC_VA_SWR_RESET_MASK, 0x0);
-	}
-
 	ret = devm_snd_soc_register_component(dev, &va_macro_component_drv,
 					      va_macro_dais,
 					      ARRAY_SIZE(va_macro_dais));
@@ -1550,16 +1559,6 @@ static int va_macro_probe(struct platform_device *pdev)
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
-
-	ret = va_macro_register_fsgen_output(va);
-	if (ret)
-		goto err_clkout;
-
-	va->fsgen = clk_hw_get_clk(&va->hw, "fsgen");
-	if (IS_ERR(va->fsgen)) {
-		ret = PTR_ERR(va->fsgen);
-		goto err_clkout;
-	}
 
 	return 0;
 
@@ -1575,7 +1574,7 @@ err:
 	return ret;
 }
 
-static void va_macro_remove(struct platform_device *pdev)
+static int va_macro_remove(struct platform_device *pdev)
 {
 	struct va_macro *va = dev_get_drvdata(&pdev->dev);
 
@@ -1584,6 +1583,8 @@ static void va_macro_remove(struct platform_device *pdev)
 	clk_disable_unprepare(va->macro);
 
 	lpass_macro_pds_exit(va->pds);
+
+	return 0;
 }
 
 static int __maybe_unused va_macro_runtime_suspend(struct device *dev)
@@ -1637,7 +1638,7 @@ static struct platform_driver va_macro_driver = {
 		.pm = &va_macro_pm_ops,
 	},
 	.probe = va_macro_probe,
-	.remove_new = va_macro_remove,
+	.remove = va_macro_remove,
 };
 
 module_platform_driver(va_macro_driver);

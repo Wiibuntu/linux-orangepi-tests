@@ -58,10 +58,35 @@ enum sja1105_ptp_clk_mode {
 #define ptp_data_to_sja1105(d) \
 		container_of((d), struct sja1105_private, ptp_data)
 
+/* Must be called only while the RX timestamping state of the tagger
+ * is turned off
+ */
+static int sja1105_change_rxtstamping(struct sja1105_private *priv,
+				      bool on)
+{
+	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
+	struct sja1105_general_params_entry *general_params;
+	struct sja1105_table *table;
+
+	table = &priv->static_config.tables[BLK_IDX_GENERAL_PARAMS];
+	general_params = table->entries;
+	general_params->send_meta1 = on;
+	general_params->send_meta0 = on;
+
+	ptp_cancel_worker_sync(ptp_data->clock);
+	skb_queue_purge(&ptp_data->skb_txtstamp_queue);
+	skb_queue_purge(&ptp_data->skb_rxtstamp_queue);
+
+	return sja1105_static_config_reload(priv, SJA1105_RX_HWTSTAMPING);
+}
+
 int sja1105_hwtstamp_set(struct dsa_switch *ds, int port, struct ifreq *ifr)
 {
+	struct sja1105_tagger_data *tagger_data = sja1105_tagger_data(ds);
 	struct sja1105_private *priv = ds->priv;
 	struct hwtstamp_config config;
+	bool rx_on;
+	int rc;
 
 	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
 		return -EFAULT;
@@ -79,11 +104,24 @@ int sja1105_hwtstamp_set(struct dsa_switch *ds, int port, struct ifreq *ifr)
 
 	switch (config.rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
-		priv->hwts_rx_en &= ~BIT(port);
+		rx_on = false;
 		break;
 	default:
-		priv->hwts_rx_en |= BIT(port);
+		rx_on = true;
 		break;
+	}
+
+	if (rx_on != tagger_data->rxtstamp_get_state(ds)) {
+		tagger_data->rxtstamp_set_state(ds, false);
+
+		rc = sja1105_change_rxtstamping(priv, rx_on);
+		if (rc < 0) {
+			dev_err(ds->dev,
+				"Failed to change RX timestamping: %d\n", rc);
+			return rc;
+		}
+		if (rx_on)
+			tagger_data->rxtstamp_set_state(ds, true);
 	}
 
 	if (copy_to_user(ifr->ifr_data, &config, sizeof(config)))
@@ -93,6 +131,7 @@ int sja1105_hwtstamp_set(struct dsa_switch *ds, int port, struct ifreq *ifr)
 
 int sja1105_hwtstamp_get(struct dsa_switch *ds, int port, struct ifreq *ifr)
 {
+	struct sja1105_tagger_data *tagger_data = sja1105_tagger_data(ds);
 	struct sja1105_private *priv = ds->priv;
 	struct hwtstamp_config config;
 
@@ -101,7 +140,7 @@ int sja1105_hwtstamp_get(struct dsa_switch *ds, int port, struct ifreq *ifr)
 		config.tx_type = HWTSTAMP_TX_ON;
 	else
 		config.tx_type = HWTSTAMP_TX_OFF;
-	if (priv->hwts_rx_en & BIT(port))
+	if (tagger_data->rxtstamp_get_state(ds))
 		config.rx_filter = HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
 	else
 		config.rx_filter = HWTSTAMP_FILTER_NONE;
@@ -374,10 +413,11 @@ static long sja1105_rxtstamp_work(struct ptp_clock_info *ptp)
 
 bool sja1105_rxtstamp(struct dsa_switch *ds, int port, struct sk_buff *skb)
 {
+	struct sja1105_tagger_data *tagger_data = sja1105_tagger_data(ds);
 	struct sja1105_private *priv = ds->priv;
 	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
 
-	if (!(priv->hwts_rx_en & BIT(port)))
+	if (!tagger_data->rxtstamp_get_state(ds))
 		return false;
 
 	/* We need to read the full PTP clock to reconstruct the Rx

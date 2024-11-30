@@ -161,7 +161,7 @@ struct smc_connection {
 
 	struct smc_buf_desc	*sndbuf_desc;	/* send buffer descriptor */
 	struct smc_buf_desc	*rmb_desc;	/* RMBE descriptor */
-	int                     rmbe_size_comp; /* compressed notation */
+	int			rmbe_size_short;/* compressed notation */
 	int			rmbe_update_limit;
 						/* lower limit for consumer
 						 * cursor update
@@ -283,7 +283,10 @@ struct smc_sock {				/* smc sock container */
 						 * */
 };
 
-#define smc_sk(ptr) container_of_const(ptr, struct smc_sock, sk)
+static inline struct smc_sock *smc_sk(const struct sock *sk)
+{
+	return (struct smc_sock *)sk;
+}
 
 static inline void smc_init_saved_callbacks(struct smc_sock *smc)
 {

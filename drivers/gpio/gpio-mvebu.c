@@ -657,10 +657,9 @@ static void mvebu_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
 	spin_unlock_irqrestore(&mvpwm->lock, flags);
 }
 
-static int mvebu_pwm_get_state(struct pwm_chip *chip,
-			       struct pwm_device *pwm,
-			       struct pwm_state *state)
-{
+static void mvebu_pwm_get_state(struct pwm_chip *chip,
+				struct pwm_device *pwm,
+				struct pwm_state *state) {
 
 	struct mvebu_pwm *mvpwm = to_mvebu_pwm(chip);
 	struct mvebu_gpio_chip *mvchip = mvpwm->mvchip;
@@ -694,8 +693,6 @@ static int mvebu_pwm_get_state(struct pwm_chip *chip,
 		state->enabled = false;
 
 	spin_unlock_irqrestore(&mvpwm->lock, flags);
-
-	return 0;
 }
 
 static int mvebu_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
@@ -874,7 +871,7 @@ static int mvebu_pwm_probe(struct platform_device *pdev,
 
 	spin_lock_init(&mvpwm->lock);
 
-	return devm_pwmchip_add(dev, &mvpwm->chip);
+	return pwmchip_add(&mvpwm->chip);
 }
 
 #ifdef CONFIG_DEBUG_FS
@@ -1002,7 +999,7 @@ static int mvebu_gpio_suspend(struct platform_device *pdev, pm_message_t state)
 		BUG();
 	}
 
-	if (IS_REACHABLE(CONFIG_PWM))
+	if (IS_ENABLED(CONFIG_PWM))
 		mvebu_pwm_suspend(mvchip);
 
 	return 0;
@@ -1054,7 +1051,7 @@ static int mvebu_gpio_resume(struct platform_device *pdev)
 		BUG();
 	}
 
-	if (IS_REACHABLE(CONFIG_PWM))
+	if (IS_ENABLED(CONFIG_PWM))
 		mvebu_pwm_resume(mvchip);
 
 	return 0;
@@ -1110,13 +1107,6 @@ static int mvebu_gpio_probe_syscon(struct platform_device *pdev,
 		return -EINVAL;
 
 	return 0;
-}
-
-static void mvebu_gpio_remove_irq_domain(void *data)
-{
-	struct irq_domain *domain = data;
-
-	irq_domain_remove(domain);
 }
 
 static int mvebu_gpio_probe(struct platform_device *pdev)
@@ -1235,7 +1225,7 @@ static int mvebu_gpio_probe(struct platform_device *pdev)
 	devm_gpiochip_add_data(&pdev->dev, &mvchip->chip, mvchip);
 
 	/* Some MVEBU SoCs have simple PWM support for GPIO lines */
-	if (IS_REACHABLE(CONFIG_PWM)) {
+	if (IS_ENABLED(CONFIG_PWM)) {
 		err = mvebu_pwm_probe(pdev, mvchip, id);
 		if (err)
 			return err;
@@ -1250,13 +1240,9 @@ static int mvebu_gpio_probe(struct platform_device *pdev)
 	if (!mvchip->domain) {
 		dev_err(&pdev->dev, "couldn't allocate irq domain %s (DT).\n",
 			mvchip->chip.label);
-		return -ENODEV;
+		err = -ENODEV;
+		goto err_pwm;
 	}
-
-	err = devm_add_action_or_reset(&pdev->dev, mvebu_gpio_remove_irq_domain,
-				       mvchip->domain);
-	if (err)
-		return err;
 
 	err = irq_alloc_domain_generic_chips(
 	    mvchip->domain, ngpios, 2, np->name, handle_level_irq,
@@ -1264,7 +1250,7 @@ static int mvebu_gpio_probe(struct platform_device *pdev)
 	if (err) {
 		dev_err(&pdev->dev, "couldn't allocate irq chips %s (DT).\n",
 			mvchip->chip.label);
-		return err;
+		goto err_domain;
 	}
 
 	/*
@@ -1304,6 +1290,13 @@ static int mvebu_gpio_probe(struct platform_device *pdev)
 	}
 
 	return 0;
+
+err_domain:
+	irq_domain_remove(mvchip->domain);
+err_pwm:
+	pwmchip_remove(&mvchip->mvpwm->chip);
+
+	return err;
 }
 
 static struct platform_driver mvebu_gpio_driver = {

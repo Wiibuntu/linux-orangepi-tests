@@ -166,7 +166,8 @@ static void arc_serial_tx_chars(struct uart_port *port)
 		sent = 1;
 	} else if (!uart_circ_empty(xmit)) {
 		ch = xmit->buf[xmit->tail];
-		uart_xmit_advance(port, 1);
+		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
+		port->icount.tx++;
 		while (!(UART_GET_STATUS(port) & TXEMPTY))
 			cpu_relax();
 		UART_SET_DATA(port, ch);
@@ -606,11 +607,10 @@ static int arc_serial_probe(struct platform_device *pdev)
 	}
 	uart->baud = val;
 
-	port->membase = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(port->membase)) {
+	port->membase = of_iomap(np, 0);
+	if (!port->membase)
 		/* No point of dev_err since UART itself is hosed here */
-		return PTR_ERR(port->membase);
-	}
+		return -ENXIO;
 
 	port->irq = irq_of_parse_and_map(np, 0);
 
@@ -632,6 +632,12 @@ static int arc_serial_probe(struct platform_device *pdev)
 	return uart_add_one_port(&arc_uart_driver, &arc_uart_ports[dev_id].port);
 }
 
+static int arc_serial_remove(struct platform_device *pdev)
+{
+	/* This will never be called */
+	return 0;
+}
+
 static const struct of_device_id arc_uart_dt_ids[] = {
 	{ .compatible = "snps,arc-uart" },
 	{ /* Sentinel */ }
@@ -640,6 +646,7 @@ MODULE_DEVICE_TABLE(of, arc_uart_dt_ids);
 
 static struct platform_driver arc_platform_driver = {
 	.probe = arc_serial_probe,
+	.remove = arc_serial_remove,
 	.driver = {
 		.name = DRIVER_NAME,
 		.of_match_table  = arc_uart_dt_ids,

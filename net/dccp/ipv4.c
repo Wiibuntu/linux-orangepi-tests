@@ -130,7 +130,7 @@ int dccp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 						    inet->inet_daddr,
 						    inet->inet_sport,
 						    inet->inet_dport);
-	atomic_set(&inet->inet_id, get_random_u16());
+	inet->inet_id = get_random_u16();
 
 	err = dccp_connect(sk);
 	rt = NULL;
@@ -177,7 +177,7 @@ static inline void dccp_do_pmtu_discovery(struct sock *sk,
 	 * for the case, if this connection will not able to recover.
 	 */
 	if (mtu < dst_mtu(dst) && ip_dont_fragment(sk, dst))
-		WRITE_ONCE(sk->sk_err_soft, EMSGSIZE);
+		sk->sk_err_soft = EMSGSIZE;
 
 	mtu = dst_mtu(dst);
 
@@ -339,9 +339,8 @@ static int dccp_v4_err(struct sk_buff *skb, u32 info)
 			sk_error_report(sk);
 
 			dccp_done(sk);
-		} else {
-			WRITE_ONCE(sk->sk_err_soft, err);
-		}
+		} else
+			sk->sk_err_soft = err;
 		goto out;
 	}
 
@@ -365,9 +364,8 @@ static int dccp_v4_err(struct sk_buff *skb, u32 info)
 	if (!sock_owned_by_user(sk) && inet->recverr) {
 		sk->sk_err = err;
 		sk_error_report(sk);
-	} else { /* Only an error on timeout */
-		WRITE_ONCE(sk->sk_err_soft, err);
-	}
+	} else /* Only an error on timeout */
+		sk->sk_err_soft = err;
 out:
 	bh_unlock_sock(sk);
 	sock_put(sk);
@@ -432,7 +430,7 @@ struct sock *dccp_v4_request_recv_sock(const struct sock *sk,
 	RCU_INIT_POINTER(newinet->inet_opt, rcu_dereference(ireq->ireq_opt));
 	newinet->mc_index  = inet_iif(skb);
 	newinet->mc_ttl	   = ip_hdr(skb)->ttl;
-	atomic_set(&newinet->inet_id, get_random_u16());
+	newinet->inet_id   = get_random_u16();
 
 	if (dst == NULL && (dst = inet_csk_route_child_sock(sk, newsk, req)) == NULL)
 		goto put_and_exit;
@@ -1010,6 +1008,7 @@ static const struct proto_ops inet_dccp_ops = {
 	.sendmsg	   = inet_sendmsg,
 	.recvmsg	   = sock_common_recvmsg,
 	.mmap		   = sock_no_mmap,
+	.sendpage	   = sock_no_sendpage,
 };
 
 static struct inet_protosw dccp_v4_protosw = {

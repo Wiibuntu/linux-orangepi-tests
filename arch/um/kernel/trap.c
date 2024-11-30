@@ -47,15 +47,14 @@ retry:
 	vma = find_vma(mm, address);
 	if (!vma)
 		goto out;
-	if (vma->vm_start <= address)
+	else if (vma->vm_start <= address)
 		goto good_area;
-	if (!(vma->vm_flags & VM_GROWSDOWN))
+	else if (!(vma->vm_flags & VM_GROWSDOWN))
 		goto out;
-	if (is_user && !ARCH_IS_STACKGROW(address))
+	else if (is_user && !ARCH_IS_STACKGROW(address))
 		goto out;
-	vma = expand_stack(mm, address);
-	if (!vma)
-		goto out_nosemaphore;
+	else if (expand_stack(vma, address))
+		goto out;
 
 good_area:
 	*code_out = SEGV_ACCERR;

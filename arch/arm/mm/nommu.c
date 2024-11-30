@@ -21,7 +21,6 @@
 #include <asm/cputype.h>
 #include <asm/mpu.h>
 #include <asm/procinfo.h>
-#include <asm/idmap.h>
 
 #include "mm.h"
 
@@ -162,7 +161,7 @@ void __init paging_init(const struct machine_desc *mdesc)
 	mpu_setup();
 
 	/* allocate the zero page. */
-	zero_page = (void *)memblock_alloc(PAGE_SIZE, PAGE_SIZE);
+	zero_page = memblock_alloc(PAGE_SIZE, PAGE_SIZE);
 	if (!zero_page)
 		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
 		      __func__, PAGE_SIZE, PAGE_SIZE);

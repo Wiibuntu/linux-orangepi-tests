@@ -112,7 +112,6 @@ struct irq_info {
 	unsigned int irq_epoch; /* If eoi_cpu valid: irq_epoch of event */
 	u64 eoi_time;           /* Time in jiffies when to EOI. */
 	raw_spinlock_t lock;
-	bool is_static;           /* Is event channel static */
 
 	union {
 		unsigned short virq;
@@ -816,6 +815,15 @@ static void xen_free_irq(unsigned irq)
 	irq_free_desc(irq);
 }
 
+static void xen_evtchn_close(evtchn_port_t port)
+{
+	struct evtchn_close close;
+
+	close.port = port;
+	if (HYPERVISOR_event_channel_op(EVTCHNOP_close, &close) != 0)
+		BUG();
+}
+
 /* Not called for lateeoi events. */
 static void event_handler_exit(struct irq_info *info)
 {
@@ -974,8 +982,7 @@ static void __unbind_from_irq(unsigned int irq)
 		unsigned int cpu = cpu_from_irq(irq);
 		struct xenbus_device *dev;
 
-		if (!info->is_static)
-			xen_evtchn_close(evtchn);
+		xen_evtchn_close(evtchn);
 
 		switch (type_from_irq(irq)) {
 		case IRQT_VIRQ:
@@ -1567,7 +1574,7 @@ int xen_set_irq_priority(unsigned irq, unsigned priority)
 }
 EXPORT_SYMBOL_GPL(xen_set_irq_priority);
 
-int evtchn_make_refcounted(evtchn_port_t evtchn, bool is_static)
+int evtchn_make_refcounted(evtchn_port_t evtchn)
 {
 	int irq = get_evtchn_to_irq(evtchn);
 	struct irq_info *info;
@@ -1583,7 +1590,6 @@ int evtchn_make_refcounted(evtchn_port_t evtchn, bool is_static)
 	WARN_ON(info->refcnt != -1);
 
 	info->refcnt = 1;
-	info->is_static = is_static;
 
 	return 0;
 }
@@ -1704,10 +1710,9 @@ void handle_irq_for_port(evtchn_port_t port, struct evtchn_loop_ctrl *ctrl)
 	generic_handle_irq(irq);
 }
 
-static int __xen_evtchn_do_upcall(void)
+static void __xen_evtchn_do_upcall(void)
 {
 	struct vcpu_info *vcpu_info = __this_cpu_read(xen_vcpu);
-	int ret = vcpu_info->evtchn_upcall_pending ? IRQ_HANDLED : IRQ_NONE;
 	int cpu = smp_processor_id();
 	struct evtchn_loop_ctrl ctrl = { 0 };
 
@@ -1732,8 +1737,6 @@ static int __xen_evtchn_do_upcall(void)
 	 * above.
 	 */
 	__this_cpu_inc(irq_epoch);
-
-	return ret;
 }
 
 void xen_evtchn_do_upcall(struct pt_regs *regs)
@@ -1748,9 +1751,9 @@ void xen_evtchn_do_upcall(struct pt_regs *regs)
 	set_irq_regs(old_regs);
 }
 
-int xen_hvm_evtchn_do_upcall(void)
+void xen_hvm_evtchn_do_upcall(void)
 {
-	return __xen_evtchn_do_upcall();
+	__xen_evtchn_do_upcall();
 }
 EXPORT_SYMBOL_GPL(xen_hvm_evtchn_do_upcall);
 

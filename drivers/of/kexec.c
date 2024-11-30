@@ -184,8 +184,7 @@ int __init ima_free_kexec_buffer(void)
 	if (ret)
 		return ret;
 
-	memblock_free_late(addr, size);
-	return 0;
+	return memblock_phys_free(addr, size);
 }
 #endif
 
@@ -282,7 +281,7 @@ void *of_kexec_alloc_and_setup_fdt(const struct kimage *image,
 				   const char *cmdline, size_t extra_fdt_size)
 {
 	void *fdt;
-	int ret, chosen_node, len;
+	int ret, chosen_node;
 	const void *prop;
 	size_t fdt_size;
 
@@ -325,19 +324,19 @@ void *of_kexec_alloc_and_setup_fdt(const struct kimage *image,
 		goto out;
 
 	/* Did we boot using an initrd? */
-	prop = fdt_getprop(fdt, chosen_node, "linux,initrd-start", &len);
+	prop = fdt_getprop(fdt, chosen_node, "linux,initrd-start", NULL);
 	if (prop) {
 		u64 tmp_start, tmp_end, tmp_size;
 
-		tmp_start = of_read_number(prop, len / 4);
+		tmp_start = fdt64_to_cpu(*((const fdt64_t *) prop));
 
-		prop = fdt_getprop(fdt, chosen_node, "linux,initrd-end", &len);
+		prop = fdt_getprop(fdt, chosen_node, "linux,initrd-end", NULL);
 		if (!prop) {
 			ret = -EINVAL;
 			goto out;
 		}
 
-		tmp_end = of_read_number(prop, len / 4);
+		tmp_end = fdt64_to_cpu(*((const fdt64_t *) prop));
 
 		/*
 		 * kexec reserves exact initrd size, while firmware may

@@ -188,6 +188,10 @@ static struct drm_display_mode *drm_connector_pick_cmdline_mode(struct drm_conne
 	prefer_non_interlace = !cmdline_mode->interlace;
 again:
 	list_for_each_entry(mode, &connector->modes, head) {
+		/* Check (optional) mode name first */
+		if (!strcmp(mode->name, cmdline_mode->name))
+			return mode;
+
 		/* check width/height */
 		if (mode->hdisplay != cmdline_mode->xres ||
 		    mode->vdisplay != cmdline_mode->yres)
@@ -311,9 +315,6 @@ static bool drm_client_target_cloned(struct drm_device *dev,
 	can_clone = true;
 	dmt_mode = drm_mode_find_dmt(dev, 1024, 768, 60, false);
 
-	if (!dmt_mode)
-		goto fail;
-
 	for (i = 0; i < connector_count; i++) {
 		if (!enabled[i])
 			continue;
@@ -329,13 +330,11 @@ static bool drm_client_target_cloned(struct drm_device *dev,
 		if (!modes[i])
 			can_clone = false;
 	}
-	kfree(dmt_mode);
 
 	if (can_clone) {
 		DRM_DEBUG_KMS("can clone using 1024x768\n");
 		return true;
 	}
-fail:
 	DRM_INFO("kms: can't enable cloning when we probably wanted to.\n");
 	return false;
 }
@@ -867,7 +866,6 @@ int drm_client_modeset_probe(struct drm_client_dev *client, unsigned int width, 
 				break;
 			}
 
-			kfree(modeset->mode);
 			modeset->mode = drm_mode_duplicate(dev, mode);
 			drm_connector_get(connector);
 			modeset->connectors[modeset->num_connectors++] = connector;
@@ -1239,7 +1237,3 @@ int drm_client_modeset_dpms(struct drm_client_dev *client, int mode)
 	return ret;
 }
 EXPORT_SYMBOL(drm_client_modeset_dpms);
-
-#ifdef CONFIG_DRM_KUNIT_TEST
-#include "tests/drm_client_modeset_test.c"
-#endif

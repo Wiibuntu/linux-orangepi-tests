@@ -14,8 +14,6 @@
 #include <asm/mmu.h>
 #include <asm/mpspec.h>
 #include <asm/x86_init.h>
-#include <asm/cpufeature.h>
-#include <asm/irq_vectors.h>
 
 #ifdef CONFIG_ACPI_APEI
 # include <asm/pgtable_types.h>
@@ -32,7 +30,6 @@ extern int acpi_skip_timer_override;
 extern int acpi_use_timer_override;
 extern int acpi_fix_pin2_polarity;
 extern int acpi_disable_cmcff;
-extern bool acpi_int_src_ovr[NR_IRQS_LEGACY];
 
 extern u8 acpi_sci_flags;
 extern u32 acpi_sci_override_gsi;
@@ -65,13 +62,6 @@ extern int (*acpi_suspend_lowlevel)(void);
 
 /* Physical address to resume after wakeup */
 unsigned long acpi_get_wakeup_address(void);
-
-static inline bool acpi_skip_set_wakeup_address(void)
-{
-	return cpu_feature_enabled(X86_FEATURE_XENPV);
-}
-
-#define acpi_skip_set_wakeup_address acpi_skip_set_wakeup_address
 
 /*
  * Check if the CPU can handle C2 and deeper

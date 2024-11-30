@@ -699,9 +699,6 @@ static int cw_bat_probe(struct i2c_client *client)
 	}
 
 	cw_bat->battery_workqueue = create_singlethread_workqueue("rk_battery");
-	if (!cw_bat->battery_workqueue)
-		return -ENOMEM;
-
 	devm_delayed_work_autocancel(&client->dev,
 							  &cw_bat->battery_delay_work, cw_bat_work);
 	queue_delayed_work(cw_bat->battery_workqueue,
@@ -747,7 +744,7 @@ static struct i2c_driver cw_bat_driver = {
 		.of_match_table = cw2015_of_match,
 		.pm = &cw_bat_pm_ops,
 	},
-	.probe = cw_bat_probe,
+	.probe_new = cw_bat_probe,
 	.id_table = cw_bat_id_table,
 };
 

@@ -84,9 +84,8 @@ h2_destroy()
 
 router_rp1_200_create()
 {
-	ip link add name $rp1.200 link $rp1 type vlan id 200
-	ip link set dev $rp1.200 addrgenmode eui64
-	ip link set dev $rp1.200 up
+	ip link add name $rp1.200 up \
+		link $rp1 addrgenmode eui64 type vlan id 200
 	ip address add dev $rp1.200 192.0.2.2/28
 	ip address add dev $rp1.200 2001:db8:1::2/64
 	ip stats set dev $rp1.200 l3_stats on
@@ -257,11 +256,9 @@ reapply_config()
 
 	router_rp1_200_destroy
 
-	ip link add name $rp1.200 link $rp1 type vlan id 200
-	ip link set dev $rp1.200 addrgenmode none
+	ip link add name $rp1.200 link $rp1 addrgenmode none type vlan id 200
 	ip stats set dev $rp1.200 l3_stats on
-	ip link set dev $rp1.200 addrgenmode eui64
-	ip link set dev $rp1.200 up
+	ip link set dev $rp1.200 up addrgenmode eui64
 	ip address add dev $rp1.200 192.0.2.2/28
 	ip address add dev $rp1.200 2001:db8:1::2/64
 }
@@ -322,19 +319,6 @@ trap cleanup EXIT
 setup_prepare
 setup_wait
 
-used=$(ip -j stats show dev $rp1.200 group offload subgroup hw_stats_info |
-	   jq '.[].info.l3_stats.used')
-kind=$(ip -j -d link show dev $rp1 |
-	   jq -r '.[].linkinfo.info_kind')
-if [[ $used != true ]]; then
-	if [[ $kind == veth ]]; then
-		log_test_skip "l3_stats not offloaded on veth interface"
-		EXIT_STATUS=$ksft_skip
-	else
-		RET=1 log_test "l3_stats not offloaded"
-	fi
-else
-	tests_run
-fi
+tests_run
 
 exit $EXIT_STATUS

@@ -105,8 +105,8 @@ static void pwm_sifive_update_clock(struct pwm_sifive_ddata *ddata,
 		"New real_period = %u ns\n", ddata->real_period);
 }
 
-static int pwm_sifive_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
-				struct pwm_state *state)
+static void pwm_sifive_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
+				 struct pwm_state *state)
 {
 	struct pwm_sifive_ddata *ddata = pwm_sifive_chip_to_ddata(chip);
 	u32 duty, val;
@@ -123,8 +123,6 @@ static int pwm_sifive_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 	state->duty_cycle =
 		(u64)duty * ddata->real_period >> PWM_SIFIVE_CMPWIDTH;
 	state->polarity = PWM_POLARITY_INVERSED;
-
-	return 0;
 }
 
 static int pwm_sifive_apply(struct pwm_chip *chip, struct pwm_device *pwm,
@@ -161,13 +159,7 @@ static int pwm_sifive_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 
 	mutex_lock(&ddata->lock);
 	if (state->period != ddata->approx_period) {
-		/*
-		 * Don't let a 2nd user change the period underneath the 1st user.
-		 * However if ddate->approx_period == 0 this is the first time we set
-		 * any period, so let whoever gets here first set the period so other
-		 * users who agree on the period won't fail.
-		 */
-		if (ddata->user_count != 1 && ddata->approx_period) {
+		if (ddata->user_count != 1) {
 			mutex_unlock(&ddata->lock);
 			return -EBUSY;
 		}
@@ -212,11 +204,8 @@ static int pwm_sifive_clock_notifier(struct notifier_block *nb,
 	struct pwm_sifive_ddata *ddata =
 		container_of(nb, struct pwm_sifive_ddata, notifier);
 
-	if (event == POST_RATE_CHANGE) {
-		mutex_lock(&ddata->lock);
+	if (event == POST_RATE_CHANGE)
 		pwm_sifive_update_clock(ddata, ndata->new_rate);
-		mutex_unlock(&ddata->lock);
-	}
 
 	return NOTIFY_OK;
 }
@@ -244,12 +233,12 @@ static int pwm_sifive_probe(struct platform_device *pdev)
 	if (IS_ERR(ddata->regs))
 		return PTR_ERR(ddata->regs);
 
-	ddata->clk = devm_clk_get_prepared(dev, NULL);
+	ddata->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(ddata->clk))
 		return dev_err_probe(dev, PTR_ERR(ddata->clk),
 				     "Unable to find controller clock\n");
 
-	ret = clk_enable(ddata->clk);
+	ret = clk_prepare_enable(ddata->clk);
 	if (ret) {
 		dev_err(dev, "failed to enable clock for pwm: %d\n", ret);
 		return ret;
@@ -308,11 +297,12 @@ disable_clk:
 		clk_disable(ddata->clk);
 		--enabled_clks;
 	}
+	clk_unprepare(ddata->clk);
 
 	return ret;
 }
 
-static void pwm_sifive_remove(struct platform_device *dev)
+static int pwm_sifive_remove(struct platform_device *dev)
 {
 	struct pwm_sifive_ddata *ddata = platform_get_drvdata(dev);
 	struct pwm_device *pwm;
@@ -326,6 +316,10 @@ static void pwm_sifive_remove(struct platform_device *dev)
 		if (pwm->state.enabled)
 			clk_disable(ddata->clk);
 	}
+
+	clk_unprepare(ddata->clk);
+
+	return 0;
 }
 
 static const struct of_device_id pwm_sifive_of_match[] = {
@@ -336,7 +330,7 @@ MODULE_DEVICE_TABLE(of, pwm_sifive_of_match);
 
 static struct platform_driver pwm_sifive_driver = {
 	.probe = pwm_sifive_probe,
-	.remove_new = pwm_sifive_remove,
+	.remove = pwm_sifive_remove,
 	.driver = {
 		.name = "pwm-sifive",
 		.of_match_table = pwm_sifive_of_match,

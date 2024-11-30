@@ -328,12 +328,10 @@ static long native_hpte_insert(unsigned long hpte_group, unsigned long vpn,
 
 static long native_hpte_remove(unsigned long hpte_group)
 {
-	unsigned long hpte_v, flags;
 	struct hash_pte *hptep;
 	int i;
 	int slot_offset;
-
-	local_irq_save(flags);
+	unsigned long hpte_v;
 
 	DBG_LOW("    remove(group=%lx)\n", hpte_group);
 
@@ -358,16 +356,13 @@ static long native_hpte_remove(unsigned long hpte_group)
 		slot_offset &= 0x7;
 	}
 
-	if (i == HPTES_PER_GROUP) {
-		i = -1;
-		goto out;
-	}
+	if (i == HPTES_PER_GROUP)
+		return -1;
 
 	/* Invalidate the hpte. NOTE: this also unlocks it */
 	release_hpte_lock();
 	hptep->v = 0;
-out:
-	local_irq_restore(flags);
+
 	return i;
 }
 

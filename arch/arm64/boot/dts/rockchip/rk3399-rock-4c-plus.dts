@@ -15,8 +15,8 @@
 	compatible = "radxa,rock-4c-plus", "rockchip,rk3399";
 
 	aliases {
-		mmc0 = &sdhci;
-		mmc1 = &sdmmc;
+		mmc0 = &sdmmc;
+		mmc1 = &sdhci;
 	};
 
 	chosen {
@@ -548,8 +548,9 @@
 &sdhci {
 	max-frequency = <150000000>;
 	bus-width = <8>;
-	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
 	non-removable;
+	mmc-hs400-enhanced-strobe;
 	status = "okay";
 };
 
@@ -597,12 +598,6 @@
 };
 
 &tcphy1 {
-	status = "okay";
-};
-
-&tsadc {
-	rockchip,hw-tshut-mode = <1>;
-	rockchip,hw-tshut-polarity = <1>;
 	status = "okay";
 };
 

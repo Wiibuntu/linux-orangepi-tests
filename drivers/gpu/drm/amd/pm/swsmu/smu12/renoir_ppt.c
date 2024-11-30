@@ -494,7 +494,7 @@ static int renoir_set_fine_grain_gfx_freq_parameters(struct smu_context *smu)
 static int renoir_print_clk_levels(struct smu_context *smu,
 			enum smu_clk_type clk_type, char *buf)
 {
-	int i, idx, size = 0, ret = 0;
+	int i, size = 0, ret = 0;
 	uint32_t cur_value = 0, value = 0, count = 0, min = 0, max = 0;
 	SmuMetrics_t metrics;
 	struct smu_dpm_context *smu_dpm_ctx = &(smu->smu_dpm);
@@ -594,8 +594,7 @@ static int renoir_print_clk_levels(struct smu_context *smu,
 	case SMU_VCLK:
 	case SMU_DCLK:
 		for (i = 0; i < count; i++) {
-			idx = (clk_type == SMU_FCLK || clk_type == SMU_MCLK) ? (count - i - 1) : i;
-			ret = renoir_get_dpm_clk_limited(smu, clk_type, idx, &value);
+			ret = renoir_get_dpm_clk_limited(smu, clk_type, i, &value);
 			if (ret)
 				return ret;
 			if (!value)
@@ -1172,7 +1171,6 @@ static int renoir_get_smu_metrics_data(struct smu_context *smu,
 	int ret = 0;
 	uint32_t apu_percent = 0;
 	uint32_t dgpu_percent = 0;
-	struct amdgpu_device *adev = smu->adev;
 
 
 	ret = smu_cmn_get_metrics_table(smu,
@@ -1198,11 +1196,7 @@ static int renoir_get_smu_metrics_data(struct smu_context *smu,
 		*value = metrics->AverageUvdActivity / 100;
 		break;
 	case METRICS_AVERAGE_SOCKETPOWER:
-		if (((adev->ip_versions[MP1_HWIP][0] == IP_VERSION(12, 0, 1)) && (adev->pm.fw_version >= 0x40000f)) ||
-		((adev->ip_versions[MP1_HWIP][0] == IP_VERSION(12, 0, 0)) && (adev->pm.fw_version >= 0x373200)))
-			*value = metrics->CurrentSocketPower << 8;
-		else
-			*value = (metrics->CurrentSocketPower << 8) / 1000;
+		*value = (metrics->CurrentSocketPower << 8) / 1000;
 		break;
 	case METRICS_TEMPERATURE_EDGE:
 		*value = (metrics->GfxTemperature / 100) *

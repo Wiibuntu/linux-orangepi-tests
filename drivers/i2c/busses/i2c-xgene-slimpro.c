@@ -308,9 +308,6 @@ static int slimpro_i2c_blkwr(struct slimpro_i2c_dev *ctx, u32 chip,
 	u32 msg[3];
 	int rc;
 
-	if (writelen > I2C_SMBUS_BLOCK_MAX)
-		return -EINVAL;
-
 	memcpy(ctx->dma_buffer, data, writelen);
 	paddr = dma_map_single(ctx->dev, ctx->dma_buffer, writelen,
 			       DMA_TO_DEVICE);
@@ -560,7 +557,7 @@ mbox_err:
 	return rc;
 }
 
-static void xgene_slimpro_i2c_remove(struct platform_device *pdev)
+static int xgene_slimpro_i2c_remove(struct platform_device *pdev)
 {
 	struct slimpro_i2c_dev *ctx = platform_get_drvdata(pdev);
 
@@ -570,6 +567,8 @@ static void xgene_slimpro_i2c_remove(struct platform_device *pdev)
 		mbox_free_channel(ctx->mbox_chan);
 	else
 		pcc_mbox_free_channel(ctx->pcc_chan);
+
+	return 0;
 }
 
 static const struct of_device_id xgene_slimpro_i2c_dt_ids[] = {
@@ -589,7 +588,7 @@ MODULE_DEVICE_TABLE(acpi, xgene_slimpro_i2c_acpi_ids);
 
 static struct platform_driver xgene_slimpro_i2c_driver = {
 	.probe	= xgene_slimpro_i2c_probe,
-	.remove_new = xgene_slimpro_i2c_remove,
+	.remove	= xgene_slimpro_i2c_remove,
 	.driver	= {
 		.name	= "xgene-slimpro-i2c",
 		.of_match_table = of_match_ptr(xgene_slimpro_i2c_dt_ids),

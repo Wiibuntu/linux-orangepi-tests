@@ -1,9 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 
-. "$(dirname "${0}")/mptcp_lib.sh"
-
-sec=$(date +%s)
 rndh=$(printf %x $sec)-$(mktemp -u XXXXXX)
 ns="ns1-$rndh"
 ksft_skip=4
@@ -19,11 +16,6 @@ flush_pids()
 	sleep 1.1
 
 	ip netns pids "${ns}" | xargs --no-run-if-empty kill -SIGUSR1 &>/dev/null
-
-	for _ in $(seq 10); do
-		[ -z "$(ip netns pids "${ns}")" ] && break
-		sleep 0.1
-	done
 }
 
 cleanup()
@@ -32,8 +24,6 @@ cleanup()
 
 	ip netns del $ns
 }
-
-mptcp_lib_check_mptcp
 
 ip -Version > /dev/null 2>&1
 if [ $? -ne 0 ];then
@@ -46,46 +36,29 @@ if [ $? -ne 0 ];then
 	exit $ksft_skip
 fi
 
-get_msk_inuse()
-{
-	ip netns exec $ns cat /proc/net/protocols | awk '$1~/^MPTCP$/{print $3}'
-}
-
 __chk_nr()
 {
-	local command="$1"
+	local condition="$1"
 	local expected=$2
-	local msg="$3"
-	local skip="${4:-SKIP}"
-	local nr
+	local msg nr
 
-	nr=$(eval $command)
+	shift 2
+	msg=$*
+	nr=$(ss -inmHMN $ns | $condition)
 
 	printf "%-50s" "$msg"
 	if [ $nr != $expected ]; then
-		if [ $nr = "$skip" ] && ! mptcp_lib_expect_all_features; then
-			echo "[ skip ] Feature probably not supported"
-		else
-			echo "[ fail ] expected $expected found $nr"
-			ret=$test_cnt
-		fi
+		echo "[ fail ] expected $expected found $nr"
+		ret=$test_cnt
 	else
 		echo "[  ok  ]"
 	fi
 	test_cnt=$((test_cnt+1))
 }
 
-__chk_msk_nr()
-{
-	local condition=$1
-	shift 1
-
-	__chk_nr "ss -inmHMN $ns | $condition" "$@"
-}
-
 chk_msk_nr()
 {
-	__chk_msk_nr "grep -c token:" "$@"
+	__chk_nr "grep -c token:" $*
 }
 
 wait_msk_nr()
@@ -123,26 +96,37 @@ wait_msk_nr()
 
 chk_msk_fallback_nr()
 {
-	__chk_msk_nr "grep -c fallback" "$@"
+		__chk_nr "grep -c fallback" $*
 }
 
 chk_msk_remote_key_nr()
 {
-	__chk_msk_nr "grep -c remote_key" "$@"
+		__chk_nr "grep -c remote_key" $*
 }
 
 __chk_listen()
 {
 	local filter="$1"
 	local expected=$2
-	local msg="$3"
 
-	__chk_nr "ss -N $ns -Ml '$filter' | grep -c LISTEN" "$expected" "$msg" 0
+	shift 2
+	msg=$*
+
+	nr=$(ss -N $ns -Ml "$filter" | grep -c LISTEN)
+	printf "%-50s" "$msg"
+
+	if [ $nr != $expected ]; then
+		echo "[ fail ] expected $expected found $nr"
+		ret=$test_cnt
+	else
+		echo "[  ok  ]"
+	fi
 }
 
 chk_msk_listen()
 {
 	lport=$1
+	local msg="check for listen socket"
 
 	# destination port search should always return empty list
 	__chk_listen "dport $lport" 0 "listen match for dport $lport"
@@ -155,25 +139,6 @@ chk_msk_listen()
 	__chk_listen "" 1 "all listen sockets"
 
 	nr=$(ss -Ml $filter | wc -l)
-}
-
-chk_msk_inuse()
-{
-	local expected=$1
-	local msg="$2"
-	local listen_nr
-
-	listen_nr=$(ss -N "${ns}" -Ml | grep -c LISTEN)
-	expected=$((expected + listen_nr))
-
-	for _ in $(seq 10); do
-		if [ $(get_msk_inuse) -eq $expected ];then
-			break
-		fi
-		sleep 0.1
-	done
-
-	__chk_nr get_msk_inuse $expected "$msg" 0
 }
 
 # $1: ns, $2: port
@@ -229,10 +194,8 @@ wait_connected $ns 10000
 chk_msk_nr 2 "after MPC handshake "
 chk_msk_remote_key_nr 2 "....chk remote_key"
 chk_msk_fallback_nr 0 "....chk no fallback"
-chk_msk_inuse 2 "....chk 2 msk in use"
 flush_pids
 
-chk_msk_inuse 0 "....chk 0 msk in use after flush"
 
 echo "a" | \
 	timeout ${timeout_test} \
@@ -247,10 +210,7 @@ echo "b" | \
 				127.0.0.1 >/dev/null &
 wait_connected $ns 10001
 chk_msk_fallback_nr 1 "check fallback"
-chk_msk_inuse 1 "....chk 1 msk in use"
 flush_pids
-
-chk_msk_inuse 0 "....chk 0 msk in use after flush"
 
 NR_CLIENTS=100
 for I in `seq 1 $NR_CLIENTS`; do
@@ -271,9 +231,6 @@ for I in `seq 1 $NR_CLIENTS`; do
 done
 
 wait_msk_nr $((NR_CLIENTS*2)) "many msk socket present"
-chk_msk_inuse $((NR_CLIENTS*2)) "....chk many msk in use"
 flush_pids
-
-chk_msk_inuse 0 "....chk 0 msk in use after flush"
 
 exit $ret

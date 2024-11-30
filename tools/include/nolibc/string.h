@@ -88,11 +88,8 @@ void *memset(void *dst, int b, size_t len)
 {
 	char *p = dst;
 
-	while (len--) {
-		/* prevent gcc from recognizing memset() here */
-		__asm__ volatile("");
+	while (len--)
 		*(p++) = b;
-	}
 	return dst;
 }
 
@@ -139,7 +136,7 @@ size_t strlen(const char *str)
 	size_t len;
 
 	for (len = 0; str[len]; len++)
-		__asm__("");
+		asm("");
 	return len;
 }
 
@@ -287,8 +284,5 @@ char *strrchr(const char *s, int c)
 	}
 	return (char *)ret;
 }
-
-/* make sure to include all global symbols */
-#include "nolibc.h"
 
 #endif /* _NOLIBC_STRING_H */

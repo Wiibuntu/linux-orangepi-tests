@@ -55,7 +55,7 @@ static int parse_ipv6(void *data, u64 nh_off, void *data_end)
 	return ip6h->nexthdr;
 }
 
-#define XDPBUFSIZE	60
+#define XDPBUFSIZE	64
 SEC("xdp.frags")
 int xdp_prog1(struct xdp_md *ctx)
 {
@@ -112,10 +112,6 @@ int xdp_prog1(struct xdp_md *ctx)
 
 	if (ipproto == IPPROTO_UDP) {
 		swap_src_dst_mac(data);
-
-		if (bpf_xdp_store_bytes(ctx, 0, pkt, sizeof(pkt)))
-			return rc;
-
 		rc = XDP_TX;
 	}
 

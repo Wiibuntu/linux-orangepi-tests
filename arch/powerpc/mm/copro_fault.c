@@ -33,11 +33,19 @@ int copro_handle_mm_fault(struct mm_struct *mm, unsigned long ea,
 	if (mm->pgd == NULL)
 		return -EFAULT;
 
-	vma = lock_mm_and_find_vma(mm, ea, NULL);
-	if (!vma)
-		return -EFAULT;
-
+	mmap_read_lock(mm);
 	ret = -EFAULT;
+	vma = find_vma(mm, ea);
+	if (!vma)
+		goto out_unlock;
+
+	if (ea < vma->vm_start) {
+		if (!(vma->vm_flags & VM_GROWSDOWN))
+			goto out_unlock;
+		if (expand_stack(vma, ea))
+			goto out_unlock;
+	}
+
 	is_write = dsisr & DSISR_ISSTORE;
 	if (is_write) {
 		if (!(vma->vm_flags & VM_WRITE))

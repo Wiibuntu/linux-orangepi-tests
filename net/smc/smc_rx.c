@@ -13,10 +13,8 @@
 #include <linux/net.h>
 #include <linux/rcupdate.h>
 #include <linux/sched/signal.h>
-#include <linux/splice.h>
 
 #include <net/sock.h>
-#include <trace/events/sock.h>
 
 #include "smc.h"
 #include "smc_core.h"
@@ -32,8 +30,6 @@
 static void smc_rx_wake_up(struct sock *sk)
 {
 	struct socket_wq *wq;
-
-	trace_sk_data_ready(sk);
 
 	/* derived from sock_def_readable() */
 	/* called already in smc_listen_work() */
@@ -267,9 +263,9 @@ int smc_rx_wait(struct smc_sock *smc, long *timeo,
 	sk_set_bit(SOCKWQ_ASYNC_WAITDATA, sk);
 	add_wait_queue(sk_sleep(sk), &wait);
 	rc = sk_wait_event(sk, timeo,
-			   READ_ONCE(sk->sk_err) ||
+			   sk->sk_err ||
 			   cflags->peer_conn_abort ||
-			   READ_ONCE(sk->sk_shutdown) & RCV_SHUTDOWN ||
+			   sk->sk_shutdown & RCV_SHUTDOWN ||
 			   conn->killed ||
 			   fcrit(conn),
 			   &wait);

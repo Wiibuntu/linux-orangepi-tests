@@ -29,6 +29,7 @@
 
 MODULE_DESCRIPTION("Watch queue");
 MODULE_AUTHOR("Red Hat, Inc.");
+MODULE_LICENSE("GPL");
 
 #define WATCH_QUEUE_NOTE_SIZE 128
 #define WATCH_QUEUE_NOTES_PER_PAGE (PAGE_SIZE / WATCH_QUEUE_NOTE_SIZE)
@@ -42,7 +43,7 @@ MODULE_AUTHOR("Red Hat, Inc.");
 static inline bool lock_wqueue(struct watch_queue *wqueue)
 {
 	spin_lock_bh(&wqueue->lock);
-	if (unlikely(!wqueue->pipe)) {
+	if (unlikely(wqueue->defunct)) {
 		spin_unlock_bh(&wqueue->lock);
 		return false;
 	}
@@ -103,6 +104,9 @@ static bool post_one_notification(struct watch_queue *wqueue,
 	struct page *page;
 	unsigned int head, tail, mask, note, offset, len;
 	bool done = false;
+
+	if (!pipe)
+		return false;
 
 	spin_lock_irq(&pipe->rd_wait.lock);
 
@@ -269,7 +273,6 @@ long watch_queue_set_size(struct pipe_inode_info *pipe, unsigned int nr_notes)
 	if (ret < 0)
 		goto error;
 
-	ret = -ENOMEM;
 	pages = kcalloc(sizeof(struct page *), nr_pages, GFP_KERNEL);
 	if (!pages)
 		goto error;
@@ -600,11 +603,8 @@ void watch_queue_clear(struct watch_queue *wqueue)
 	rcu_read_lock();
 	spin_lock_bh(&wqueue->lock);
 
-	/*
-	 * This pipe can be freed by callers like free_pipe_info().
-	 * Removing this reference also prevents new notifications.
-	 */
-	wqueue->pipe = NULL;
+	/* Prevent new notifications from being stored. */
+	wqueue->defunct = true;
 
 	while (!hlist_empty(&wqueue->watches)) {
 		watch = hlist_entry(wqueue->watches.first, struct watch, queue_node);

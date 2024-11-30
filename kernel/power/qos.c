@@ -426,11 +426,6 @@ late_initcall(cpu_latency_qos_init);
 
 /* Definitions related to the frequency QoS below. */
 
-static inline bool freq_qos_value_invalid(s32 value)
-{
-	return value < 0 && value != PM_QOS_DEFAULT_VALUE;
-}
-
 /**
  * freq_constraints_init - Initialize frequency QoS constraints.
  * @qos: Frequency QoS constraints to initialize.
@@ -536,7 +531,7 @@ int freq_qos_add_request(struct freq_constraints *qos,
 {
 	int ret;
 
-	if (IS_ERR_OR_NULL(qos) || !req || freq_qos_value_invalid(value))
+	if (IS_ERR_OR_NULL(qos) || !req || value < 0)
 		return -EINVAL;
 
 	if (WARN(freq_qos_request_active(req),
@@ -568,7 +563,7 @@ EXPORT_SYMBOL_GPL(freq_qos_add_request);
  */
 int freq_qos_update_request(struct freq_qos_request *req, s32 new_value)
 {
-	if (!req || freq_qos_value_invalid(new_value))
+	if (!req || new_value < 0)
 		return -EINVAL;
 
 	if (WARN(!freq_qos_request_active(req),

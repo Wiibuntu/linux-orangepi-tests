@@ -17,7 +17,6 @@
 #include <linux/err.h>
 #include <linux/module.h>
 #include <net/gro.h>
-#include <net/gso.h>
 #include <net/ip.h>
 #include <net/xfrm.h>
 #include <net/esp.h>
@@ -341,9 +340,6 @@ static int esp_xmit(struct xfrm_state *x, struct sk_buff *skb,  netdev_features_
 
 	secpath_reset(skb);
 
-	if (skb_needs_linearize(skb, skb->dev->features) &&
-	    __skb_linearize(skb))
-		return -ENOMEM;
 	return 0;
 }
 

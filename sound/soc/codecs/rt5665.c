@@ -1298,7 +1298,7 @@ static void rt5665_jack_detect_handler(struct work_struct *work)
 		usleep_range(10000, 15000);
 	}
 
-	while (!snd_soc_card_is_instantiated(rt5665->component->card)) {
+	while (!rt5665->component->card->instantiated) {
 		pr_debug("%s\n", __func__);
 		usleep_range(10000, 15000);
 	}
@@ -4472,8 +4472,6 @@ static void rt5665_remove(struct snd_soc_component *component)
 	struct rt5665_priv *rt5665 = snd_soc_component_get_drvdata(component);
 
 	regmap_write(rt5665->regmap, RT5665_RESET, 0);
-
-	regulator_bulk_disable(ARRAY_SIZE(rt5665->supplies), rt5665->supplies);
 }
 
 #ifdef CONFIG_PM
@@ -4628,7 +4626,7 @@ static const struct regmap_config rt5665_regmap = {
 	.max_register = 0x0400,
 	.volatile_reg = rt5665_volatile_register,
 	.readable_reg = rt5665_readable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = rt5665_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt5665_reg),
 	.use_single_read = true,
@@ -4750,7 +4748,7 @@ static void rt5665_calibrate_handler(struct work_struct *work)
 	struct rt5665_priv *rt5665 = container_of(work, struct rt5665_priv,
 		calibrate_work.work);
 
-	while (!snd_soc_card_is_instantiated(rt5665->component->card)) {
+	while (!rt5665->component->card->instantiated) {
 		pr_debug("%s\n", __func__);
 		usleep_range(10000, 15000);
 	}
@@ -4970,7 +4968,7 @@ static struct i2c_driver rt5665_i2c_driver = {
 		.of_match_table = of_match_ptr(rt5665_of_match),
 		.acpi_match_table = ACPI_PTR(rt5665_acpi_match),
 	},
-	.probe = rt5665_i2c_probe,
+	.probe_new = rt5665_i2c_probe,
 	.shutdown = rt5665_i2c_shutdown,
 	.id_table = rt5665_i2c_id,
 };

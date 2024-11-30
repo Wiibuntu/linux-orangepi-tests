@@ -31,41 +31,15 @@ static unsigned long max_alloc_per_card = 32UL * 1024UL * 1024UL;
 module_param(max_alloc_per_card, ulong, 0644);
 MODULE_PARM_DESC(max_alloc_per_card, "Max total allocation bytes per card.");
 
-static void __update_allocated_size(struct snd_card *card, ssize_t bytes)
-{
-	card->total_pcm_alloc_bytes += bytes;
-}
-
-static void update_allocated_size(struct snd_card *card, ssize_t bytes)
-{
-	mutex_lock(&card->memory_mutex);
-	__update_allocated_size(card, bytes);
-	mutex_unlock(&card->memory_mutex);
-}
-
-static void decrease_allocated_size(struct snd_card *card, size_t bytes)
-{
-	mutex_lock(&card->memory_mutex);
-	WARN_ON(card->total_pcm_alloc_bytes < bytes);
-	__update_allocated_size(card, -(ssize_t)bytes);
-	mutex_unlock(&card->memory_mutex);
-}
-
 static int do_alloc_pages(struct snd_card *card, int type, struct device *dev,
 			  int str, size_t size, struct snd_dma_buffer *dmab)
 {
 	enum dma_data_direction dir;
 	int err;
 
-	/* check and reserve the requested size */
-	mutex_lock(&card->memory_mutex);
 	if (max_alloc_per_card &&
-	    card->total_pcm_alloc_bytes + size > max_alloc_per_card) {
-		mutex_unlock(&card->memory_mutex);
+	    card->total_pcm_alloc_bytes + size > max_alloc_per_card)
 		return -ENOMEM;
-	}
-	__update_allocated_size(card, size);
-	mutex_unlock(&card->memory_mutex);
 
 	if (str == SNDRV_PCM_STREAM_PLAYBACK)
 		dir = DMA_TO_DEVICE;
@@ -73,14 +47,9 @@ static int do_alloc_pages(struct snd_card *card, int type, struct device *dev,
 		dir = DMA_FROM_DEVICE;
 	err = snd_dma_alloc_dir_pages(type, dev, dir, size, dmab);
 	if (!err) {
-		/* the actual allocation size might be bigger than requested,
-		 * and we need to correct the account
-		 */
-		if (dmab->bytes != size)
-			update_allocated_size(card, dmab->bytes - size);
-	} else {
-		/* take back on allocation failure */
-		decrease_allocated_size(card, size);
+		mutex_lock(&card->memory_mutex);
+		card->total_pcm_alloc_bytes += dmab->bytes;
+		mutex_unlock(&card->memory_mutex);
 	}
 	return err;
 }
@@ -89,7 +58,10 @@ static void do_free_pages(struct snd_card *card, struct snd_dma_buffer *dmab)
 {
 	if (!dmab->area)
 		return;
-	decrease_allocated_size(card, dmab->bytes);
+	mutex_lock(&card->memory_mutex);
+	WARN_ON(card->total_pcm_alloc_bytes < dmab->bytes);
+	card->total_pcm_alloc_bytes -= dmab->bytes;
+	mutex_unlock(&card->memory_mutex);
 	snd_dma_free_pages(dmab);
 	dmab->area = NULL;
 }

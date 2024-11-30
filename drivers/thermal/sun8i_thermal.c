@@ -110,7 +110,7 @@ static int sun50i_h5_calc_temp(struct ths_device *tmdev,
 
 static int sun8i_ths_get_temp(struct thermal_zone_device *tz, int *temp)
 {
-	struct tsensor *s = thermal_zone_device_priv(tz);
+	struct tsensor *s = tz->devdata;
 	struct ths_device *tmdev = s->tmdev;
 	int val = 0;
 
@@ -210,7 +210,7 @@ static int sun8i_h3_ths_calibrate(struct ths_device *tmdev,
 
 		regmap_update_bits(tmdev->regmap,
 				   SUN8I_THS_TEMP_CALIB + (4 * (i >> 1)),
-				   TEMP_CALIB_MASK << offset,
+				   0xfff << offset,
 				   caldata[i] << offset);
 	}
 
@@ -271,7 +271,7 @@ static int sun50i_h6_ths_calibrate(struct ths_device *tmdev,
 		offset = (i % 2) * 16;
 		regmap_update_bits(tmdev->regmap,
 				   SUN50I_H6_THS_TEMP_CALIB + (i / 2 * 4),
-				   TEMP_CALIB_MASK << offset,
+				   0xfff << offset,
 				   cdata << offset);
 	}
 
@@ -319,11 +319,6 @@ out:
 	return ret;
 }
 
-static void sun8i_ths_reset_control_assert(void *data)
-{
-	reset_control_assert(data);
-}
-
 static int sun8i_ths_resource_init(struct ths_device *tmdev)
 {
 	struct device *dev = tmdev->dev;
@@ -344,35 +339,47 @@ static int sun8i_ths_resource_init(struct ths_device *tmdev)
 		if (IS_ERR(tmdev->reset))
 			return PTR_ERR(tmdev->reset);
 
-		ret = reset_control_deassert(tmdev->reset);
-		if (ret)
-			return ret;
-
-		ret = devm_add_action_or_reset(dev, sun8i_ths_reset_control_assert,
-					       tmdev->reset);
-		if (ret)
-			return ret;
-
-		tmdev->bus_clk = devm_clk_get_enabled(&pdev->dev, "bus");
+		tmdev->bus_clk = devm_clk_get(&pdev->dev, "bus");
 		if (IS_ERR(tmdev->bus_clk))
 			return PTR_ERR(tmdev->bus_clk);
 	}
 
 	if (tmdev->chip->has_mod_clk) {
-		tmdev->mod_clk = devm_clk_get_enabled(&pdev->dev, "mod");
+		tmdev->mod_clk = devm_clk_get(&pdev->dev, "mod");
 		if (IS_ERR(tmdev->mod_clk))
 			return PTR_ERR(tmdev->mod_clk);
 	}
 
-	ret = clk_set_rate(tmdev->mod_clk, 24000000);
+	ret = reset_control_deassert(tmdev->reset);
 	if (ret)
 		return ret;
+
+	ret = clk_prepare_enable(tmdev->bus_clk);
+	if (ret)
+		goto assert_reset;
+
+	ret = clk_set_rate(tmdev->mod_clk, 24000000);
+	if (ret)
+		goto bus_disable;
+
+	ret = clk_prepare_enable(tmdev->mod_clk);
+	if (ret)
+		goto bus_disable;
 
 	ret = sun8i_ths_calibrate(tmdev);
 	if (ret)
-		return ret;
+		goto mod_disable;
 
 	return 0;
+
+mod_disable:
+	clk_disable_unprepare(tmdev->mod_clk);
+bus_disable:
+	clk_disable_unprepare(tmdev->bus_clk);
+assert_reset:
+	reset_control_assert(tmdev->reset);
+
+	return ret;
 }
 
 static int sun8i_h3_thermal_init(struct ths_device *tmdev)
@@ -468,7 +475,9 @@ static int sun8i_ths_register(struct ths_device *tmdev)
 		if (IS_ERR(tmdev->sensor[i].tzd))
 			return PTR_ERR(tmdev->sensor[i].tzd);
 
-		devm_thermal_add_hwmon_sysfs(tmdev->dev, tmdev->sensor[i].tzd);
+		if (devm_thermal_add_hwmon_sysfs(tmdev->sensor[i].tzd))
+			dev_warn(tmdev->dev,
+				 "Failed to add hwmon sysfs attributes\n");
 	}
 
 	return 0;
@@ -517,6 +526,17 @@ static int sun8i_ths_probe(struct platform_device *pdev)
 					IRQF_ONESHOT, "ths", tmdev);
 	if (ret)
 		return ret;
+
+	return 0;
+}
+
+static int sun8i_ths_remove(struct platform_device *pdev)
+{
+	struct ths_device *tmdev = platform_get_drvdata(pdev);
+
+	clk_disable_unprepare(tmdev->mod_clk);
+	clk_disable_unprepare(tmdev->bus_clk);
+	reset_control_assert(tmdev->reset);
 
 	return 0;
 }
@@ -622,6 +642,7 @@ MODULE_DEVICE_TABLE(of, of_ths_match);
 
 static struct platform_driver ths_driver = {
 	.probe = sun8i_ths_probe,
+	.remove = sun8i_ths_remove,
 	.driver = {
 		.name = "sun8i-thermal",
 		.of_match_table = of_ths_match,

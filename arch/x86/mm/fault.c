@@ -19,7 +19,6 @@
 #include <linux/uaccess.h>		/* faulthandler_disabled()	*/
 #include <linux/efi.h>			/* efi_crash_gracefully_on_page_fault()*/
 #include <linux/mm_types.h>
-#include <linux/mm.h>			/* find_and_lock_vma() */
 
 #include <asm/cpufeature.h>		/* boot_cpu_has, ...		*/
 #include <asm/traps.h>			/* dotraplinkage, ...		*/
@@ -261,7 +260,7 @@ static noinline int vmalloc_fault(unsigned long address)
 }
 NOKPROBE_SYMBOL(vmalloc_fault);
 
-void arch_sync_kernel_mappings(unsigned long start, unsigned long end)
+static void __arch_sync_kernel_mappings(unsigned long start, unsigned long end)
 {
 	unsigned long addr;
 
@@ -283,6 +282,27 @@ void arch_sync_kernel_mappings(unsigned long start, unsigned long end)
 		}
 		spin_unlock(&pgd_lock);
 	}
+}
+
+void arch_sync_kernel_mappings(unsigned long start, unsigned long end)
+{
+	__arch_sync_kernel_mappings(start, end);
+#ifdef CONFIG_KMSAN
+	/*
+	 * KMSAN maintains two additional metadata page mappings for the
+	 * [VMALLOC_START, VMALLOC_END) range. These mappings start at
+	 * KMSAN_VMALLOC_SHADOW_START and KMSAN_VMALLOC_ORIGIN_START and
+	 * have to be synced together with the vmalloc memory mapping.
+	 */
+	if (start >= VMALLOC_START && end < VMALLOC_END) {
+		__arch_sync_kernel_mappings(
+			start - VMALLOC_START + KMSAN_VMALLOC_SHADOW_START,
+			end - VMALLOC_START + KMSAN_VMALLOC_SHADOW_START);
+		__arch_sync_kernel_mappings(
+			start - VMALLOC_START + KMSAN_VMALLOC_ORIGIN_START,
+			end - VMALLOC_START + KMSAN_VMALLOC_ORIGIN_START);
+	}
+#endif
 }
 
 static bool low_pfn(unsigned long pfn)
@@ -880,6 +900,12 @@ __bad_area(struct pt_regs *regs, unsigned long error_code,
 	__bad_area_nosemaphore(regs, error_code, address, pkey, si_code);
 }
 
+static noinline void
+bad_area(struct pt_regs *regs, unsigned long error_code, unsigned long address)
+{
+	__bad_area(regs, error_code, address, 0, SEGV_MAPERR);
+}
+
 static inline bool bad_area_access_from_pkeys(unsigned long error_code,
 		struct vm_area_struct *vma)
 {
@@ -1328,42 +1354,51 @@ void do_user_addr_fault(struct pt_regs *regs,
 	}
 #endif
 
-#ifdef CONFIG_PER_VMA_LOCK
-	if (!(flags & FAULT_FLAG_USER))
-		goto lock_mmap;
-
-	vma = lock_vma_under_rcu(mm, address);
-	if (!vma)
-		goto lock_mmap;
-
-	if (unlikely(access_error(error_code, vma))) {
-		vma_end_read(vma);
-		goto lock_mmap;
+	/*
+	 * Kernel-mode access to the user address space should only occur
+	 * on well-defined single instructions listed in the exception
+	 * tables.  But, an erroneous kernel fault occurring outside one of
+	 * those areas which also holds mmap_lock might deadlock attempting
+	 * to validate the fault against the address space.
+	 *
+	 * Only do the expensive exception table search when we might be at
+	 * risk of a deadlock.  This happens if we
+	 * 1. Failed to acquire mmap_lock, and
+	 * 2. The access did not originate in userspace.
+	 */
+	if (unlikely(!mmap_read_trylock(mm))) {
+		if (!user_mode(regs) && !search_exception_tables(regs->ip)) {
+			/*
+			 * Fault from code in kernel from
+			 * which we do not expect faults.
+			 */
+			bad_area_nosemaphore(regs, error_code, address);
+			return;
+		}
+retry:
+		mmap_read_lock(mm);
+	} else {
+		/*
+		 * The above down_read_trylock() might have succeeded in
+		 * which case we'll have missed the might_sleep() from
+		 * down_read():
+		 */
+		might_sleep();
 	}
-	fault = handle_mm_fault(vma, address, flags | FAULT_FLAG_VMA_LOCK, regs);
-	vma_end_read(vma);
 
-	if (!(fault & VM_FAULT_RETRY)) {
-		count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
-		goto done;
-	}
-	count_vm_vma_lock_event(VMA_LOCK_RETRY);
-
-	/* Quick path to respond to signals */
-	if (fault_signal_pending(fault, regs)) {
-		if (!user_mode(regs))
-			kernelmode_fixup_or_oops(regs, error_code, address,
-						 SIGBUS, BUS_ADRERR,
-						 ARCH_DEFAULT_PKEY);
+	vma = find_vma(mm, address);
+	if (unlikely(!vma)) {
+		bad_area(regs, error_code, address);
 		return;
 	}
-lock_mmap:
-#endif /* CONFIG_PER_VMA_LOCK */
-
-retry:
-	vma = lock_mm_and_find_vma(mm, address, regs);
-	if (unlikely(!vma)) {
-		bad_area_nosemaphore(regs, error_code, address);
+	if (likely(vma->vm_start <= address))
+		goto good_area;
+	if (unlikely(!(vma->vm_flags & VM_GROWSDOWN))) {
+		bad_area(regs, error_code, address);
+		return;
+	}
+	if (unlikely(expand_stack(vma, address))) {
+		bad_area(regs, error_code, address);
 		return;
 	}
 
@@ -1371,6 +1406,7 @@ retry:
 	 * Ok, we have a good vm_area for this memory access, so
 	 * we can handle it..
 	 */
+good_area:
 	if (unlikely(access_error(error_code, vma))) {
 		bad_area_access_error(regs, error_code, address, vma);
 		return;
@@ -1418,9 +1454,6 @@ retry:
 	}
 
 	mmap_read_unlock(mm);
-#ifdef CONFIG_PER_VMA_LOCK
-done:
-#endif
 	if (likely(!(fault & VM_FAULT_ERROR)))
 		return;
 

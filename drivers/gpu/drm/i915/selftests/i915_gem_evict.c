@@ -27,7 +27,6 @@
 #include "gem/selftests/igt_gem_utils.h"
 #include "gem/selftests/mock_context.h"
 #include "gt/intel_gt.h"
-#include "gt/intel_gt_print.h"
 
 #include "i915_selftest.h"
 
@@ -246,7 +245,7 @@ static int igt_evict_for_cache_color(void *arg)
 	struct drm_mm_node target = {
 		.start = I915_GTT_PAGE_SIZE * 2,
 		.size = I915_GTT_PAGE_SIZE,
-		.color = i915_gem_get_pat_index(gt->i915, I915_CACHE_LLC),
+		.color = I915_CACHE_LLC,
 	};
 	struct drm_i915_gem_object *obj;
 	struct i915_vma *vma;
@@ -309,7 +308,7 @@ static int igt_evict_for_cache_color(void *arg)
 	/* Attempt to remove the first *pinned* vma, by removing the (empty)
 	 * neighbour -- this should fail.
 	 */
-	target.color = i915_gem_get_pat_index(gt->i915, I915_CACHE_L3_LLC);
+	target.color = I915_CACHE_L3_LLC;
 
 	mutex_lock(&ggtt->vm.mutex);
 	err = i915_gem_evict_for_node(&ggtt->vm, NULL, &target, 0);
@@ -345,7 +344,7 @@ static int igt_evict_vm(void *arg)
 
 	/* Everything is pinned, nothing should happen */
 	mutex_lock(&ggtt->vm.mutex);
-	err = i915_gem_evict_vm(&ggtt->vm, NULL, NULL);
+	err = i915_gem_evict_vm(&ggtt->vm, NULL);
 	mutex_unlock(&ggtt->vm.mutex);
 	if (err) {
 		pr_err("i915_gem_evict_vm on a full GGTT returned err=%d]\n",
@@ -357,7 +356,7 @@ static int igt_evict_vm(void *arg)
 
 	for_i915_gem_ww(&ww, err, false) {
 		mutex_lock(&ggtt->vm.mutex);
-		err = i915_gem_evict_vm(&ggtt->vm, &ww, NULL);
+		err = i915_gem_evict_vm(&ggtt->vm, &ww);
 		mutex_unlock(&ggtt->vm.mutex);
 	}
 
@@ -508,8 +507,7 @@ static int igt_evict_contexts(void *arg)
 		}
 		err = intel_gt_wait_for_idle(engine->gt, HZ * 3);
 		if (err) {
-			gt_err(engine->gt, "Failed to idle GT (on %s)",
-			       engine->name);
+			pr_err("Failed to idle GT (on %s)", engine->name);
 			break;
 		}
 	}

@@ -99,13 +99,21 @@ static void __do_page_fault(struct pt_regs *regs, unsigned long write,
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
 retry:
-	vma = lock_mm_and_find_vma(mm, address, regs);
+	mmap_read_lock(mm);
+	vma = find_vma(mm, address);
 	if (!vma)
-		goto bad_area_nosemaphore;
+		goto bad_area;
+	if (vma->vm_start <= address)
+		goto good_area;
+	if (!(vma->vm_flags & VM_GROWSDOWN))
+		goto bad_area;
+	if (expand_stack(vma, address))
+		goto bad_area;
 /*
  * Ok, we have a good vm_area for this memory access, so
  * we can handle it..
  */
+good_area:
 	si_code = SEGV_ACCERR;
 
 	if (write) {

@@ -33,9 +33,6 @@
  * and then arrange for the ftrace function to be called.
  */
 .macro	ftrace_regs_entry allregs
-	/* Create a minimal stack frame for representing B */
-	PPC_STLU	r1, -STACK_FRAME_MIN_SIZE(r1)
-
 	/* Create our stack frame + pt_regs */
 	PPC_STLU	r1,-SWITCH_FRAME_SIZE(r1)
 
@@ -45,7 +42,7 @@
 
 #ifdef CONFIG_PPC64
 	/* Save the original return address in A's stack frame */
-	std	r0, LRSAVE+SWITCH_FRAME_SIZE+STACK_FRAME_MIN_SIZE(r1)
+	std	r0, LRSAVE+SWITCH_FRAME_SIZE(r1)
 	/* Ok to continue? */
 	lbz	r3, PACA_FTRACE_ENABLED(r13)
 	cmpdi	r3, 0
@@ -80,8 +77,6 @@
 	mflr	r7
 	/* Save it as pt_regs->nip */
 	PPC_STL	r7, _NIP(r1)
-	/* Also save it in B's stackframe header for proper unwind */
-	PPC_STL	r7, LRSAVE+SWITCH_FRAME_SIZE(r1)
 	/* Save the read LR in pt_regs->link */
 	PPC_STL	r0, _LINK(r1)
 
@@ -115,7 +110,7 @@
 	.endif
 
 	/* Load &pt_regs in r6 for call below */
-	addi    r6, r1, STACK_INT_FRAME_REGS
+	addi    r6, r1, STACK_FRAME_OVERHEAD
 .endm
 
 .macro	ftrace_regs_exit allregs
@@ -147,7 +142,7 @@
 #endif
 
 	/* Pop our stack frame */
-	addi r1, r1, SWITCH_FRAME_SIZE+STACK_FRAME_MIN_SIZE
+	addi r1, r1, SWITCH_FRAME_SIZE
 
 #ifdef CONFIG_LIVEPATCH_64
         /* Based on the cmpd above, if the NIP was altered handle livepatch */

@@ -10,7 +10,6 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/jiffies.h>
-#include <linux/nospec.h>
 #include <linux/skbuff.h>
 #include <linux/string.h>
 #include <linux/types.h>
@@ -382,7 +381,6 @@ static int validate_nla(const struct nlattr *nla, int maxtype,
 	if (type <= 0 || type > maxtype)
 		return 0;
 
-	type = array_index_nospec(type, maxtype + 1);
 	pt = &policy[type];
 
 	BUG_ON(pt->type > NLA_TYPE_MAX);
@@ -598,7 +596,6 @@ static int __nla_validate_parse(const struct nlattr *head, int len, int maxtype,
 			}
 			continue;
 		}
-		type = array_index_nospec(type, maxtype + 1);
 		if (policy) {
 			int err = validate_nla(nla, maxtype, policy,
 					       validate, extack, depth);
@@ -649,7 +646,7 @@ EXPORT_SYMBOL(__nla_validate);
 
 /**
  * nla_policy_len - Determine the max. length of a policy
- * @p: policy to use
+ * @policy: policy to use
  * @n: number of policies
  *
  * Determines the max. length of the policy.  It is currently used

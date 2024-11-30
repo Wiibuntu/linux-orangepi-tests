@@ -233,14 +233,13 @@ static inline u32 iproc_i2c_rd_reg(struct bcm_iproc_i2c_dev *iproc_i2c,
 				   u32 offset)
 {
 	u32 val;
-	unsigned long flags;
 
 	if (iproc_i2c->idm_base) {
-		spin_lock_irqsave(&iproc_i2c->idm_lock, flags);
+		spin_lock(&iproc_i2c->idm_lock);
 		writel(iproc_i2c->ape_addr_mask,
 		       iproc_i2c->idm_base + IDM_CTRL_DIRECT_OFFSET);
 		val = readl(iproc_i2c->base + offset);
-		spin_unlock_irqrestore(&iproc_i2c->idm_lock, flags);
+		spin_unlock(&iproc_i2c->idm_lock);
 	} else {
 		val = readl(iproc_i2c->base + offset);
 	}
@@ -251,14 +250,12 @@ static inline u32 iproc_i2c_rd_reg(struct bcm_iproc_i2c_dev *iproc_i2c,
 static inline void iproc_i2c_wr_reg(struct bcm_iproc_i2c_dev *iproc_i2c,
 				    u32 offset, u32 val)
 {
-	unsigned long flags;
-
 	if (iproc_i2c->idm_base) {
-		spin_lock_irqsave(&iproc_i2c->idm_lock, flags);
+		spin_lock(&iproc_i2c->idm_lock);
 		writel(iproc_i2c->ape_addr_mask,
 		       iproc_i2c->idm_base + IDM_CTRL_DIRECT_OFFSET);
 		writel(val, iproc_i2c->base + offset);
-		spin_unlock_irqrestore(&iproc_i2c->idm_lock, flags);
+		spin_unlock(&iproc_i2c->idm_lock);
 	} else {
 		writel(val, iproc_i2c->base + offset);
 	}
@@ -1110,7 +1107,7 @@ static int bcm_iproc_i2c_probe(struct platform_device *pdev)
 	return i2c_add_adapter(adap);
 }
 
-static void bcm_iproc_i2c_remove(struct platform_device *pdev)
+static int bcm_iproc_i2c_remove(struct platform_device *pdev)
 {
 	struct bcm_iproc_i2c_dev *iproc_i2c = platform_get_drvdata(pdev);
 
@@ -1126,6 +1123,8 @@ static void bcm_iproc_i2c_remove(struct platform_device *pdev)
 
 	i2c_del_adapter(&iproc_i2c->adapter);
 	bcm_iproc_i2c_enable_disable(iproc_i2c, false);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1261,7 +1260,7 @@ static struct platform_driver bcm_iproc_i2c_driver = {
 		.pm = BCM_IPROC_I2C_PM_OPS,
 	},
 	.probe = bcm_iproc_i2c_probe,
-	.remove_new = bcm_iproc_i2c_remove,
+	.remove = bcm_iproc_i2c_remove,
 };
 module_platform_driver(bcm_iproc_i2c_driver);
 

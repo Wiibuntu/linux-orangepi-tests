@@ -1981,11 +1981,6 @@ basic()
 
 	run_cmd "$IP link set dev lo up"
 
-	# Dump should not loop endlessly when maximum nexthop ID is configured.
-	run_cmd "$IP nexthop add id $((2**32-1)) blackhole"
-	run_cmd "timeout 5 $IP nexthop"
-	log_test $? 0 "Maximum nexthop ID dump"
-
 	#
 	# groups
 	#
@@ -2206,11 +2201,6 @@ basic_res()
 	run_cmd "$IP nexthop bucket list fdb"
 	log_test $? 255 "Dump all nexthop buckets with invalid 'fdb' keyword"
 
-	# Dump should not loop endlessly when maximum nexthop ID is configured.
-	run_cmd "$IP nexthop add id $((2**32-1)) group 1/2 type resilient buckets 4"
-	run_cmd "timeout 5 $IP nexthop bucket"
-	log_test $? 0 "Maximum nexthop ID dump"
-
 	#
 	# resilient nexthop buckets get requests
 	#
@@ -2293,7 +2283,7 @@ EOF
 ################################################################################
 # main
 
-while getopts :t:pP46hvw: o
+while getopts :t:pP46hv:w: o
 do
 	case $o in
 		t) TESTS=$OPTARG;;

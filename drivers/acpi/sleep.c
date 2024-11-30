@@ -60,17 +60,13 @@ static struct notifier_block tts_notifier = {
 	.priority	= 0,
 };
 
-#ifndef acpi_skip_set_wakeup_address
-#define acpi_skip_set_wakeup_address() false
-#endif
-
 static int acpi_sleep_prepare(u32 acpi_state)
 {
 #ifdef CONFIG_ACPI_SLEEP
 	unsigned long acpi_wakeup_address;
 
 	/* do we have a wakeup address for S2 and S3? */
-	if (acpi_state == ACPI_STATE_S3 && !acpi_skip_set_wakeup_address()) {
+	if (acpi_state == ACPI_STATE_S3) {
 		acpi_wakeup_address = acpi_get_wakeup_address();
 		if (!acpi_wakeup_address)
 			return -EFAULT;
@@ -636,19 +632,11 @@ static int acpi_suspend_enter(suspend_state_t pm_state)
 	}
 
 	/*
-	 * Disable all GPE and clear their status bits before interrupts are
-	 * enabled. Some GPEs (like wakeup GPEs) have no handlers and this can
-	 * prevent them from producing spurious interrups.
-	 *
-	 * acpi_leave_sleep_state() will reenable specific GPEs later.
-	 *
-	 * Because this code runs on one CPU with disabled interrupts (all of
-	 * the other CPUs are offline at this time), it need not acquire any
-	 * sleeping locks which may trigger an implicit preemption point even
-	 * if there is no contention, so avoid doing that by using a low-level
-	 * library routine here.
+	 * Disable and clear GPE status before interrupt is enabled. Some GPEs
+	 * (like wakeup GPE) haven't handler, this can avoid such GPE misfire.
+	 * acpi_leave_sleep_state will reenable specific GPEs later
 	 */
-	acpi_hw_disable_all_gpes();
+	acpi_disable_all_gpes();
 	/* Allow EC transactions to happen. */
 	acpi_ec_unblock_transactions();
 
@@ -722,13 +710,7 @@ int acpi_s2idle_begin(void)
 int acpi_s2idle_prepare(void)
 {
 	if (acpi_sci_irq_valid()) {
-		int error;
-
-		error = enable_irq_wake(acpi_sci_irq);
-		if (error)
-			pr_warn("Warning: Failed to enable wakeup from IRQ %d: %d\n",
-				acpi_sci_irq, error);
-
+		enable_irq_wake(acpi_sci_irq);
 		acpi_ec_set_gpe_wake_mask(ACPI_GPE_ENABLE);
 	}
 
@@ -848,7 +830,7 @@ void __weak acpi_s2idle_setup(void)
 	s2idle_set_ops(&acpi_s2idle_ops);
 }
 
-static void __init acpi_sleep_suspend_setup(void)
+static void acpi_sleep_suspend_setup(void)
 {
 	bool suspend_ops_needed = false;
 	int i;
